@@ -1,0 +1,93 @@
+name: macOS Apple Silicon
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Sync dependencies
+        run: mise run sync
+
+      - name: Prepare generated resources
+        run: |
+          mise run generate
+          mise run r7-sbom
+
+      - name: Build Apple Silicon sidecars
+        run: |
+          cargo build \
+            -p flagdeck-metasploit-adapter \
+            --release \
+            --bins \
+            --target aarch64-apple-darwin \
+            --locked
+          install -m 755 \
+            target/aarch64-apple-darwin/release/flagdeck-adapter-metasploit \
+            apps/desktop/src-tauri/binaries/flagdeck-adapter-metasploit-aarch64-apple-darwin
+          install -m 755 \
+            target/aarch64-apple-darwin/release/flagdeck-msf-credential-launcher \
+            apps/desktop/src-tauri/binaries/flagdeck-msf-credential-launcher-aarch64-apple-darwin
+
+      - name: Bundle uv runtime bootstrapper
+        run: |
+          curl -LsSf https://astral.sh/uv/0.11.26/install.sh |
+            env UV_UNMANAGED_INSTALL="$RUNNER_TEMP/flagdeck-uv" sh
+          "$RUNNER_TEMP/flagdeck-uv/uv" --version
+          install -m 755 \
+            "$RUNNER_TEMP/flagdeck-uv/uv" \
+            apps/desktop/src-tauri/binaries/uv-aarch64-apple-darwin
+
+      - name: Check macOS workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Build ad-hoc signed DMG
+        run: pnpm --dir apps/desktop tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: Verify bundle
+        run: |
+          DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -print -quit)
+          test -f "$DMG"
+          hdiutil verify "$DMG"
+          MOUNT="$RUNNER_TEMP/flagdeck-dmg"
+          mkdir -p "$MOUNT"
+          hdiutil attach "$DMG" -readonly -nobrowse -mountpoint "$MOUNT"
+          trap 'hdiutil detach "$MOUNT"' EXIT
+          APP="$MOUNT/FlagDeck.app"
+          find "$APP/Contents/MacOS" -maxdepth 1 -type f -print
+          lipo -archs "$APP/Contents/MacOS/flagdeck-desktop" | grep -qw arm64
+          lipo -archs "$APP/Contents/MacOS/uv" | grep -qw arm64
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          hdiutil detach "$MOUNT"
+          trap - EXIT
+          shasum -a 256 "$DMG" | tee "$DMG.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlagDeck-macOS-Apple-Silicon
+          path: |
+            target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            target/aarch64-apple-darwin/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+          retention-days: 14

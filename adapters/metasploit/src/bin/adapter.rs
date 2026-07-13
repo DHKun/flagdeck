@@ -20,8 +20,11 @@ use flagdeck_metasploit_adapter::{
     ADAPTER_ID, ADAPTER_VERSION, HttpsMessagePackTransport, MsfError, MsfRpcClient, RpcTransport,
     redact_transcript, value_as_str, value_to_json,
 };
+#[cfg(target_os = "linux")]
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 use nix::unistd::Uid;
+#[cfg(target_os = "macos")]
+use nix::unistd::getpeereid;
 use rmpv::Value;
 use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
@@ -761,9 +764,7 @@ fn serve_credential(
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
-                let peer =
-                    getsockopt(&stream, PeerCredentials).map_err(|_| AdapterFailure::Runtime)?;
-                if peer.uid() != Uid::current().as_raw() {
+                if !peer_uid_matches(&stream)? {
                     return Err(AdapterFailure::Runtime);
                 }
                 stream
@@ -786,6 +787,18 @@ fn serve_credential(
             Err(_) => return Err(AdapterFailure::Runtime),
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn peer_uid_matches(stream: &std::os::unix::net::UnixStream) -> Result<bool, AdapterFailure> {
+    let peer = getsockopt(stream, PeerCredentials).map_err(|_| AdapterFailure::Runtime)?;
+    Ok(peer.uid() == Uid::current().as_raw())
+}
+
+#[cfg(target_os = "macos")]
+fn peer_uid_matches(stream: &std::os::unix::net::UnixStream) -> Result<bool, AdapterFailure> {
+    let (uid, _) = getpeereid(stream).map_err(|_| AdapterFailure::Runtime)?;
+    Ok(uid == Uid::current())
 }
 
 fn ready_rpc(port: u16, username: &str, password: &str) -> Result<RpcClient, AdapterFailure> {

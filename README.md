@@ -1,10 +1,11 @@
 # FlagDeck
 
 [![CI](https://github.com/DHKun/flagdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/DHKun/flagdeck/actions/workflows/ci.yml)
-[![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-4f7cff)](#运行环境)
+[![macOS](https://github.com/DHKun/flagdeck/actions/workflows/macos.yml/badge.svg)](https://github.com/DHKun/flagdeck/actions/workflows/macos.yml)
+[![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20macOS%20arm64-4f7cff)](#运行环境)
 [![License](https://img.shields.io/badge/license-MIT-65c99a)](LICENSE)
 
-FlagDeck 是面向 Linux 桌面的安全测试工具箱。常用命令行工具可以直接在界面里配置和运行，任务输出、日志与解析结果统一留在 FlagDeck；少量 GUI 工具通过兼容入口启动。
+FlagDeck 是面向 Linux 与 Apple Silicon macOS 的安全测试工具箱。常用命令行工具可以直接在界面里配置和运行，任务输出、日志与解析结果统一留在 FlagDeck；少量 GUI 工具通过兼容入口启动。
 
 适用范围包括 CTF、靶场、实验环境和已经取得明确授权的安全测试。
 
@@ -59,13 +60,18 @@ flowchart LR
 $XDG_CONFIG_HOME/flagdeck/tool-paths.toml
 $XDG_CONFIG_HOME/flagdeck/external-launchers.toml
 $XDG_CONFIG_HOME/flagdeck/payload-sources.toml
+
+~/Library/Application Support/FlagDeck/tool-paths.toml
+~/Library/Application Support/FlagDeck/external-launchers.toml
 ```
 
 工具路径覆盖需要同时提供 SHA-256。示例见 [tool-paths.example.toml](config/tool-paths.example.toml)。
 
 ## 运行环境
 
-FlagDeck 支持 Linux x86-64 桌面环境，需要 GTK 3 和 WebKitGTK 4.1。systemd user manager 与 cgroup v2 可以提供更完整的进程管理；其他环境使用 PGID 后端。
+Linux x86-64 版本需要 GTK 3 和 WebKitGTK 4.1。systemd user manager 与 cgroup v2 提供完整的进程管理，PGID 后端覆盖其他 Linux 桌面环境。
+
+Apple Silicon 版本支持 macOS 13 及以上系统，M1–M4 芯片直接运行 arm64 DMG。安装与首次启动说明见 [macOS 预览版文档](docs/MACOS_PREVIEW.md)。
 
 Fedora：
 

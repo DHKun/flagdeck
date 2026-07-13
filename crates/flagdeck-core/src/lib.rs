@@ -789,14 +789,32 @@ impl CoreService {
         metasploit_adapter: Option<PathBuf>,
         metasploit_launcher: Option<PathBuf>,
     ) -> Self {
+        Self::with_bundled_resources(
+            workspaces_root,
+            worker_source_root,
+            None,
+            metasploit_adapter,
+            metasploit_launcher,
+        )
+    }
+
+    #[must_use]
+    pub fn with_bundled_resources(
+        workspaces_root: impl Into<PathBuf>,
+        worker_source_root: Option<PathBuf>,
+        uv_program: Option<PathBuf>,
+        metasploit_adapter: Option<PathBuf>,
+        metasploit_launcher: Option<PathBuf>,
+    ) -> Self {
         Self {
             workspaces_root: workspaces_root.into(),
             active: Mutex::new(None),
             active_runs: Arc::new(AtomicUsize::new(0)),
             active_executions: Mutex::new(HashMap::new()),
             event_sequence: AtomicU64::new(0),
-            http_workbench: worker_source_root
-                .map_or_else(HttpWorkbench::new, HttpWorkbench::with_worker_source),
+            http_workbench: worker_source_root.map_or_else(HttpWorkbench::new, |source| {
+                HttpWorkbench::with_worker_source_and_uv(source, uv_program)
+            }),
             metasploit_workbench: MetasploitWorkbench::new(metasploit_adapter, metasploit_launcher),
             intruder_workbench: IntruderWorkbench::new(),
         }

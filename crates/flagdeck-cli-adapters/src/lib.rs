@@ -26,6 +26,10 @@ use thiserror::Error;
 use url::Url;
 
 pub const REGISTRY_SOURCE: &str = include_str!("../../../config/tools.toml");
+#[cfg(target_os = "linux")]
+const EXPECTED_PLATFORM: &str = "linux-x86_64";
+#[cfg(target_os = "macos")]
+const EXPECTED_PLATFORM: &str = "macos-aarch64";
 pub const MAX_WORDLIST_TERMS: usize = 256;
 pub const MAX_WORDLIST_TERM_BYTES: usize = 128;
 pub const MAX_STRUCTURED_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
@@ -237,11 +241,12 @@ pub struct ParsedToolOutput {
 
 pub fn registry() -> Result<ToolRegistry, AdapterError> {
     let mut registry: ToolRegistry = toml::from_str(REGISTRY_SOURCE)?;
+    apply_platform_defaults(&mut registry);
     if registry.schema_version != 2
         || registry.pack.id.is_empty()
         || registry.pack.name.is_empty()
         || registry.pack.version.is_empty()
-        || registry.pack.platform != "linux-x86_64"
+        || registry.pack.platform != EXPECTED_PLATFORM
         || !registry.policy.absolute_paths
         || !registry.policy.verify_owner
         || !registry.policy.reject_group_or_world_writable
@@ -304,6 +309,34 @@ pub fn registry() -> Result<ToolRegistry, AdapterError> {
         }
     }
     Ok(registry)
+}
+
+#[cfg(target_os = "linux")]
+fn apply_platform_defaults(_registry: &mut ToolRegistry) {}
+
+#[cfg(target_os = "macos")]
+fn apply_platform_defaults(registry: &mut ToolRegistry) {
+    EXPECTED_PLATFORM.clone_into(&mut registry.pack.platform);
+    "Managed HTTP and discovery tools for Apple Silicon macOS"
+        .clone_into(&mut registry.pack.description);
+    for tool in &mut registry.tools {
+        tool.system_paths = vec![
+            format!("/opt/homebrew/bin/{}", tool.command),
+            format!("/usr/local/bin/{}", tool.command),
+        ];
+        match tool.id.as_str() {
+            "curl" => {
+                tool.system_paths.push("/usr/bin/curl".to_owned());
+                tool.health_version_marker = "curl ".to_owned();
+                tool.version = "system".to_owned();
+                tool.runtime_fingerprint = "macos-system-curl".to_owned();
+            }
+            "arjun" | "wafw00f" => {
+                tool.health_argv = vec!["--version".to_owned()];
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -402,7 +435,7 @@ fn tool_overrides() -> BTreeMap<String, ToolOverride> {
         .or_else(|| {
             env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|root| root.join(".config/flagdeck/tool-paths.toml"))
+                .map(|root| default_user_config(&root, "tool-paths.toml"))
         });
     let Some(path) = path else {
         return BTreeMap::new();
@@ -417,6 +450,16 @@ fn tool_overrides() -> BTreeMap<String, ToolOverride> {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "linux")]
+fn default_user_config(home: &Path, name: &str) -> PathBuf {
+    home.join(".config/flagdeck").join(name)
+}
+
+#[cfg(target_os = "macos")]
+fn default_user_config(home: &Path, name: &str) -> PathBuf {
+    home.join("Library/Application Support/FlagDeck").join(name)
+}
+
 fn tool_pack_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(root) = env::var_os("FLAGDECK_TOOL_PACK_ROOT") {
@@ -426,6 +469,10 @@ fn tool_pack_roots() -> Vec<PathBuf> {
         roots.push(PathBuf::from(root).join("flagdeck/tool-packs"));
     } else if let Some(home) = env::var_os("HOME") {
         roots.push(PathBuf::from(home).join(".local/share/flagdeck/tool-packs"));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join("Library/Application Support/FlagDeck/tool-packs"));
     }
     roots.extend([
         PathBuf::from("/usr/lib/flagdeck/tool-packs"),
@@ -539,7 +586,7 @@ pub fn prepare_command(
         ),
         ("LANG".to_owned(), "C.UTF-8".to_owned()),
         ("LC_ALL".to_owned(), "C.UTF-8".to_owned()),
-        ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+        ("PATH".to_owned(), managed_path().to_owned()),
         (
             "TMPDIR".to_owned(),
             job_directory.join("tmp").display().to_string(),
@@ -597,6 +644,16 @@ pub fn prepare_command(
         stdout_path: job_directory.join("stdout.log"),
         stderr_path: job_directory.join("stderr.log"),
     })
+}
+
+#[cfg(target_os = "linux")]
+const fn managed_path() -> &'static str {
+    "/usr/bin:/bin"
+}
+
+#[cfg(target_os = "macos")]
+const fn managed_path() -> &'static str {
+    "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 }
 
 fn required_wordlist(wordlist: Option<&Path>) -> Result<&Path, AdapterError> {

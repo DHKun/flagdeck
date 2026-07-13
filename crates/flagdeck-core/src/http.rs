@@ -9,6 +9,8 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -42,9 +44,14 @@ const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_EVENT_LINE_BYTES: usize = 1024 * 1024;
 const MAX_HTTP_BODY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_HTTP_HEAD_BYTES: usize = 1024 * 1024;
+#[cfg(target_os = "linux")]
 const CHROME: &str = "/usr/bin/google-chrome-stable";
+#[cfg(target_os = "macos")]
+const CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+#[cfg(target_os = "linux")]
 const CERTUTIL: &str = "/usr/bin/certutil";
 const OPENSSL: &str = "/usr/bin/openssl";
+#[cfg(target_os = "linux")]
 const SETSID: &str = "/usr/bin/setsid";
 
 #[derive(Debug, Error)]
@@ -211,6 +218,7 @@ struct ActiveProxy {
 pub struct HttpWorkbench {
     active: AsyncMutex<Option<ActiveProxy>>,
     worker_source_root: PathBuf,
+    uv_program: Option<PathBuf>,
 }
 
 impl Default for HttpWorkbench {
@@ -222,16 +230,26 @@ impl Default for HttpWorkbench {
 impl HttpWorkbench {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_worker_source(
+        Self::with_worker_source_and_uv(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/mitmproxy"),
+            None,
         )
     }
 
     #[must_use]
     pub fn with_worker_source(worker_source_root: PathBuf) -> Self {
+        Self::with_worker_source_and_uv(worker_source_root, None)
+    }
+
+    #[must_use]
+    pub fn with_worker_source_and_uv(
+        worker_source_root: PathBuf,
+        uv_program: Option<PathBuf>,
+    ) -> Self {
         Self {
             active: AsyncMutex::new(None),
             worker_source_root,
+            uv_program,
         }
     }
 
@@ -277,7 +295,8 @@ impl HttpWorkbench {
         let layout = store.layout();
         let session_runtime = layout.runtime.join(format!("proxy-{}", session_id.0));
         create_private_directory(&session_runtime)?;
-        let worker_root = prepare_proxy_worker(&self.worker_source_root, layout)?;
+        let worker_root =
+            prepare_proxy_worker(&self.worker_source_root, self.uv_program.as_deref(), layout)?;
         let launched =
             launch_proxy_worker(layout, &session_runtime, &worker_root, request, &session_id).await;
         let (worker, listen_port, proxy_pid, events_file, capture_root) = match launched {
@@ -293,13 +312,13 @@ impl HttpWorkbench {
         let started = (|| {
             let ca_path = wait_for_project_ca(&layout.mitm_confdir)?;
             let ca_sha256 = certificate_sha256(&ca_path)?;
-            let nss_database = initialize_project_nss(
+            let browser_trust = initialize_project_browser_trust(
                 &layout.browser_home,
                 &request.project_id,
                 &ca_path,
                 &ca_sha256,
             )?;
-            let chrome_process_group = if request.launch_browser {
+            let chrome_process_group = if request.launch_browser && Path::new(CHROME).is_file() {
                 Some(launch_project_chrome(
                     &layout.browser_home,
                     &layout.browser_profile,
@@ -309,7 +328,7 @@ impl HttpWorkbench {
             } else {
                 None
             };
-            Ok::<_, HttpWorkbenchError>((ca_sha256, nss_database, chrome_process_group))
+            Ok::<_, HttpWorkbenchError>((ca_sha256, browser_trust, chrome_process_group))
         })();
 
         let (ca_sha256, _nss_database, chrome_process_group) = match started {
@@ -471,6 +490,7 @@ impl HttpWorkbench {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        apply_chrome_certificate_policy(&mut command);
         if scope_explicitly_includes_loopback(&scope) {
             command.arg("--proxy-bypass-list=<-loopback>");
         }
@@ -488,6 +508,7 @@ impl HttpWorkbench {
 
 fn prepare_proxy_worker(
     source_root: &Path,
+    bundled_uv: Option<&Path>,
     layout: &WorkspaceLayout,
 ) -> Result<PathBuf, HttpWorkbenchError> {
     let source_root = fs::canonicalize(source_root)?;
@@ -515,7 +536,7 @@ fn prepare_proxy_worker(
         copy_private_tree(&source_root.join("src"), &destination.join("src"))?;
     }
     if !destination.join(".venv/bin/mitmdump").is_file() {
-        let uv = find_uv_program().ok_or(HttpWorkbenchError::WorkerContract)?;
+        let uv = find_uv_program(bundled_uv).ok_or(HttpWorkbenchError::WorkerContract)?;
         let version = Command::new(&uv)
             .arg("--version")
             .env_clear()
@@ -602,7 +623,13 @@ fn copy_private_file(source: &Path, destination: &Path) -> Result<(), HttpWorkbe
     Ok(())
 }
 
-fn find_uv_program() -> Option<PathBuf> {
+fn find_uv_program(bundled_uv: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = bundled_uv
+        && path.is_absolute()
+        && path.is_file()
+    {
+        return Some(path.to_path_buf());
+    }
     if let Some(explicit) = std::env::var_os("FLAGDECK_UV_PROGRAM") {
         let path = PathBuf::from(explicit);
         if path.is_absolute() && path.is_file() {
@@ -772,6 +799,7 @@ fn verify_listener_ownership(pid: i32, port: u16) -> Result<(), HttpWorkbenchErr
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn process_owns_listener(pid: i32, port: u16) -> Result<bool, HttpWorkbenchError> {
     let expected_port = format!("{port:04X}");
     let table = fs::read_to_string("/proc/net/tcp")?;
@@ -805,6 +833,17 @@ fn process_owns_listener(pid: i32, port: u16) -> Result<bool, HttpWorkbenchError
     Ok(false)
 }
 
+#[cfg(target_os = "macos")]
+fn process_owns_listener(pid: i32, port: u16) -> Result<bool, HttpWorkbenchError> {
+    let output = Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-a", "-p", &pid.to_string(), "-iTCP", "-sTCP:LISTEN"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()?;
+    Ok(output.status.success()
+        && String::from_utf8_lossy(&output.stdout).contains(&format!(":{port}")))
+}
+
 fn wait_for_project_ca(confdir: &Path) -> Result<PathBuf, HttpWorkbenchError> {
     let ca = confdir.join("mitmproxy-ca-cert.pem");
     for _ in 0..100 {
@@ -830,7 +869,8 @@ fn certificate_sha256(path: &Path) -> Result<String, HttpWorkbenchError> {
     Ok(format!("{:x}", Sha256::digest(output.stdout)))
 }
 
-fn initialize_project_nss(
+#[cfg(target_os = "linux")]
+fn initialize_project_browser_trust(
     browser_home: &Path,
     project_id: &ProjectId,
     ca_path: &Path,
@@ -896,6 +936,18 @@ fn initialize_project_nss(
     Ok(database)
 }
 
+#[cfg(target_os = "macos")]
+fn initialize_project_browser_trust(
+    browser_home: &Path,
+    _project_id: &ProjectId,
+    _ca_path: &Path,
+    _ca_sha256: &str,
+) -> Result<PathBuf, HttpWorkbenchError> {
+    create_private_directory(browser_home)?;
+    Ok(browser_home.to_path_buf())
+}
+
+#[cfg(target_os = "linux")]
 fn checked_command(
     program: &str,
     arguments: &[&str],
@@ -917,6 +969,7 @@ fn checked_command(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn launch_project_chrome(
     browser_home: &Path,
     browser_profile: &Path,
@@ -955,6 +1008,55 @@ fn launch_project_chrome(
         std::thread::sleep(Duration::from_millis(50));
     }
     Err(HttpWorkbenchError::WorkerContract)
+}
+
+#[cfg(target_os = "macos")]
+fn launch_project_chrome(
+    browser_home: &Path,
+    browser_profile: &Path,
+    proxy_port: u16,
+    include_loopback: bool,
+) -> Result<i32, HttpWorkbenchError> {
+    create_private_directory(browser_home)?;
+    create_private_directory(browser_profile)?;
+    let mut command = Command::new(CHROME);
+    command.process_group(0);
+    command
+        .arg(format!("--user-data-dir={}", browser_profile.display()))
+        .arg(format!("--proxy-server=http://127.0.0.1:{proxy_port}"))
+        .args([
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-networking",
+        ])
+        .env_clear()
+        .env("HOME", browser_home)
+        .env("LANG", "en_US.UTF-8")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    apply_chrome_certificate_policy(&mut command);
+    if include_loopback {
+        command.arg("--proxy-bypass-list=<-loopback>");
+    }
+    let child = command.spawn()?;
+    let process_group =
+        i32::try_from(child.id()).map_err(|_| HttpWorkbenchError::WorkerContract)?;
+    for _ in 0..40 {
+        if killpg(Pid::from_raw(process_group), None::<Signal>).is_ok() {
+            return Ok(process_group);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Err(HttpWorkbenchError::WorkerContract)
+}
+
+#[cfg(target_os = "linux")]
+fn apply_chrome_certificate_policy(_command: &mut Command) {}
+
+#[cfg(target_os = "macos")]
+fn apply_chrome_certificate_policy(command: &mut Command) {
+    command.arg("--ignore-certificate-errors");
 }
 
 fn apply_desktop_environment(command: &mut Command) {
@@ -2773,7 +2875,7 @@ mod tests {
         copy_private_tree(&workspace_source.join("src"), &source.join("src")).unwrap();
         let root = temporary.path().join("workspaces");
         let (store, _) = ProjectStore::create(&root, "provision fixture").unwrap();
-        let installed = prepare_proxy_worker(&source, store.layout()).unwrap();
+        let installed = prepare_proxy_worker(&source, None, store.layout()).unwrap();
         assert!(installed.join(".venv/bin/mitmdump").is_file());
         assert!(installed.join(".venv/bin/flagdeck-mitm-worker").is_file());
         assert_eq!(
