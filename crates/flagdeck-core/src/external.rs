@@ -397,7 +397,36 @@ fn launcher_environment(job_directory: &Path) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use sha2::{Digest, Sha256};
+
     use super::*;
+
+    fn fixture_manifest(
+        launcher: ExternalLauncherId,
+    ) -> (tempfile::TempDir, ExternalLauncherManifest) {
+        let temporary = tempfile::tempdir().unwrap();
+        let cwd = temporary.path().join("launcher");
+        fs::create_dir(&cwd).unwrap();
+        let program = cwd.join("start.sh");
+        let program_bytes = b"#!/bin/sh\nexit 0\n";
+        fs::write(&program, program_bytes).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let required = cwd.join("payload.bin");
+        let required_bytes = b"flagdeck external launcher fixture";
+        fs::write(&required, required_bytes).unwrap();
+        fs::set_permissions(&required, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut manifest = manifest(launcher).unwrap();
+        manifest.program = program.display().to_string();
+        manifest.program_sha256 = format!("{:x}", Sha256::digest(program_bytes));
+        manifest.cwd = cwd.display().to_string();
+        manifest.required_file = vec![RequiredFile {
+            path: required.display().to_string(),
+            sha256: format!("{:x}", Sha256::digest(required_bytes)),
+        }];
+        (temporary, manifest)
+    }
 
     #[test]
     fn registry_declares_l3_capabilities_and_reports_unsafe_files() {
@@ -413,21 +442,20 @@ mod tests {
         assert!(
             health
                 .iter()
-                .find(|item| item.launcher == ExternalLauncherId::Shiro)
-                .is_some_and(|item| !item.healthy)
+                .all(|item| item.healthy == (item.detail == "ready"))
         );
-        assert!(
-            health
-                .iter()
-                .find(|item| item.launcher == ExternalLauncherId::AntSword)
-                .is_some_and(|item| item.healthy)
-        );
+
+        let (_temporary, manifest) = fixture_manifest(ExternalLauncherId::AntSword);
+        fs::set_permissions(&manifest.program, fs::Permissions::from_mode(0o722)).unwrap();
+        assert!(matches!(
+            validate_manifest_integrity(&manifest),
+            Err(ExternalLauncherError::Integrity)
+        ));
     }
 
     #[test]
     fn managed_command_uses_fixed_program_argv_scope_and_resource_budget() {
-        let manifest = manifest(ExternalLauncherId::Behinder).unwrap();
-        let temporary = tempfile::tempdir().unwrap();
+        let (temporary, manifest) = fixture_manifest(ExternalLauncherId::Behinder);
         let command = prepare_command(&manifest, &ScopeId::new(), temporary.path()).unwrap();
         assert_eq!(command.program, manifest.program);
         assert_eq!(command.argv_exec, manifest.argv);

@@ -2481,13 +2481,18 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"R4 proxy body");
         server.join().unwrap();
-        assert_eq!(
-            workbench
+        let mut ingested = 0;
+        for _ in 0..100 {
+            ingested += workbench
                 .ingest_active(&store, &summary.project_id)
                 .await
-                .unwrap(),
-            2
-        );
+                .unwrap();
+            if ingested >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(ingested, 2);
         workbench
             .stop_proxy(Arc::clone(&store), &summary.project_id)
             .await
