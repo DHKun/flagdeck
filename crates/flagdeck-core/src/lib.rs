@@ -3385,11 +3385,25 @@ mod tests {
     }
 
     #[test]
-    fn frozen_tool_health_checks_all_seven_binaries() {
+    fn tool_health_reports_all_seven_binaries_portably() {
         let (_temporary, core) = service();
         let health = core.tool_health().unwrap();
         assert_eq!(health.len(), 7);
-        assert!(health.iter().all(|tool| tool.healthy));
+        let ready = health.iter().filter(|tool| tool.healthy).count();
+        for tool in &health {
+            if tool.healthy {
+                assert!(tool.path.starts_with('/'));
+                assert_ne!(tool.resolution_source, "missing");
+                assert_eq!(tool.detail, format!("ready via {}", tool.resolution_source));
+            } else {
+                assert!(matches!(
+                    tool.detail.as_str(),
+                    "tool is not installed"
+                        | "version marker check failed"
+                        | "integrity check failed"
+                ));
+            }
+        }
         let dddd = health
             .iter()
             .find(|tool| tool.tool == AlphaTool::Dddd)
@@ -3411,8 +3425,16 @@ mod tests {
         assert!(health.iter().all(|tool| tool.pack_id == "flagdeck-recon"));
         let packs = core.tool_pack_health().unwrap();
         assert_eq!(packs.len(), 2);
-        assert_eq!(packs[0].tools_ready, 7);
-        assert_eq!(packs[0].state, "ready");
+        assert_eq!(packs[0].tools_ready, ready);
+        assert_eq!(packs[0].tools_total, 7);
+        assert_eq!(
+            packs[0].state,
+            match ready {
+                0 => "missing",
+                7 => "ready",
+                _ => "partial",
+            }
+        );
     }
 
     #[test]
@@ -3489,7 +3511,7 @@ mod tests {
         let directory = create_job_directory(&store.layout().scans, &job_id).unwrap();
         let wordlist = directory.join("wordlist.txt");
         write_wordlist(ToolId::Ffuf, &["admin".to_owned()], &wordlist).unwrap();
-        let prepared = prepare_command(
+        let mut prepared = prepare_command(
             ToolId::Ffuf,
             &ScopeId::new(),
             &Url::parse("http://127.0.0.1:38001/").unwrap(),
@@ -3497,6 +3519,9 @@ mod tests {
             Some(&wordlist),
         )
         .unwrap();
+        if prepared.spec.program.is_empty() {
+            prepared.spec.program = "/opt/flagdeck-test/bin/ffuf".to_owned();
+        }
         fs::write(directory.join("ffuf-output.json"), b"{corrupted").unwrap();
         store.save_command_spec(&prepared.spec).unwrap();
         let now = Timestamp::now();

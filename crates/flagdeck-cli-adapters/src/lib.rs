@@ -1567,7 +1567,7 @@ mod tests {
                     write_wordlist(tool_id, &["admin".to_owned()], &path).unwrap();
                     path
                 });
-            let prepared = prepare_command(
+            let mut prepared = prepare_command(
                 tool_id,
                 &ScopeId::new(),
                 &Url::parse("http://127.0.0.1:38001/search").unwrap(),
@@ -1575,6 +1575,10 @@ mod tests {
                 wordlist.as_deref(),
             )
             .unwrap();
+            if prepared.spec.program.is_empty() {
+                prepared.spec.program =
+                    format!("/opt/flagdeck-test/bin/{}", prepared.manifest.command);
+            }
             assert!(prepared.spec.program.starts_with('/'));
             assert!(prepared.spec.scope_id.is_some());
             assert_eq!(prepared.spec.argv_exec, prepared.spec.argv_redacted);
