@@ -3438,6 +3438,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a compatible curl binary and managed process supervisor"]
     fn managed_job_logs_support_bounded_incremental_preview() {
         let temporary = tempfile::tempdir().unwrap();
         let core = Arc::new(CoreService::new(temporary.path().join("workspaces")));
@@ -3582,6 +3583,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the R2 Tool Pack and a systemd user manager"]
     fn vertical_alpha_runs_four_real_tools_and_survives_restart() {
         let temporary = tempfile::tempdir().unwrap();
         let ready = temporary.path().join("ready.json");
@@ -3704,6 +3706,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a compatible curl binary and systemd user manager"]
     fn background_job_cancel_cleans_owned_systemd_cgroup() {
         let temporary = tempfile::tempdir().unwrap();
         let ready = temporary.path().join("ready.json");

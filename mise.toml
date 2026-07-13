@@ -142,7 +142,7 @@ run = "cargo test -p flagdeck-cli-adapters --locked"
 
 [tasks.r2-alpha-gate]
 description = "运行 Loopback 四工具纵向闭环与重启恢复门禁"
-run = "cargo test -p flagdeck-core tests::vertical_alpha_runs_four_real_tools_and_survives_restart --locked -- --exact"
+run = "cargo test -p flagdeck-core tests::vertical_alpha_runs_four_real_tools_and_survives_restart --locked -- --ignored --exact"
 
 [tasks.r3-reliability-gate]
 description = "运行 10 轮 R3 取消、Worker、凭据与项目包 Release 量化门禁"
