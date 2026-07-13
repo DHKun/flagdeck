@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "ArtifactState": {
+      "enum": [
+        "staging",
+        "committed",
+        "corrupt",
+        "orphaned"
+      ],
+      "type": "string"
+    },
+    "ExportPolicy": {
+      "enum": [
+        "include",
+        "confirm_sensitive",
+        "exclude_credential",
+        "exclude_runtime"
+      ],
+      "type": "string"
+    },
+    "IntegrityState": {
+      "enum": [
+        "pending",
+        "verified",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "Sensitivity": {
+      "enum": [
+        "normal",
+        "sensitive_evidence",
+        "credential"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "artifact_id": {
+      "type": "string"
+    },
+    "blob_relative_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "export_policy": {
+      "$ref": "#/$defs/ExportPolicy"
+    },
+    "integrity": {
+      "$ref": "#/$defs/IntegrityState"
+    },
+    "logical_name": {
+      "type": "string"
+    },
+    "mime": {
+      "type": "string"
+    },
+    "relative_path": {
+      "type": "string"
+    },
+    "sensitivity": {
+      "$ref": "#/$defs/Sensitivity"
+    },
+    "sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "size": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "source_job_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_message_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/$defs/ArtifactState"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "relative_path",
+    "logical_name",
+    "mime",
+    "sensitivity",
+    "state",
+    "created_at",
+    "integrity",
+    "export_policy"
+  ],
+  "title": "Artifact",
+  "type": "object"
+}

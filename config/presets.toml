@@ -1,0 +1,78 @@
+version = 2
+
+[defaults]
+artifact_preview_bytes = 65536
+project_page_size = 100
+artifact_page_size = 100
+job_page_size = 100
+discovery_page_size = 100
+credential_persistence = "deny"
+
+[alpha]
+maximum_wordlist_terms = 256
+maximum_wordlist_term_bytes = 128
+maximum_structured_output_bytes = 16777216
+maximum_header_output_bytes = 262144
+maximum_inline_response_bytes = 1048576
+scope_dns_change_policy = "deny"
+external_cli_network_boundary = "input-gate-and-audit"
+
+[alpha.curl]
+connect_timeout_seconds = 5
+maximum_time_seconds = 30
+maximum_body_bytes = 8388608
+redirects = "deny"
+
+[alpha.dddd]
+proxy_test = false
+poc = false
+service_bruteforce = false
+tcp_scan_threads = 100
+nmap_threads = 50
+web_threads = 20
+
+[alpha.ffuf]
+threads = 20
+rate_per_second = 50
+timeout_seconds = 10
+maximum_time_seconds = 60
+
+[alpha.arjun]
+declared_threads = 5
+deterministic_delay_seconds = 0.1
+rate_per_second = 20
+passive_sources = false
+redirects = "deny"
+
+[r3.cancellation]
+signal_grace_millis = 2000
+cleanup_deadline_millis = 5000
+ownership_systemd = ["unit", "invocation_id", "cgroup", "main_pid"]
+ownership_pgid = ["pid", "start_ticks", "pgid"]
+
+[r3.adapter_host]
+protocol = "flagdeck.adapter.v1"
+maximum_control_frame_bytes = 1048576
+request_timeout_millis = 5000
+stderr_evidence_bytes = 262144
+core_dump_bytes = 0
+
+[r3.dictionary]
+maximum_ipc_bytes = 1048576
+maximum_indexed_bytes = 16777216
+maximum_terms = 100000
+maximum_term_bytes = 512
+
+[r3.archive]
+maximum_files = 4096
+maximum_total_bytes = 536870912
+maximum_file_bytes = 268435456
+maximum_compression_ratio = 100
+maximum_manifest_bytes = 2097152
+import_inbox = ".imports"
+
+[r3.credentials]
+maximum_payload_bytes = 1024
+source_socket_mode = "0600"
+runtime_directory_mode = "0700"
+peer_policy = "same_uid"

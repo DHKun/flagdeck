@@ -1,0 +1,20 @@
+{
+  "commandline": "/opt/flagdeck-fixtures/bin/ffuf -w tests/fixtures/r2/ffuf-wordlist.txt -u http://127.0.0.1:38001/FUZZ -o /tmp/flagdeck-fixture/ffuf.json -of json -noninteractive -s -t 2 -rate 10 -timeout 3 -maxtime 15 -fc 404",
+  "time": "2026-07-12T15:48:40+08:00",
+  "results": [
+    {"input":{"FFUFHASH":"b00451","FUZZ":"admin"},"position":1,"status":200,"length":14,"words":1,"lines":1,"content-type":"text/plain","redirectlocation":"","scraper":{},"duration":1453447,"resultfile":"","url":"http://127.0.0.1:38001/admin","host":"127.0.0.1:38001"},
+    {"input":{"FFUFHASH":"b00452","FUZZ":"api"},"position":2,"status":200,"length":27,"words":1,"lines":1,"content-type":"application/json","redirectlocation":"","scraper":{},"duration":620506,"resultfile":"","url":"http://127.0.0.1:38001/api","host":"127.0.0.1:38001"},
+    {"input":{"FFUFHASH":"b00453","FUZZ":"redirect"},"position":3,"status":302,"length":8,"words":1,"lines":1,"content-type":"text/plain","redirectlocation":"/admin","scraper":{},"duration":1147109,"resultfile":"","url":"http://127.0.0.1:38001/redirect","host":"127.0.0.1:38001"}
+  ],
+  "config": {
+    "autocalibration": false,
+    "follow_redirects": false,
+    "noninteractive": true,
+    "outputformat": "json",
+    "proxyurl": "",
+    "rate": 10,
+    "threads": 2,
+    "timeout": 3,
+    "url": "http://127.0.0.1:38001/FUZZ"
+  }
+}

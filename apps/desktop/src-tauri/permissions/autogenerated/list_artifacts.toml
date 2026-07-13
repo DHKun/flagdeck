@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-artifacts"
+description = "Enables the list_artifacts command without any pre-configured scope."
+commands.allow = ["list_artifacts"]
+
+[[permission]]
+identifier = "deny-list-artifacts"
+description = "Denies the list_artifacts command without any pre-configured scope."
+commands.deny = ["list_artifacts"]

@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "ExecutionStatus": {
+      "enum": [
+        "queued",
+        "starting",
+        "running",
+        "stopping",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "ImportStatus": {
+      "enum": [
+        "pending",
+        "importing",
+        "imported",
+        "parser_failed",
+        "skipped"
+      ],
+      "type": "string"
+    },
+    "SupervisorBackend": {
+      "enum": [
+        "systemd_user_service",
+        "pgid_fallback"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "cancel_duration_millis": {
+      "default": null,
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cgroup_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cleanup_verified": {
+      "default": false,
+      "type": "boolean"
+    },
+    "command_spec_id": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "execution_status": {
+      "$ref": "#/$defs/ExecutionStatus"
+    },
+    "exit_code": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "exit_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "import_status": {
+      "$ref": "#/$defs/ImportStatus"
+    },
+    "invocation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "job_id": {
+      "type": "string"
+    },
+    "ownership_verified": {
+      "default": false,
+      "type": "boolean"
+    },
+    "parent_job_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pid": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "process_group_id": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "process_start_ticks": {
+      "default": null,
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "residual_processes": {
+      "default": 0,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "retry_count": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "source_job_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "started_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stderr_artifact_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stdout_artifact_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stopped_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "supervisor_backend": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SupervisorBackend"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "systemd_unit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "job_id",
+    "command_spec_id",
+    "execution_status",
+    "import_status",
+    "created_at",
+    "retry_count"
+  ],
+  "title": "Job",
+  "type": "object"
+}

@@ -1,0 +1,6 @@
+HTTP/1.0 200 OK
+Server: FlagDeckFixture/2.0
+Date: Sun, 12 Jul 2026 07:48:16 GMT
+Content-Type: text/html; charset=utf-8
+Content-Length: 198
+X-FlagDeck-Fixture: r2

@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "IntruderAttemptState": {
+      "enum": [
+        "succeeded",
+        "request_failed",
+        "macro_failed",
+        "verification_failed"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "created_at": {
+      "type": "string"
+    },
+    "duration_millis": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "error_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "evidence_artifact_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "intruder_attempt_id": {
+      "type": "string"
+    },
+    "intruder_campaign_id": {
+      "type": "string"
+    },
+    "ordinal": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "payload_preview": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "payload_sha256": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "request_message_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "response_length": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "response_message_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "response_status": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/$defs/IntruderAttemptState"
+    },
+    "state_chain_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verification_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "intruder_attempt_id",
+    "intruder_campaign_id",
+    "project_id",
+    "ordinal",
+    "payload_sha256",
+    "payload_preview",
+    "state",
+    "created_at"
+  ],
+  "title": "IntruderAttempt",
+  "type": "object"
+}

@@ -1,0 +1,197 @@
+{
+  "$defs": {
+    "IntruderAttackMode": {
+      "enum": [
+        "sniper",
+        "battering_ram",
+        "pitchfork",
+        "cluster_bomb"
+      ],
+      "type": "string"
+    },
+    "IntruderCampaignKind": {
+      "enum": [
+        "intruder",
+        "upload"
+      ],
+      "type": "string"
+    },
+    "IntruderCampaignState": {
+      "enum": [
+        "queued",
+        "running",
+        "paused",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "PayloadLocation": {
+      "enum": [
+        "byte_range",
+        "path",
+        "header",
+        "query",
+        "form",
+        "multipart_name",
+        "multipart_filename",
+        "multipart_body",
+        "multipart_content_type"
+      ],
+      "type": "string"
+    },
+    "PayloadPosition": {
+      "properties": {
+        "end": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "location": {
+          "$ref": "#/$defs/PayloadLocation"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occurrence": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "location",
+        "occurrence"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "attack_mode": {
+      "$ref": "#/$defs/IntruderAttackMode"
+    },
+    "campaign_kind": {
+      "$ref": "#/$defs/IntruderCampaignKind"
+    },
+    "completed_attempts": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dictionary_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "error_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "failed_attempts": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "global_rate_per_second": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "intruder_campaign_id": {
+      "type": "string"
+    },
+    "next_ordinal": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "parent_message_id": {
+      "type": "string"
+    },
+    "positions": {
+      "items": {
+        "$ref": "#/$defs/PayloadPosition"
+      },
+      "type": "array"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "scope_id": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/$defs/IntruderCampaignState"
+    },
+    "state_macro_json": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stopped_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target_rate_per_second": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "total_attempts": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "intruder_campaign_id",
+    "project_id",
+    "scope_id",
+    "parent_message_id",
+    "campaign_kind",
+    "attack_mode",
+    "state",
+    "positions",
+    "dictionary_ids",
+    "global_rate_per_second",
+    "target_rate_per_second",
+    "total_attempts",
+    "next_ordinal",
+    "completed_attempts",
+    "failed_attempts",
+    "created_at"
+  ],
+  "title": "IntruderCampaign",
+  "type": "object"
+}

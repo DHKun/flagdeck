@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-fixture"
+description = "Enables the read_fixture command without any pre-configured scope."
+commands.allow = ["read_fixture"]
+
+[[permission]]
+identifier = "deny-read-fixture"
+description = "Denies the read_fixture command without any pre-configured scope."
+commands.deny = ["read_fixture"]

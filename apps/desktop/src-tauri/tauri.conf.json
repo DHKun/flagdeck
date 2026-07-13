@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FlagDeck",
+  "version": "1.0.0",
+  "identifier": "dev.flagdeck.desktop",
+  "build": {
+    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "pnpm vite --host 127.0.0.1 --port 14200",
+    "devUrl": "http://127.0.0.1:14200",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "capabilities": ["main-capability"],
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:14200 ws://127.0.0.1:14200; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "freezePrototype": true,
+      "pattern": {
+        "use": "isolation",
+        "options": {
+          "dir": "../dist-isolation"
+        }
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "externalBin": [
+      "binaries/flagdeck-adapter-metasploit",
+      "binaries/flagdeck-msf-credential-launcher"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "A secure CTF and penetration-testing workbench",
+    "icon": ["icons/icon.png"],
+    "linux": {
+      "rpm": {
+        "postRemoveScript": "scripts/rpm-post-remove.sh"
+      }
+    },
+    "resources": {
+      "../../../LICENSE": "LICENSE",
+      "../../../THIRD_PARTY.md": "THIRD_PARTY.md",
+      "../../../release/evidence/flagdeck-1.0.0.cdx.json": "flagdeck-1.0.0.cdx.json",
+      "../../../config/adapter-policy.toml": "config/adapter-policy.toml",
+      "../../../config/external-launchers.toml": "config/external-launchers.toml",
+      "../../../config/payload-sources.toml": "config/payload-sources.toml",
+      "../../../config/presets.toml": "config/presets.toml",
+      "../../../config/tool-paths.example.toml": "config/tool-paths.example.toml",
+      "../../../config/tools.toml": "config/tools.toml",
+      "../../../docs/TOOL_PACKS.md": "docs/TOOL_PACKS.md",
+      "../../../workers/mitmproxy/pyproject.toml": "workers/mitmproxy/pyproject.toml",
+      "../../../workers/mitmproxy/uv.lock": "workers/mitmproxy/uv.lock",
+      "../../../workers/mitmproxy/flagdeck_worker_addon.py": "workers/mitmproxy/flagdeck_worker_addon.py",
+      "../../../workers/mitmproxy/src/flagdeck_mitm/__init__.py": "workers/mitmproxy/src/flagdeck_mitm/__init__.py",
+      "../../../workers/mitmproxy/src/flagdeck_mitm/adapter.py": "workers/mitmproxy/src/flagdeck_mitm/adapter.py",
+      "../../../workers/mitmproxy/src/flagdeck_mitm/addon.py": "workers/mitmproxy/src/flagdeck_mitm/addon.py",
+      "../../../workers/mitmproxy/src/flagdeck_mitm/capture.py": "workers/mitmproxy/src/flagdeck_mitm/capture.py",
+      "../../../workers/mitmproxy/src/flagdeck_mitm/fixture.py": "workers/mitmproxy/src/flagdeck_mitm/fixture.py",
+      "../../../workers/mitmproxy/src/flagdeck_mitm/gate.py": "workers/mitmproxy/src/flagdeck_mitm/gate.py",
+      "../../../workers/mitmproxy/src/flagdeck_mitm/py.typed": "workers/mitmproxy/src/flagdeck_mitm/py.typed",
+      "../../../adapters/metasploit/manifest.toml": "adapters/metasploit/manifest.toml",
+      "../../../adapters/metasploit/schemas/input.schema.json": "adapters/metasploit/schemas/input.schema.json",
+      "../../../adapters/metasploit/schemas/output.schema.json": "adapters/metasploit/schemas/output.schema.json",
+      "../../../adapters/metasploit/schemas/ui.schema.json": "adapters/metasploit/schemas/ui.schema.json"
+    }
+  }
+}

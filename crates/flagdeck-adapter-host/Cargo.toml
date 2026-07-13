@@ -1,0 +1,22 @@
+[package]
+name = "flagdeck-adapter-host"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+flagdeck-adapter-protocol = { path = "../flagdeck-adapter-protocol" }
+flagdeck-domain = { path = "../flagdeck-domain" }
+nix = { workspace = true, features = ["fs", "process", "signal", "user"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,4 @@
+admin
+api
+redirect
+missing-r2

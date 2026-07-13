@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-intruder-attempts"
+description = "Enables the list_intruder_attempts command without any pre-configured scope."
+commands.allow = ["list_intruder_attempts"]
+
+[[permission]]
+identifier = "deny-list-intruder-attempts"
+description = "Denies the list_intruder_attempts command without any pre-configured scope."
+commands.deny = ["list_intruder_attempts"]

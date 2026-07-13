@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-metasploit-status"
+description = "Enables the metasploit_status command without any pre-configured scope."
+commands.allow = ["metasploit_status"]
+
+[[permission]]
+identifier = "deny-metasploit-status"
+description = "Denies the metasploit_status command without any pre-configured scope."
+commands.deny = ["metasploit_status"]

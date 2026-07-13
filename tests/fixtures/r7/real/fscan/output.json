@@ -1,0 +1,10 @@
+[
+  {
+    "host": "127.0.0.1",
+    "port": 38001,
+    "protocol": "tcp",
+    "service": "http",
+    "url": "http://127.0.0.1:38001/",
+    "info": "FlagDeck R7 Fixture"
+  }
+]

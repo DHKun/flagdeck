@@ -1,0 +1,44 @@
+[project]
+name = "flagdeck-mitm-streaming-spike"
+version = "0.1.0"
+description = "FlagDeck R0 bounded mitmproxy body capture spike"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT OR Apache-2.0" }
+dependencies = [
+  "mitmproxy==12.2.3",
+]
+
+[dependency-groups]
+dev = [
+  "brotli==1.2.0",
+  "cryptography==48.0.1",
+  "mypy==1.19.1",
+  "pytest==9.0.2",
+  "ruff==0.14.13",
+]
+
+[project.scripts]
+flagdeck-mitm-gate = "flagdeck_mitm.gate:main"
+
+[build-system]
+requires = ["hatchling==1.28.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flagdeck_mitm"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["flagdeck_mitm"]

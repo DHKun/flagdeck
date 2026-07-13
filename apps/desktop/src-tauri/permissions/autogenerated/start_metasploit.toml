@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-metasploit"
+description = "Enables the start_metasploit command without any pre-configured scope."
+commands.allow = ["start_metasploit"]
+
+[[permission]]
+identifier = "deny-start-metasploit"
+description = "Denies the start_metasploit command without any pre-configured scope."
+commands.deny = ["start_metasploit"]

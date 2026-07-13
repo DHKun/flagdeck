@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-metasploit-options"
+description = "Enables the get_metasploit_options command without any pre-configured scope."
+commands.allow = ["get_metasploit_options"]
+
+[[permission]]
+identifier = "deny-get-metasploit-options"
+description = "Denies the get_metasploit_options command without any pre-configured scope."
+commands.deny = ["get_metasploit_options"]

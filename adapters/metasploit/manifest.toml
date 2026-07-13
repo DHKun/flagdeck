@@ -1,0 +1,32 @@
+schema_version = 1
+id = "metasploit"
+name = "Metasploit Framework"
+version = "1.0.0"
+adapter_protocol = "flagdeck.adapter.v1"
+kind = "worker"
+transport = "stdio-jsonrpc"
+executable = "flagdeck-adapter-metasploit"
+capabilities = ["exploit_framework", "console", "sessions"]
+risk_level = "L3"
+required_tools = ["/opt/metasploit-framework/embedded/framework/msfrpcd"]
+health_strategy = "rpm-hash-and-core-version-rpc"
+idle_timeout_seconds = 900
+input_schema = "schemas/input.schema.json"
+output_schema = "schemas/output.schema.json"
+ui_schema = "schemas/ui.schema.json"
+
+[security]
+rpc_listener = "dynamic-loopback-only"
+rpc_protocol = "standard-messagepack-tls"
+credential_transport = "systemd-load-credential-from-one-shot-unix-socket"
+credential_fallback = "direct-one-shot-unix-socket"
+credential_persistence = false
+execution_replay = false
+isolation_level = "input-scope-gate-and-audit"
+
+[resources]
+memory_max_bytes = 1073741824
+tasks_max = 256
+cpu_quota_percent = 200
+maximum_control_frame_bytes = 1048576
+maximum_transcript_bytes = 262144

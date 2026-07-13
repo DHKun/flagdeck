@@ -1,0 +1,23 @@
+{
+  "scenario": "r6-intruder-upload",
+  "machine": "Fedora 44 KDE/Wayland x86-64",
+  "frozen_at": "2026-07-13",
+  "attack_mode": "sniper",
+  "total_attempts": 12,
+  "target_rate_per_second": 8,
+  "rate_tolerance_multiplier": 1.6,
+  "observed": {
+    "measured_rate_per_second": 8.043,
+    "elapsed_millis": 1491,
+    "resume_from_ordinal": 5,
+    "ordinals_unique": true,
+    "rss_delta_kib": 1000
+  },
+  "acceptance": {
+    "measured_rate_per_second_max": 12.8,
+    "completed_attempts_exact": 12,
+    "ordinals_unique_required": true,
+    "rss_delta_kib_ceiling": 32768
+  },
+  "notes": "Global/target rate limiting holds measured throughput at or below the target with slack. Cancel mid-campaign pauses at next_ordinal; resume continues without duplicate ordinals. Memory delta is bounded well under the 32 MiB ceiling. Produced by cargo test tests::r6_intruder_performance_gate --ignored with FLAGDECK_R6_EVIDENCE set."
+}

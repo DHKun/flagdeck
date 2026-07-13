@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-12T15:49:37+08:00",
+  "tool": {
+    "id": "dddd",
+    "path": "/opt/flagdeck-fixtures/bin/dddd",
+    "version": "2.0.2",
+    "go_module_revision": "70808a184b11ff584b9d4e7ceb51bd7662f20c9f",
+    "sha256": "4389bdd947596d59a0ccf16d0c9cc9292bb086665189488e1dc1505f36f9fc5d"
+  },
+  "target": "http://127.0.0.1:38001",
+  "exit_code": 0,
+  "proxy_test": "disabled with -pt=false",
+  "loopback_request_paths": ["/", "/favicon.ico"],
+  "output": {
+    "output.jsonl": "d0264b3a49a012b1086a117b8141a3a85adf0dc85f010cb744df228d4d86e3cd"
+  }
+}

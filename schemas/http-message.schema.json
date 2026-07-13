@@ -1,0 +1,286 @@
+{
+  "$defs": {
+    "BodyState": {
+      "enum": [
+        "complete",
+        "streamed_complete",
+        "truncated",
+        "missing",
+        "capture_failed"
+      ],
+      "type": "string"
+    },
+    "ConnectionMetadata": {
+      "properties": {
+        "certificate_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tls": {
+          "type": "boolean"
+        },
+        "tls_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "tls"
+      ],
+      "type": "object"
+    },
+    "HttpSource": {
+      "enum": [
+        "proxy",
+        "repeater",
+        "import",
+        "tool"
+      ],
+      "type": "string"
+    },
+    "MessageDirection": {
+      "enum": [
+        "request",
+        "response"
+      ],
+      "type": "string"
+    },
+    "OrderedValue": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    },
+    "RepresentationKind": {
+      "enum": [
+        "semantic",
+        "raw_http1"
+      ],
+      "type": "string"
+    },
+    "Sensitivity": {
+      "enum": [
+        "normal",
+        "sensitive_evidence",
+        "credential"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "actual_length": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "body_artifact_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "body_inline": {
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "body_state": {
+      "$ref": "#/$defs/BodyState"
+    },
+    "connection": {
+      "$ref": "#/$defs/ConnectionMetadata"
+    },
+    "content_encoding": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "declared_length": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "decoded_preview_state": {
+      "type": "string"
+    },
+    "direction": {
+      "$ref": "#/$defs/MessageDirection"
+    },
+    "duration_millis": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "exchange_id": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "form": {
+      "items": {
+        "$ref": "#/$defs/OrderedValue"
+      },
+      "type": "array"
+    },
+    "headers": {
+      "items": {
+        "$ref": "#/$defs/OrderedValue"
+      },
+      "type": "array"
+    },
+    "host": {
+      "type": "string"
+    },
+    "http_version": {
+      "type": "string"
+    },
+    "message_id": {
+      "type": "string"
+    },
+    "method": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "observed_at": {
+      "type": "string"
+    },
+    "parent_message_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "path": {
+      "type": "string"
+    },
+    "port": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "query": {
+      "items": {
+        "$ref": "#/$defs/OrderedValue"
+      },
+      "type": "array"
+    },
+    "redacted_view": {
+      "type": "string"
+    },
+    "representation_kind": {
+      "$ref": "#/$defs/RepresentationKind"
+    },
+    "scheme": {
+      "type": "string"
+    },
+    "sensitivity": {
+      "$ref": "#/$defs/Sensitivity"
+    },
+    "serializer_version": {
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/HttpSource"
+    },
+    "status_code": {
+      "default": null,
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "trailers": {
+      "items": {
+        "$ref": "#/$defs/OrderedValue"
+      },
+      "type": "array"
+    },
+    "wire_artifact_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "message_id",
+    "project_id",
+    "source",
+    "representation_kind",
+    "scheme",
+    "host",
+    "port",
+    "authority",
+    "path",
+    "http_version",
+    "headers",
+    "trailers",
+    "query",
+    "form",
+    "serializer_version",
+    "body_state",
+    "actual_length",
+    "decoded_preview_state",
+    "direction",
+    "observed_at",
+    "connection",
+    "sensitivity",
+    "redacted_view"
+  ],
+  "title": "HttpMessage",
+  "type": "object"
+}

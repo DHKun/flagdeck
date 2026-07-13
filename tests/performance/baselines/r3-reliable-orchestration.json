@@ -1,0 +1,257 @@
+{
+  "schema": "flagdeck.performance.r3.v1",
+  "generatedAt": "1783946252319",
+  "profile": "release",
+  "iterations": 10,
+  "environment": {
+    "architecture": "x86_64",
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+    "cargoLockSha256": "b3c26c78ad83223e7462b295964a9dbc01814df6a579c7f717e166ee84bbe2f7",
+    "kernel": "7.1.3-200.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "selinux": "Enforcing",
+    "sqlite": "3.53.2",
+    "storageSchema": "6",
+    "systemd": "systemd 259 (259.7-1.fc44)"
+  },
+  "fixtures": {
+    "adapterMessages": {
+      "path": "tests/fixtures/r3/adapter-protocol/messages.json",
+      "sha256": "6d2fcddb73675d72702600562fa84ebc3a9fa0fc1a587931e1ff34df28050fec"
+    },
+    "adapterWorker": {
+      "path": "tests/fixtures/r3/adapter_worker.py",
+      "sha256": "5f192ace4476a4ce75d4093702a6bc232ce2dfd3f669dcfebd5f9c53b65aa41f"
+    },
+    "artifactBytes": 262144,
+    "artifactSha256": "31a1f9dea0169551092d05e8bf4a446228c8c3eb4c9b713c66adcb7fd53c89be",
+    "slowTarget": {
+      "path": "tests/fixtures/r2/target_server.py",
+      "sha256": "376d0cc1a88fa7524688d1db0faf233df734569204f47dd14d285e03183aeb6f"
+    }
+  },
+  "suites": {
+    "adapterCrashRecovery": {
+      "available": true,
+      "distribution": {
+        "runs": 10,
+        "passed": 10,
+        "samplesMillis": [
+          3062.985786,
+          3060.854833,
+          3100.711622,
+          3050.0984249999997,
+          3133.9701529999998,
+          3121.910298,
+          3066.810736,
+          3108.1800780000003,
+          3109.4933770000002,
+          3050.088553
+        ],
+        "minMillis": 3050.088553,
+        "p50Millis": 3066.810736,
+        "p95Millis": 3133.9701529999998,
+        "maxMillis": 3133.9701529999998,
+        "meanMillis": 3086.5103861
+      },
+      "logicalOutputBytes": 0,
+      "resources": {
+        "cpuUserMillis": 5.643,
+        "cpuSystemMillis": 4.924,
+        "childCpuUserMillis": 637.952,
+        "childCpuSystemMillis": 186.262,
+        "blockWrites": 0,
+        "childBlockWrites": 0,
+        "processWriteBytes": 0,
+        "selfPeakRssKib": 74612,
+        "childPeakRssKib": 465004
+      }
+    },
+    "credentialDelivery": {
+      "available": true,
+      "distribution": {
+        "runs": 10,
+        "passed": 10,
+        "samplesMillis": [
+          0.443577,
+          0.41966200000000004,
+          0.271085,
+          0.265035,
+          0.248997,
+          0.442704,
+          0.149334,
+          0.091659,
+          0.093972,
+          0.087116
+        ],
+        "minMillis": 0.087116,
+        "p50Millis": 0.248997,
+        "p95Millis": 0.443577,
+        "maxMillis": 0.443577,
+        "meanMillis": 0.2513141
+      },
+      "logicalOutputBytes": 0,
+      "resources": {
+        "cpuUserMillis": 1.749,
+        "cpuSystemMillis": 1.798,
+        "childCpuUserMillis": 0.0,
+        "childCpuSystemMillis": 0.0,
+        "blockWrites": 0,
+        "childBlockWrites": 0,
+        "processWriteBytes": 0,
+        "selfPeakRssKib": 74612,
+        "childPeakRssKib": 465004
+      }
+    },
+    "pgidCancellation": {
+      "available": true,
+      "distribution": {
+        "runs": 10,
+        "passed": 10,
+        "samplesMillis": [
+          83.939594,
+          40.886939999999996,
+          33.799061,
+          30.302379000000002,
+          72.481782,
+          108.056406,
+          93.00228700000001,
+          66.94413200000001,
+          37.39787,
+          38.549343
+        ],
+        "minMillis": 30.302379000000002,
+        "p50Millis": 40.886939999999996,
+        "p95Millis": 108.056406,
+        "maxMillis": 108.056406,
+        "meanMillis": 60.53597940000001
+      },
+      "logicalOutputBytes": 0,
+      "resources": {
+        "cpuUserMillis": 163.493,
+        "cpuSystemMillis": 507.791,
+        "childCpuUserMillis": 5.328,
+        "childCpuSystemMillis": 31.885,
+        "blockWrites": 0,
+        "childBlockWrites": 0,
+        "processWriteBytes": 0,
+        "selfPeakRssKib": 74612,
+        "childPeakRssKib": 465004
+      }
+    },
+    "projectExport": {
+      "available": true,
+      "distribution": {
+        "runs": 10,
+        "passed": 10,
+        "samplesMillis": [
+          12.480893,
+          5.480394,
+          4.639898,
+          3.790813,
+          4.20492,
+          3.838174,
+          4.815289,
+          3.990317,
+          3.989665,
+          4.178274
+        ],
+        "minMillis": 3.790813,
+        "p50Millis": 4.178274,
+        "p95Millis": 12.480893,
+        "maxMillis": 12.480893,
+        "meanMillis": 5.140863700000001
+      },
+      "logicalOutputBytes": 5346040,
+      "resources": {
+        "cpuUserMillis": 90.202,
+        "cpuSystemMillis": 28.831,
+        "childCpuUserMillis": 0.0,
+        "childCpuSystemMillis": 0.0,
+        "blockWrites": 0,
+        "childBlockWrites": 0,
+        "processWriteBytes": 0,
+        "selfPeakRssKib": 74612,
+        "childPeakRssKib": 465004
+      }
+    },
+    "projectImport": {
+      "available": true,
+      "distribution": {
+        "runs": 10,
+        "passed": 10,
+        "samplesMillis": [
+          3.940832,
+          3.9065519999999996,
+          3.8346169999999997,
+          3.938891,
+          4.063709,
+          3.967294,
+          3.979503,
+          3.9787879999999998,
+          4.480325000000001,
+          3.8824609999999997
+        ],
+        "minMillis": 3.8346169999999997,
+        "p50Millis": 3.940832,
+        "p95Millis": 4.480325000000001,
+        "maxMillis": 4.480325000000001,
+        "meanMillis": 3.9972971999999998
+      },
+      "logicalOutputBytes": 5339640,
+      "resources": {
+        "cpuUserMillis": 30.605,
+        "cpuSystemMillis": 8.687,
+        "childCpuUserMillis": 0.0,
+        "childCpuSystemMillis": 0.0,
+        "blockWrites": 0,
+        "childBlockWrites": 0,
+        "processWriteBytes": 0,
+        "selfPeakRssKib": 74612,
+        "childPeakRssKib": 465004
+      }
+    },
+    "systemdCancellation": {
+      "available": true,
+      "distribution": {
+        "runs": 10,
+        "passed": 10,
+        "samplesMillis": [
+          120.767728,
+          97.820838,
+          101.327526,
+          82.09028,
+          63.964175,
+          104.93946,
+          42.573349,
+          88.160284,
+          29.792355999999998,
+          82.82490800000001
+        ],
+        "minMillis": 29.792355999999998,
+        "p50Millis": 82.82490800000001,
+        "p95Millis": 120.767728,
+        "maxMillis": 120.767728,
+        "meanMillis": 81.42609039999999
+      },
+      "logicalOutputBytes": 0,
+      "resources": {
+        "cpuUserMillis": 27.951,
+        "cpuSystemMillis": 28.947,
+        "childCpuUserMillis": 301.491,
+        "childCpuSystemMillis": 330.385,
+        "blockWrites": 0,
+        "childBlockWrites": 0,
+        "processWriteBytes": 0,
+        "selfPeakRssKib": 74612,
+        "childPeakRssKib": 465004
+      }
+    }
+  },
+  "assertions": {
+    "allSuitesHaveTenPassingRuns": true,
+    "pgidCleanupWithinFiveSeconds": true,
+    "systemdBackendAvailable": true,
+    "systemdCleanupWithinFiveSeconds": true
+  }
+}

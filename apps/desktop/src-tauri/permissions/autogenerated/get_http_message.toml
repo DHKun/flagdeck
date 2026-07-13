@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-http-message"
+description = "Enables the get_http_message command without any pre-configured scope."
+commands.allow = ["get_http_message"]
+
+[[permission]]
+identifier = "deny-get-http-message"
+description = "Denies the get_http_message command without any pre-configured scope."
+commands.deny = ["get_http_message"]

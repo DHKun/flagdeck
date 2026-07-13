@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flagdeck.metasploit.ui/1",
+  "title": "Metasploit",
+  "built_in_page": "metasploit",
+  "sections": ["lifecycle", "modules", "options", "jobs", "console", "sessions", "evidence"],
+  "risk_badges": {
+    "catalog": "L0",
+    "check": "L2",
+    "execute": "L3",
+    "session_command": "L3"
+  },
+  "confirmation_templates": [
+    "EXECUTE <module_type>/<fullname>",
+    "CONSOLE <id>",
+    "SESSION <id>",
+    "TERMINATE ACTIVE SESSIONS"
+  ]
+}

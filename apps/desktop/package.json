@@ -1,0 +1,31 @@
+{
+  "name": "@flagdeck/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:all": "pnpm check && pnpm format:check && pnpm test && pnpm build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "svelte": "5.56.4"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "26.1.1",
+    "prettier": "3.9.5",
+    "prettier-plugin-svelte": "4.1.1",
+    "svelte-check": "4.7.2",
+    "typescript": "6.0.3",
+    "vite": "8.1.4",
+    "vitest": "4.1.10"
+  }
+}

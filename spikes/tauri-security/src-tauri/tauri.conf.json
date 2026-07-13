@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FlagDeck Tauri Security Spike",
+  "version": "0.1.0",
+  "identifier": "dev.flagdeck.spike.security",
+  "build": {
+    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "pnpm vite --host 127.0.0.1 --port 14200",
+    "devUrl": "http://127.0.0.1:14200",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "capabilities": ["main-capability"],
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:14200 ws://127.0.0.1:14200; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "freezePrototype": true,
+      "pattern": {
+        "use": "isolation",
+        "options": {
+          "dir": "../dist-isolation"
+        }
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}

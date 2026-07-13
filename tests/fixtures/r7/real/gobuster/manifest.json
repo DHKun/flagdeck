@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-13T17:40:00+08:00",
+  "tool": {
+    "id": "gobuster",
+    "path": "/opt/flagdeck-fixtures/bin/gobuster",
+    "version": "3.8.2",
+    "sha256": "9057c46aef7e2bb1c775cbde6adb08c3e02afa622ba6e7a2be39c38f4f4e2d14"
+  },
+  "target": "http://127.0.0.1:38001/",
+  "exit_code": 0,
+  "outputs": {
+    "output.txt": "672747153732848c04cea896e67815ca12a437fd72a48b1c1d61528911f5b15f"
+  }
+}

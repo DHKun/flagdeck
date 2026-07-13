@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-execute-metasploit-module"
+description = "Enables the execute_metasploit_module command without any pre-configured scope."
+commands.allow = ["execute_metasploit_module"]
+
+[[permission]]
+identifier = "deny-execute-metasploit-module"
+description = "Denies the execute_metasploit_module command without any pre-configured scope."
+commands.deny = ["execute_metasploit_module"]

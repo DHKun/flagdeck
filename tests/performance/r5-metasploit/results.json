@@ -1,0 +1,40 @@
+{
+  "adapter_bytes": 1192056,
+  "adapter_sha256": "ab71876756d42f89ce217131f067868d99791ad7ee4b7fc098abf8ea6498070d",
+  "credential_transport": "systemd-load-credential-from-one-shot-unix-socket",
+  "framework": "6.4.135",
+  "generated_at": "1783946690120",
+  "launcher_bytes": 612096,
+  "launcher_sha256": "a18e6d8aa7407c6bf576cacace348fe46103d67e158d29e062f3271a573a416b",
+  "msfrpcd_rss_kib": [
+    250732,
+    251468,
+    257612,
+    250612,
+    251424,
+    250680,
+    257332,
+    250824,
+    257800,
+    232912
+  ],
+  "msfrpcd_rss_p95_kib": 257800,
+  "project_id": "a402b410-f45d-4a44-8df3-7666851ba61a",
+  "rpc": "standard-messagepack-tls",
+  "runs": 10,
+  "start_millis": [
+    2971,
+    2858,
+    2970,
+    3060,
+    3116,
+    3064,
+    3172,
+    2982,
+    3206,
+    3169
+  ],
+  "start_p50_millis": 3060,
+  "start_p95_millis": 3206,
+  "status": "PASS"
+}

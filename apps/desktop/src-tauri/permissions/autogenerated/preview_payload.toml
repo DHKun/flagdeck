@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-payload"
+description = "Enables the preview_payload command without any pre-configured scope."
+commands.allow = ["preview_payload"]
+
+[[permission]]
+identifier = "deny-preview-payload"
+description = "Denies the preview_payload command without any pre-configured scope."
+commands.deny = ["preview_payload"]

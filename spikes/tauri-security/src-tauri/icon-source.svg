@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="FlagDeck R0">
+  <rect width="512" height="512" rx="96" fill="#0e171a" />
+  <path d="M142 106v300" fill="none" stroke="#7ed7c4" stroke-linecap="round" stroke-width="36" />
+  <path d="M160 126h218l-52 72 52 72H160z" fill="#5bb8a7" />
+  <rect x="188" y="314" width="196" height="36" rx="18" fill="#e9f3f5" />
+  <rect x="188" y="370" width="142" height="36" rx="18" fill="#e9f3f5" />
+</svg>

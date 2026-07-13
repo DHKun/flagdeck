@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-12T15:49:05+08:00",
+  "tool": {
+    "id": "arjun",
+    "path": "/opt/flagdeck-fixtures/bin/arjun",
+    "version": "2.2.7",
+    "sha256": "203b3eb29e98fba4b7f86de5860e20e68214d1d06b8d0fed1b8a5f340a402c9a",
+    "interpreter": "/opt/flagdeck-fixtures/bin/python",
+    "interpreter_sha256": "7af874aca05879e1823cd820913b42fb8d8b994738a05ec39ce4256d85b03861"
+  },
+  "target": "http://127.0.0.1:38001/search",
+  "exit_code": 0,
+  "passive_sources": "disabled",
+  "output": {
+    "output.json": "04c9ed3884726ecee92b413bc9cf22c4036dd39b96c7b273b8928b08330c3e2d"
+  }
+}

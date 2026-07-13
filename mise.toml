@@ -1,0 +1,232 @@
+[tools]
+rust = "1.96.0"
+node = "22.22.2"
+pnpm = "11.7.0"
+python = "3.12.13"
+uv = "0.11.26"
+java = "temurin-17.0.19+10"
+
+[settings]
+lockfile = true
+
+[tasks.sync-rust]
+description = "严格同步 Rust 主程序依赖"
+run = "cargo fetch --locked"
+
+[tasks.sync-ui]
+description = "严格同步 Svelte/Tauri 前端依赖"
+run = "pnpm install --frozen-lockfile"
+
+[tasks.sync-python]
+description = "严格同步正式 mitmproxy Worker 依赖"
+run = "uv sync --project workers/mitmproxy --locked --python 3.12.13"
+
+[tasks.sync]
+description = "同步 FlagDeck 主程序依赖"
+depends = ["sync-rust", "sync-ui"]
+
+[tasks.sync-all]
+description = "同步主程序与当前 Python Worker 依赖"
+depends = ["sync-rust", "sync-ui", "sync-python"]
+
+[tasks.generate]
+description = "从 Rust 合同重新生成 JSON Schema 与 TypeScript DTO"
+run = "cargo run -p flagdeck-domain --bin export_contracts --locked && cargo run -p flagdeck-core --bin export_dtos --locked"
+
+[tasks.dev]
+description = "启动 FlagDeck 开发桌面壳"
+depends = ["build-msf-sidecars"]
+run = "pnpm --dir apps/desktop tauri dev"
+
+[tasks.lint-rust]
+description = "运行 Rust 格式与严格 Clippy 门禁"
+run = "cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings"
+
+[tasks.test-rust]
+description = "运行 Cargo workspace 测试"
+run = "cargo test --workspace --locked"
+
+[tasks.test-ui]
+description = "运行 Svelte 类型、格式、Vitest 与 bundle 门禁"
+run = "pnpm --dir apps/desktop test:all"
+
+[tasks.test-contract]
+description = "运行 Adapter v1 Rust/Python 共用 fixture 合同"
+run = "python3 -m unittest tests/contract/test_adapter_protocol.py"
+
+[tasks.test-python]
+description = "运行正式 mitmproxy Worker 格式、类型与合同测试"
+run = "uv run --project workers/mitmproxy --locked ruff format --check workers/mitmproxy/src workers/mitmproxy/tests workers/mitmproxy/flagdeck_worker_addon.py && uv run --project workers/mitmproxy --locked ruff check workers/mitmproxy/src workers/mitmproxy/tests workers/mitmproxy/flagdeck_worker_addon.py && uv run --project workers/mitmproxy --locked mypy workers/mitmproxy/src && uv run --project workers/mitmproxy --locked pytest --import-mode=importlib workers/mitmproxy/tests"
+
+[tasks.test]
+description = "运行 FlagDeck 主程序完整门禁"
+depends = ["lint-rust", "test-rust", "test-ui", "test-contract"]
+
+[tasks.test-all]
+description = "运行主程序与当前 Python Worker 完整门禁"
+depends = ["lint-rust", "test-rust", "test-ui", "test-python", "test-contract"]
+
+[tasks.build]
+description = "构建 FlagDeck Release 桌面二进制"
+depends = ["generate", "build-msf-sidecars", "r7-sbom"]
+run = "pnpm --dir apps/desktop tauri build --no-bundle"
+
+[tasks.package]
+description = "构建 FlagDeck Fedora RPM 候选包"
+depends = ["generate", "build-msf-sidecars", "r7-sbom"]
+run = "pnpm --dir apps/desktop tauri build --bundles rpm"
+
+[tasks.build-msf-sidecars]
+description = "构建并暂存 R5 Metasploit Rust Adapter 与凭据 launcher"
+run = "cargo build -p flagdeck-metasploit-adapter --release --bins --locked && install -Dm755 target/release/flagdeck-adapter-metasploit apps/desktop/src-tauri/binaries/flagdeck-adapter-metasploit-x86_64-unknown-linux-gnu && install -Dm755 target/release/flagdeck-msf-credential-launcher apps/desktop/src-tauri/binaries/flagdeck-msf-credential-launcher-x86_64-unknown-linux-gnu"
+
+[tasks.r5-metasploit-static]
+description = "运行 R5 Metasploit Adapter、Scope/L3、所有权与证据合同"
+run = "cargo test -p flagdeck-metasploit-adapter -p flagdeck-core -p flagdeck-storage --locked"
+
+[tasks.r5-metasploit-evidence]
+description = "运行真实动态 Loopback Metasploit RPC 生命周期与泄漏扫描"
+depends = ["build-msf-sidecars"]
+run = "FLAGDECK_R5_ADAPTER=\"${MISE_PROJECT_ROOT}/target/release/flagdeck-adapter-metasploit\" FLAGDECK_R5_LAUNCHER=\"${MISE_PROJECT_ROOT}/target/release/flagdeck-msf-credential-launcher\" FLAGDECK_R5_EVIDENCE=\"${MISE_PROJECT_ROOT}/tests/performance/r5-metasploit/results.json\" cargo test -p flagdeck-core metasploit::tests::real_loopback_ten_run_performance_gate --locked -- --ignored --exact --nocapture"
+
+[tasks.r6-intruder-static]
+description = "运行 R6 Intruder/上传静态与合同门禁（Domain/Storage/Core 单测、Multipart 往返、变异、验证、L3 审计、Tauri 命令集合）"
+run = "cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test -p flagdeck-domain -p flagdeck-storage -p flagdeck-core --locked && pnpm --dir apps/desktop test"
+
+[tasks.r6-loopback-vertical]
+description = "运行 R6 Loopback 状态化上传纵向门禁（CSRF 刷新链、Multipart 变异上传、SafeRetrieval 验证、四模式、范围外拒绝、零范围外连接）"
+run = "cargo test -p flagdeck-core --locked -- tests::loopback_upload_chain_verifies_and_intruder_modes_run tests::upload_execution_verification_requires_exact_confirmation_and_audits"
+
+[tasks.r6-intruder-evidence]
+description = "运行 R6 Intruder 速率、停止恢复与内存证据，写入 tests/performance/r6-intruder-upload/results.json"
+run = "FLAGDECK_R6_EVIDENCE=\"${MISE_PROJECT_ROOT}/tests/performance/r6-intruder-upload/results.json\" cargo test -p flagdeck-core --locked tests::r6_intruder_performance_gate -- --ignored --exact --nocapture"
+
+[tasks.r7-performance-gate]
+description = "运行 R7 冷/热 Core 启动、100000 条 Discovery 分页、RSS 与并发任务量化门禁"
+run = "cargo run -p flagdeck-r7-gate --release --locked -- --output tests/performance/r7-stable/results.json"
+
+[tasks.r7-sbom]
+description = "生成包含 Cargo、pnpm、uv 与外部工具的 CycloneDX 1.6 SBOM"
+run = "python3 scripts/generate_sbom.py --version 1.0.0 --output release/evidence/flagdeck-1.0.0.cdx.json"
+
+[tasks.r7-audits]
+description = "运行 Cargo advisory/license/source/duplicate、pnpm production 与 Python production 审计"
+run = "python3 scripts/run_release_audits.py --tool-root .release-tools --output release/evidence/dependency-audits.json"
+
+[tasks.r7-sign]
+description = "使用隔离 Ed25519 发布密钥签名 RPM 并通过独立 RPM 密钥库验签"
+depends = ["package"]
+run = "python3 scripts/sign_rpm.py --rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --gpg-home release/private-signing/gnupg --public-key release/FlagDeck-1.0.0-signing-key.asc --rpm-db release/evidence/rpmdb --evidence release/evidence/rpm-signature.json"
+
+[tasks.r7-fedora-lifecycle]
+description = "在干净 Fedora 44 容器执行 RPM 安装、升级、回退、再升级与卸载门禁"
+run = "python3 scripts/fedora_lifecycle_gate.py --old-rpm target/release/bundle/rpm/FlagDeck-0.6.0-1.x86_64.rpm --new-rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --public-key release/FlagDeck-1.0.0-signing-key.asc --output release/evidence/fedora-lifecycle.json"
+
+[tasks.r7-finalize]
+description = "验证最终 RPM、二进制、SBOM 与全部 Stable 证据的哈希绑定并生成发布清单"
+run = "python3 scripts/finalize_release.py --output release/evidence/release-manifest.json"
+
+[tasks.gui-release-gate]
+description = "运行 10 次 FlagDeck Release WebKitGTK 安全门禁"
+depends = ["build"]
+run = "node tests/gui/release-gate.mjs"
+
+[tasks.r7-desktop-memory]
+description = "运行 10 次单窗口桌面壳进程树内存门禁并记录 RSS/PSS/私有驻留分布"
+depends = ["build"]
+run = "node tests/gui/desktop-memory-gate.mjs"
+
+[tasks.r2-fixtures]
+description = "验证四个 Alpha CLI manifest、参数构造与版本绑定真实输出 fixture"
+run = "cargo test -p flagdeck-cli-adapters --locked"
+
+[tasks.r2-alpha-gate]
+description = "运行 Loopback 四工具纵向闭环与重启恢复门禁"
+run = "cargo test -p flagdeck-core tests::vertical_alpha_runs_four_real_tools_and_survives_restart --locked -- --exact"
+
+[tasks.r3-reliability-gate]
+description = "运行 10 轮 R3 取消、Worker、凭据与项目包 Release 量化门禁"
+run = "cargo run -p flagdeck-r3-gate --release --locked -- --output tests/performance/baselines/r3-reliable-orchestration.json"
+
+[tasks.r4-http-gate]
+description = "运行 R4 动态代理、CA/NSS、History、Repeater、Diff、SQLMap 与 Raw HTTP 纵向门禁"
+run = "FLAGDECK_TEST_CHROME=1 cargo test -p flagdeck-core http::tests:: --locked -- --nocapture"
+
+[tasks.r4-worker-provision]
+description = "验证 RPM 资源可创建锁定的项目私有 mitmproxy 环境"
+run = "cargo test -p flagdeck-core http::tests::bundled_worker_source_provisions_locked_private_environment --locked -- --ignored --exact --nocapture"
+
+[tasks.r4-mitm-evidence]
+description = "运行正式 Worker 的 50 MiB、413、分块、压缩与背压门禁"
+run = "uv run --project workers/mitmproxy --locked flagdeck-mitm-gate --evidence-dir tests/performance/r4-mitmproxy --large-mib 50 --small-mib 2"
+
+[tasks.r0-sqlite]
+description = "运行 SQLite R0 门禁"
+run = "cargo test -p sqlite-safety --locked"
+
+[tasks.r0-sqlite-evidence]
+description = "重新生成 SQLite R0 测量证据"
+run = "cargo run -p sqlite-safety --release --locked -- evidence spikes/sqlite-safety/evidence/results.json"
+
+[tasks.r0-tauri-install]
+description = "严格同步 Tauri spike 前端依赖"
+run = "pnpm --dir spikes/tauri-security install --frozen-lockfile"
+
+[tasks.r0-tauri-static]
+description = "运行 Tauri 前端、安全配置与 Rust 合同测试"
+run = "pnpm --dir spikes/tauri-security test:all && cargo test -p tauri-security-spike --locked"
+
+[tasks.r0-tauri-build]
+description = "构建无 bundle 的 Tauri Release spike"
+run = "pnpm --dir spikes/tauri-security tauri build --no-bundle"
+
+[tasks.r0-tauri-webdriver]
+description = "运行 Fedora WebKitWebDriver 安全 smoke test"
+run = "node spikes/tauri-security/tests/webdriver.mjs"
+
+[tasks.r0-tauri-release-gate]
+description = "对当前 Tauri Release 二进制运行 10 次 WebDriver 门禁并绑定哈希"
+depends = ["r0-tauri-build"]
+run = "node spikes/tauri-security/tests/release-gate.mjs"
+
+[tasks.r0-mitm-sync]
+description = "严格同步 mitmproxy spike 依赖"
+run = "uv sync --project spikes/mitm-streaming --locked --python 3.12.13"
+
+[tasks.r0-mitm-static]
+description = "运行 mitmproxy 格式、静态分析和合同测试"
+run = "uv run --project spikes/mitm-streaming --locked ruff format --check spikes/mitm-streaming/src spikes/mitm-streaming/tests spikes/mitm-streaming/flagdeck_worker_addon.py && uv run --project spikes/mitm-streaming --locked ruff check spikes/mitm-streaming/src spikes/mitm-streaming/tests spikes/mitm-streaming/flagdeck_worker_addon.py && uv run --project spikes/mitm-streaming --locked mypy --config-file spikes/mitm-streaming/pyproject.toml && uv run --project spikes/mitm-streaming --locked pytest spikes/mitm-streaming/tests"
+
+[tasks.r0-mitm-evidence]
+description = "运行真实 mitmdump 50 MiB HTTP/HTTPS 门禁"
+run = "uv run --project spikes/mitm-streaming --locked flagdeck-mitm-gate --evidence-dir spikes/mitm-streaming/evidence"
+
+[tasks.r0-msf-sync]
+description = "严格同步 Metasploit RPC spike 依赖"
+run = "uv sync --project spikes/metasploit-rpc --locked --python 3.12.13"
+
+[tasks.r0-msf-launcher-build]
+description = "构建固定哈希的 Metasploit 凭据 launcher"
+run = "cargo build -p flagdeck-msf-credential-launcher --release --locked"
+
+[tasks.r0-msf-static]
+description = "运行 Metasploit launcher 和 RPC 客户端静态门禁"
+run = "cargo fmt --all -- --check && cargo clippy -p flagdeck-msf-credential-launcher --all-targets --locked -- -D warnings && cargo test -p flagdeck-msf-credential-launcher --locked && uv run --project spikes/metasploit-rpc --locked ruff format --check spikes/metasploit-rpc/src spikes/metasploit-rpc/tests && uv run --project spikes/metasploit-rpc --locked ruff check spikes/metasploit-rpc/src spikes/metasploit-rpc/tests && uv run --project spikes/metasploit-rpc --locked mypy --config-file spikes/metasploit-rpc/pyproject.toml && uv run --project spikes/metasploit-rpc --locked pytest spikes/metasploit-rpc/tests"
+
+[tasks.r0-msf-evidence]
+description = "运行两条秘密通道与真实 Metasploit RPC 生命周期门禁"
+depends = ["r0-msf-launcher-build"]
+run = "uv run --project spikes/metasploit-rpc --locked flagdeck-msf-gate --evidence-dir spikes/metasploit-rpc/evidence"
+
+[tasks.r0-supervisor-static]
+description = "运行 Supervisor 格式、Clippy 与所有权合同测试"
+run = "cargo fmt --all -- --check && cargo clippy -p supervisor-cgroup --all-targets --locked -- -D warnings && cargo test -p supervisor-cgroup --locked"
+
+[tasks.r0-supervisor-build]
+description = "构建 Supervisor Release spike"
+run = "cargo build -p supervisor-cgroup --release --locked"
+
+[tasks.r0-supervisor-evidence]
+description = "运行 systemd cgroup、PGID、崩溃和日志洪泛门禁"
+depends = ["r0-supervisor-build"]
+run = "target/release/supervisor-cgroup evidence spikes/supervisor-cgroup/evidence"

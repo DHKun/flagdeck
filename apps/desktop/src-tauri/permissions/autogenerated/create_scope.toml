@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-scope"
+description = "Enables the create_scope command without any pre-configured scope."
+commands.allow = ["create_scope"]
+
+[[permission]]
+identifier = "deny-create-scope"
+description = "Denies the create_scope command without any pre-configured scope."
+commands.deny = ["create_scope"]

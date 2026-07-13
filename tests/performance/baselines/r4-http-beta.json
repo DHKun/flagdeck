@@ -1,0 +1,72 @@
+{
+  "schema": "flagdeck.r4-http-beta.v1",
+  "status": "PASS",
+  "generated_at": "2026-07-13T02:05:24.045Z",
+  "versions": {
+    "flagdeck": "0.4.0",
+    "contract": 4,
+    "sqlite_schema": 4,
+    "rust": "1.96.0",
+    "python": "3.12.13",
+    "uv": "0.11.26",
+    "mitmproxy": "12.2.3",
+    "chrome": "150.0.7871.46",
+    "sqlmap": "1.10.7"
+  },
+  "tests": {
+    "rust_workspace_passed": 72,
+    "rust_workspace_failed": 0,
+    "worker_pytest_passed": 16,
+    "worker_pytest_failed": 0,
+    "adapter_python_contract_passed": 3,
+    "frontend_vitest_passed": 7,
+    "worker_provision_passed": 1,
+    "release_webdriver_passed": 10,
+    "release_webdriver_runs": 10
+  },
+  "streaming": {
+    "case_count": 17,
+    "large_body_bytes": 52428800,
+    "queue_bytes": 4194304,
+    "queue_frames": 256,
+    "max_active_writers": 8,
+    "pass_through_timeout_seconds": 0.25,
+    "strict_ack_timeout_seconds": 5.0,
+    "incremental_rss_gate_kib": 32768,
+    "pass_through_incremental_rss_kib": 4364,
+    "evidence_strict_incremental_rss_kib": 948,
+    "duration_seconds": 13.079097518000253,
+    "assertions_passed": 5,
+    "assertions_failed": 0
+  },
+  "history": {
+    "restart_messages": 1000,
+    "page_size": 100,
+    "pages": 10,
+    "restored_messages": 1000
+  },
+  "release": {
+    "binary_bytes": 18387216,
+    "binary_sha256": "e518918344f6c5959534b65bb6506f9b91d22774834380fc7665203bc9d98072",
+    "rpm_bytes": 6046604,
+    "rpm_sha256": "724ed447b9cbbe5a731187783277d69e184fa609a68d49cde0f901b06a30616d",
+    "interactive_millis": {
+      "minimum": 1207,
+      "p50": 1293,
+      "p95": 1515,
+      "maximum": 1515
+    },
+    "main_process_rss_kib": {
+      "p50": 216424,
+      "p95": 218696,
+      "maximum": 218696
+    },
+    "unauthorized_commands_denied_per_run": 32
+  },
+  "evidence": {
+    "worker_summary_sha256": "a0850767a79d9401f7f5ca5296aeb00146d0478c34453a87caebaaea9970db97",
+    "worker_results_sha256": "0a90308697ef06ceedbbd25e5dc930a571ff9602139302ccd788bdebd0f75136",
+    "webdriver_summary_sha256": "cc77c88c2812e98cf2c7d9d26b29f5a32963695eb79c3fe76b87d11e6e542700",
+    "webdriver_last_run_sha256": "164967af49aea66b2c359ce743b0ca258f8977b20cc61e751bb8cd0d5ead20fa"
+  }
+}

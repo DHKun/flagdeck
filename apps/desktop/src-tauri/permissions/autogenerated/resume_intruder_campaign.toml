@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resume-intruder-campaign"
+description = "Enables the resume_intruder_campaign command without any pre-configured scope."
+commands.allow = ["resume_intruder_campaign"]
+
+[[permission]]
+identifier = "deny-resume-intruder-campaign"
+description = "Denies the resume_intruder_campaign command without any pre-configured scope."
+commands.deny = ["resume_intruder_campaign"]

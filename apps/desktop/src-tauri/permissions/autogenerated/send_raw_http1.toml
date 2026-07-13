@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-raw-http1"
+description = "Enables the send_raw_http1 command without any pre-configured scope."
+commands.allow = ["send_raw_http1"]
+
+[[permission]]
+identifier = "deny-send-raw-http1"
+description = "Denies the send_raw_http1 command without any pre-configured scope."
+commands.deny = ["send_raw_http1"]

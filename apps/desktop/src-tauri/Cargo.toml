@@ -1,0 +1,23 @@
+[package]
+name = "flagdeck-desktop"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = ["isolation"] }
+
+[dependencies]
+flagdeck-core = { path = "../../../crates/flagdeck-core" }
+flagdeck-domain = { path = "../../../crates/flagdeck-domain" }
+nix = { workspace = true, features = ["resource", "fs"] }
+serde.workspace = true
+tauri = { version = "2.11.5", default-features = false, features = ["compression", "dynamic-acl", "isolation", "wry"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
+
+[lints]
+workspace = true

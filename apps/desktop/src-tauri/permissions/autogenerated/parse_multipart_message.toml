@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-parse-multipart-message"
+description = "Enables the parse_multipart_message command without any pre-configured scope."
+commands.allow = ["parse_multipart_message"]
+
+[[permission]]
+identifier = "deny-parse-multipart-message"
+description = "Denies the parse_multipart_message command without any pre-configured scope."
+commands.deny = ["parse_multipart_message"]

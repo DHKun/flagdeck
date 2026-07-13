@@ -1,0 +1,26 @@
+version = 2
+protocol = "flagdeck.adapter.v1"
+maximum_control_frame_bytes = 1048576
+third_party_enabled = false
+builtin_signature_required = true
+default_risk_level = "l1"
+
+[supervisor]
+preferred = "systemd_user_service"
+fallback = "pgid_fallback"
+memory_max_bytes = 268435456
+tasks_max = 64
+cpu_quota_percent = 100
+cleanup_deadline_millis = 5000
+
+[host]
+request_timeout_millis = 5000
+stderr_evidence_bytes = 262144
+core_dump_bytes = 0
+environment_inheritance = false
+crash_recovery = "new_worker"
+
+[secrets]
+preferred = "systemd_load_credential_from_unix_socket"
+fallback = "direct_one_shot_unix_socket"
+persist_credentials = false

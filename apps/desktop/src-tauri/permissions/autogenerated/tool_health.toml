@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tool-health"
+description = "Enables the tool_health command without any pre-configured scope."
+commands.allow = ["tool_health"]
+
+[[permission]]
+identifier = "deny-tool-health"
+description = "Denies the tool_health command without any pre-configured scope."
+commands.deny = ["tool_health"]

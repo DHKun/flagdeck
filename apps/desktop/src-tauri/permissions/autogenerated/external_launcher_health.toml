@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-external-launcher-health"
+description = "Enables the external_launcher_health command without any pre-configured scope."
+commands.allow = ["external_launcher_health"]
+
+[[permission]]
+identifier = "deny-external-launcher-health"
+description = "Denies the external_launcher_health command without any pre-configured scope."
+commands.deny = ["external_launcher_health"]

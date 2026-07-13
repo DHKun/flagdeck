@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-12T15:48:40+08:00",
+  "tool": {
+    "id": "ffuf",
+    "path": "/opt/flagdeck-fixtures/bin/ffuf",
+    "version": "2.1.0-dev",
+    "module_version": "github.com/ffuf/ffuf/v2@v2.1.0",
+    "sha256": "e6899a96f9fe44bdcb380c50841de6ba3a024e71a668c52540ff1fef76013433"
+  },
+  "target": "http://127.0.0.1:38001/FUZZ",
+  "exit_code": 0,
+  "normalization": ["full result records retained", "config reduced to parser-relevant execution fields"],
+  "output": {
+    "output.json": "9c49d783258aa3b89dee9799012d10403b56f189896f4a62b89d0a32aafb47d3"
+  }
+}

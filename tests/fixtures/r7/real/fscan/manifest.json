@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-13T17:40:00+08:00",
+  "tool": {
+    "id": "fscan",
+    "path": "/opt/flagdeck-fixtures/bin/fscan",
+    "version": "2.1.3",
+    "sha256": "f8b814c7a3ef39396ccfdd93f7d38907bf9c94a13256d11608df5fa3319a10fb"
+  },
+  "target": "http://127.0.0.1:38001/",
+  "exit_code": 0,
+  "safety_flags": ["-np", "-nopoc", "-nobr", "-noredis"],
+  "outputs": {
+    "output.json": "9b3ebb4e486bad6e1061b458884319905641ee874260ee54a7e3a7e13c80769c"
+  }
+}

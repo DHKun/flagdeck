@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-repeat-http"
+description = "Enables the repeat_http command without any pre-configured scope."
+commands.allow = ["repeat_http"]
+
+[[permission]]
+identifier = "deny-repeat-http"
+description = "Denies the repeat_http command without any pre-configured scope."
+commands.deny = ["repeat_http"]

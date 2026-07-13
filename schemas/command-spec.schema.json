@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "ResourceLimits": {
+      "properties": {
+        "core_dump_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cpu_quota_percent": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memory_max_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tasks_max": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "memory_max_bytes",
+        "tasks_max",
+        "cpu_quota_percent",
+        "core_dump_bytes"
+      ],
+      "type": "object"
+    },
+    "RiskLevel": {
+      "enum": [
+        "l0",
+        "l1",
+        "l2",
+        "l3"
+      ],
+      "type": "string"
+    },
+    "SecretInputLifecycle": {
+      "properties": {
+        "destroy_after_open": {
+          "type": "boolean"
+        },
+        "identifier": {
+          "type": "string"
+        },
+        "lifetime_millis": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "transport": {
+          "$ref": "#/$defs/SecretTransport"
+        }
+      },
+      "required": [
+        "identifier",
+        "transport",
+        "destroy_after_open"
+      ],
+      "type": "object"
+    },
+    "SecretTransport": {
+      "enum": [
+        "none",
+        "stdin",
+        "inherited_fd",
+        "protected_file",
+        "environment",
+        "argv_exception"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "argv_redacted": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "command_spec_id": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "env_redacted": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "environment_allowlist": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "expected_outputs": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "network_isolation": {
+      "type": "string"
+    },
+    "program": {
+      "type": "string"
+    },
+    "resource_limits": {
+      "$ref": "#/$defs/ResourceLimits"
+    },
+    "risk_level": {
+      "$ref": "#/$defs/RiskLevel"
+    },
+    "sandbox_profile": {
+      "type": "string"
+    },
+    "scope_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "secret_inputs": {
+      "items": {
+        "$ref": "#/$defs/SecretInputLifecycle"
+      },
+      "type": "array"
+    },
+    "secret_transport": {
+      "$ref": "#/$defs/SecretTransport"
+    },
+    "stop_grace_millis": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "timeout_millis": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tool_id": {
+      "type": "string"
+    },
+    "tool_sha256": {
+      "type": "string"
+    },
+    "tool_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "command_spec_id",
+    "tool_id",
+    "tool_version",
+    "tool_sha256",
+    "program",
+    "argv_redacted",
+    "env_redacted",
+    "secret_transport",
+    "secret_inputs",
+    "cwd",
+    "environment_allowlist",
+    "timeout_millis",
+    "stop_grace_millis",
+    "expected_outputs",
+    "risk_level",
+    "sandbox_profile",
+    "resource_limits",
+    "network_isolation"
+  ],
+  "title": "CommandSpec",
+  "type": "object"
+}

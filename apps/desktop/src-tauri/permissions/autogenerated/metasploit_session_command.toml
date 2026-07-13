@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-metasploit-session-command"
+description = "Enables the metasploit_session_command command without any pre-configured scope."
+commands.allow = ["metasploit_session_command"]
+
+[[permission]]
+identifier = "deny-metasploit-session-command"
+description = "Denies the metasploit_session_command command without any pre-configured scope."
+commands.deny = ["metasploit_session_command"]

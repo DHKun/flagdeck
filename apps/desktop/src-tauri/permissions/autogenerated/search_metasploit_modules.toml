@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-search-metasploit-modules"
+description = "Enables the search_metasploit_modules command without any pre-configured scope."
+commands.allow = ["search_metasploit_modules"]
+
+[[permission]]
+identifier = "deny-search-metasploit-modules"
+description = "Denies the search_metasploit_modules command without any pre-configured scope."
+commands.deny = ["search_metasploit_modules"]

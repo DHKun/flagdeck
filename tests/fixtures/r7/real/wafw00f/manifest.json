@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-13T17:40:00+08:00",
+  "tool": {
+    "id": "wafw00f",
+    "path": "/opt/flagdeck-fixtures/bin/wafw00f",
+    "version": "2.4.2",
+    "sha256": "e651b5e63ff752a01fb1bd894fd83263dca4945e565dcb08d4f6f45271411188",
+    "interpreter": "/opt/flagdeck-fixtures/bin/python",
+    "interpreter_sha256": "7af874aca05879e1823cd820913b42fb8d8b994738a05ec39ce4256d85b03861"
+  },
+  "target": "http://127.0.0.1:38001/",
+  "exit_code": 0,
+  "redirects": "disabled",
+  "outputs": {
+    "output.json": "43668861a32c6eae4ec952ca6ede94f60728224bcae6aaa47e6208ec67e31b92"
+  }
+}

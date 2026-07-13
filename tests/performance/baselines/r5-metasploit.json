@@ -1,0 +1,35 @@
+{
+  "schema": "flagdeck.performance.r5-metasploit/1",
+  "status": "PASS",
+  "environment": {
+    "os": "Fedora Linux 44",
+    "architecture": "x86_64",
+    "framework": "Metasploit Framework 6.4.135",
+    "rpc": "standard MessagePack over TLS",
+    "supervisor": "systemd user service",
+    "credential_transport": "LoadCredential from one-shot AF_UNIX socket"
+  },
+  "runs": 10,
+  "start_millis": {
+    "samples": [2907, 2942, 2832, 2858, 2939, 2957, 2940, 2991, 2964, 3031],
+    "p50": 2940,
+    "p95": 3031,
+    "regression_limit_p95": 3334
+  },
+  "msfrpcd_rss_kib": {
+    "samples": [257272, 250996, 258808, 251820, 250592, 257776, 257476, 258208, 258572, 250004],
+    "p95": 258808,
+    "systemd_memory_max_kib": 1048576,
+    "regression_limit_p95": 284689
+  },
+  "sidecars": {
+    "adapter_bytes": 1188952,
+    "adapter_sha256": "6df6526f7a78c5c333c216f81480b98c7b082235255a4d9176f9b02b9280c95d",
+    "launcher_bytes": 612088,
+    "launcher_sha256": "fda7a58f7f80f53a5f534ea8aafd3d333448b4c08e2539887b89b0576b5f89e5"
+  },
+  "source_evidence": {
+    "path": "tests/performance/r5-metasploit/results.json",
+    "sha256": "77c3580f40c23522fa7a3d1a4df0fd61f237be8d313d6a5db9773388f9719545"
+  }
+}

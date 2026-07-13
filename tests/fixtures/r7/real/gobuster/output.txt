@@ -1,0 +1,3 @@
+/admin              (Status: 200) [Size: 14]
+/api                (Status: 200) [Size: 27]
+/redirect           (Status: 302) [Size: 8] [--> /admin]

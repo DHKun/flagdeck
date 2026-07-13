@@ -1,0 +1,40 @@
+{
+  "protocol": "flagdeck.adapter.v1",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "fixture-request-1",
+    "method": "health",
+    "metadata": {
+      "core_job_id": "core-job-fixture",
+      "adapter_job_id": null,
+      "idempotency_key": "fixture-idempotency-1",
+      "deadline_unix_millis": "1783857600000"
+    },
+    "params": null
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "fixture-request-1",
+    "result": { "healthy": true },
+    "error": null
+  },
+  "notification": {
+    "jsonrpc": "2.0",
+    "method": "progress",
+    "sequence": 1,
+    "params": { "completed": 1, "total": 2 }
+  },
+  "invalid_unknown_request": {
+    "jsonrpc": "2.0",
+    "id": "fixture-request-2",
+    "method": "health",
+    "metadata": {
+      "core_job_id": "core-job-fixture",
+      "adapter_job_id": null,
+      "idempotency_key": "fixture-idempotency-2",
+      "deadline_unix_millis": "1783857600000"
+    },
+    "params": null,
+    "unexpected": true
+  }
+}

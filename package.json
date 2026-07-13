@@ -1,0 +1,12 @@
+{
+  "name": "flagdeck",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "pnpm --dir apps/desktop build",
+    "check": "pnpm --dir apps/desktop check",
+    "format:check": "pnpm --dir apps/desktop format:check",
+    "test": "pnpm --dir apps/desktop test"
+  }
+}

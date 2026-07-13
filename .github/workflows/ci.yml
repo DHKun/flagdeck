@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Sync dependencies
+        run: mise run sync
+
+      - name: Prepare generated release resources
+        run: |
+          mise run build-msf-sidecars
+          mise run r7-sbom
+
+      - name: Run checks
+        run: mise run test

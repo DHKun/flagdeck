@@ -1,0 +1,61 @@
+{
+  "assertions": {
+    "all_cases_recorded": true,
+    "all_proxy_listeners_loopback": true,
+    "large_fixture_is_50_mib": true,
+    "required_matrix_complete": true,
+    "worker_incremental_rss_within_32_mib": true
+  },
+  "case_count": 17,
+  "gate_duration_seconds": 14.860997409000447,
+  "proxies": [
+    {
+      "cold_baseline_rss_kib": 72560,
+      "incremental_rss_kib": 5456,
+      "listeners": [
+        {
+          "host": "127.0.0.1",
+          "inode": "349732",
+          "port": 44523
+        }
+      ],
+      "name": "pass-normal",
+      "peak_rss_kib": 78328,
+      "pid": 73782,
+      "port": 44523,
+      "settings": {
+        "ack_timeout_seconds": 5.0,
+        "enqueue_timeout_seconds": 0.25,
+        "mode": "pass-through",
+        "queue_bytes": 4194304,
+        "queue_frames": 256
+      },
+      "steady_baseline_rss_kib": 72872
+    },
+    {
+      "cold_baseline_rss_kib": 72632,
+      "incremental_rss_kib": 916,
+      "listeners": [
+        {
+          "host": "127.0.0.1",
+          "inode": "325559",
+          "port": 45245
+        }
+      ],
+      "name": "strict-normal",
+      "peak_rss_kib": 73732,
+      "pid": 73816,
+      "port": 45245,
+      "settings": {
+        "ack_timeout_seconds": 5.0,
+        "enqueue_timeout_seconds": 0.25,
+        "mode": "evidence-strict",
+        "queue_bytes": 4194304,
+        "queue_frames": 256
+      },
+      "steady_baseline_rss_kib": 72816
+    }
+  ],
+  "schema": "flagdeck.mitm-streaming-r0.v1",
+  "status": "PASS"
+}

@@ -1,0 +1,14 @@
+{
+  "attack_mode": "sniper",
+  "completed_attempts": 12,
+  "elapsed_millis": 1499,
+  "measured_rate_per_second": 8.005,
+  "ordinals_unique": true,
+  "resume_from_ordinal": 5,
+  "rss_after_kib": 17720,
+  "rss_before_kib": 16796,
+  "rss_delta_kib": 924,
+  "scenario": "r6-intruder-upload",
+  "target_rate_per_second": 8,
+  "total_attempts": 12
+}

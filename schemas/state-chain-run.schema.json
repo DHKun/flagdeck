@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "StateChainStepEvidence": {
+      "properties": {
+        "extracted_variables": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "request_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "response_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "outcome",
+        "extracted_variables"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "created_at": {
+      "type": "string"
+    },
+    "intruder_attempt_id": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "state_chain_run_id": {
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/StateChainStepEvidence"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "state_chain_run_id",
+    "project_id",
+    "intruder_attempt_id",
+    "steps",
+    "created_at"
+  ],
+  "title": "StateChainRun",
+  "type": "object"
+}

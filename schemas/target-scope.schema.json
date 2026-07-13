@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "DnsResolutionSnapshot": {
+      "properties": {
+        "addresses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "host": {
+          "type": "string"
+        },
+        "peer_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rebinding_action": {
+          "type": "string"
+        },
+        "resolved_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "addresses",
+        "resolved_at",
+        "rebinding_action"
+      ],
+      "type": "object"
+    },
+    "NetworkClass": {
+      "enum": [
+        "loopback",
+        "private",
+        "internet",
+        "mixed"
+      ],
+      "type": "string"
+    },
+    "PortRange": {
+      "properties": {
+        "end": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "RedirectPolicy": {
+      "enum": [
+        "deny",
+        "same_origin",
+        "in_scope"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "cidrs": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dns_change_policy": {
+      "type": "string"
+    },
+    "dns_snapshots": {
+      "items": {
+        "$ref": "#/$defs/DnsResolutionSnapshot"
+      },
+      "type": "array"
+    },
+    "exact_hosts": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "network_class": {
+      "$ref": "#/$defs/NetworkClass"
+    },
+    "ports": {
+      "items": {
+        "$ref": "#/$defs/PortRange"
+      },
+      "type": "array"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "redirect_policy": {
+      "$ref": "#/$defs/RedirectPolicy"
+    },
+    "schemes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "scope_id": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "wildcard_subdomains": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "scope_id",
+    "project_id",
+    "schemes",
+    "exact_hosts",
+    "wildcard_subdomains",
+    "cidrs",
+    "ports",
+    "redirect_policy",
+    "dns_change_policy",
+    "dns_snapshots",
+    "network_class",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "TargetScope",
+  "type": "object"
+}

@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "DiscoveryKind": {
+      "enum": [
+        "url",
+        "path",
+        "parameter",
+        "service",
+        "fingerprint",
+        "host"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "canonical_key": {
+      "type": "string"
+    },
+    "canonical_value": {
+      "type": "string"
+    },
+    "discovery_id": {
+      "type": "string"
+    },
+    "first_seen_at": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/DiscoveryKind"
+    },
+    "last_seen_at": {
+      "type": "string"
+    },
+    "manual_labels": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "raw_value": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "discovery_id",
+    "project_id",
+    "kind",
+    "raw_value",
+    "canonical_value",
+    "canonical_key",
+    "first_seen_at",
+    "last_seen_at",
+    "status",
+    "manual_labels"
+  ],
+  "title": "Discovery",
+  "type": "object"
+}

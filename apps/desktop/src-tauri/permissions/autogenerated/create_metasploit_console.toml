@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-metasploit-console"
+description = "Enables the create_metasploit_console command without any pre-configured scope."
+commands.allow = ["create_metasploit_console"]
+
+[[permission]]
+identifier = "deny-create-metasploit-console"
+description = "Denies the create_metasploit_console command without any pre-configured scope."
+commands.deny = ["create_metasploit_console"]

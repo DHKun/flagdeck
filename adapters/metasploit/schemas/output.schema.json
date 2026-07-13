@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flagdeck.metasploit.output/1",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "state": { "enum": ["ready", "stopped", "failed"] },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "certificate_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "managed_ids": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": { "type": "string", "maxLength": 128 }
+    }
+  }
+}

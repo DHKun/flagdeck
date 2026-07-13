@@ -1,0 +1,158 @@
+schema_version = 2
+
+[pack]
+id = "flagdeck-gui-compat"
+name = "FlagDeck GUI Compatibility Pack"
+version = "1.0.0"
+platform = "linux-x86_64"
+description = "Compatibility launch entries for tools that require their own desktop or specialized client"
+
+[[launcher]]
+id = "shiro"
+name = "ShiroExploit"
+version = "2.51"
+pack_id = "flagdeck-gui-compat"
+category = "java_security"
+summary = "Shiro 专用桌面客户端"
+integration_mode = "gui_compat"
+distribution = "bundled_or_override"
+license = "Upstream distribution terms"
+homepage = "https://github.com/feihong-cs/ShiroExploit-Deprecated"
+program = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/runtime/java/bin/java"
+program_sha256 = "9276cb8ab3ca31f7185ae733ac4c599f0be64f97dffabbf7e121b1a233f00b08"
+cwd = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/shiro"
+argv = ["--add-opens", "java.base/java.lang=ALL-UNNAMED", "--add-opens", "java.base/java.util=ALL-UNNAMED", "-jar", "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/shiro/ShiroExploit.jar"]
+adapter_type = "external-launcher"
+capability = "shiro_client"
+permissions = ["network:target_scope", "desktop:gui", "project_artifacts:audit-only"]
+risk_level = "l3"
+network_policy = "target-scope-input-gate-and-audit"
+memory_max_bytes = 1073741824
+tasks_max = 256
+cpu_quota_percent = 200
+timeout_millis = 86400000
+known_state_scope = "tool-global"
+
+[[launcher.required_file]]
+path = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/shiro/ShiroExploit.jar"
+sha256 = "759f37d8d095f2d34f940578dfa079e34beb1520817b1b10b442a40348178969"
+
+[[launcher]]
+id = "ysoserial"
+name = "ysoserial"
+version = "ShiroExploit-bundled"
+pack_id = "flagdeck-gui-compat"
+category = "payload_generation"
+summary = "Java Payload 专用进程入口"
+integration_mode = "special_client"
+distribution = "bundled_or_override"
+license = "Upstream distribution terms"
+homepage = "https://github.com/frohoff/ysoserial"
+program = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/runtime/java/bin/java"
+program_sha256 = "9276cb8ab3ca31f7185ae733ac4c599f0be64f97dffabbf7e121b1a233f00b08"
+cwd = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/shiro"
+argv = ["--add-opens", "java.base/sun.reflect.annotation=ALL-UNNAMED", "-jar", "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/shiro/ysoserial.jar"]
+adapter_type = "external-launcher"
+capability = "java_payload_generator"
+permissions = ["network:target_scope", "project_artifacts:audit-only"]
+risk_level = "l3"
+network_policy = "target-scope-input-gate-and-audit"
+memory_max_bytes = 1073741824
+tasks_max = 128
+cpu_quota_percent = 200
+timeout_millis = 300000
+known_state_scope = "process-local"
+
+[[launcher.required_file]]
+path = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/shiro/ysoserial.jar"
+sha256 = "e70a56cc00dc5ebab31174cf9749b50f8b8e8845f6f696418c7850a47ea2438f"
+
+[[launcher]]
+id = "antsword"
+name = "AntSword"
+version = "4.0.3-loader"
+pack_id = "flagdeck-gui-compat"
+category = "webshell_client"
+summary = "AntSword 独立桌面客户端"
+integration_mode = "gui_compat"
+distribution = "bundled_or_override"
+license = "MIT"
+homepage = "https://github.com/AntSwordProject/antSword"
+program = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/antsword/start-antsword.sh"
+program_sha256 = "494c98775de99641de06253afa7d1f72ff3b08fa70576692e7a70363c2b581fe"
+cwd = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/antsword"
+argv = []
+adapter_type = "external-launcher"
+capability = "webshell_client"
+permissions = ["network:target_scope", "desktop:gui", "tool_state:global", "project_artifacts:audit-only"]
+risk_level = "l3"
+network_policy = "target-scope-input-gate-and-audit"
+memory_max_bytes = 2147483648
+tasks_max = 256
+cpu_quota_percent = 200
+timeout_millis = 86400000
+known_state_scope = "tool-global-project-isolation-unknown"
+
+[[launcher.required_file]]
+path = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/antsword/loader/AntSword-Loader-v4.0.3-linux-x64/AntSword"
+sha256 = "e4870df2482d9907efbddb8fb6a09f8777e335e577263891d902bbbcce1428f6"
+
+[[launcher]]
+id = "behinder"
+name = "Behinder"
+version = "local-bundle"
+pack_id = "flagdeck-gui-compat"
+category = "webshell_client"
+summary = "Behinder 独立桌面客户端"
+integration_mode = "gui_compat"
+distribution = "bundled_or_override"
+license = "Upstream distribution terms"
+homepage = "https://github.com/rebeyond/Behinder"
+program = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/behinder/app/start-behinder.sh"
+program_sha256 = "a415bfc74244512c906ac30315ed2a59b93a49a787900d4d5b869dbb3f0fb608"
+cwd = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/behinder/app"
+argv = []
+adapter_type = "external-launcher"
+capability = "webshell_client"
+permissions = ["network:target_scope", "desktop:gui", "tool_state:global", "project_artifacts:audit-only"]
+risk_level = "l3"
+network_policy = "target-scope-input-gate-and-audit"
+memory_max_bytes = 1073741824
+tasks_max = 256
+cpu_quota_percent = 200
+timeout_millis = 86400000
+known_state_scope = "tool-global-project-isolation-unknown"
+
+[[launcher.required_file]]
+path = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/behinder/app/Behinder.jar"
+sha256 = "00d703f4539aa673e5c2ba571e2f0b98d56806ff0c30da7a8e0a6dd254fdc929"
+
+[[launcher]]
+id = "godzilla"
+name = "Godzilla"
+version = "local-bundle"
+pack_id = "flagdeck-gui-compat"
+category = "webshell_client"
+summary = "Godzilla 独立桌面客户端"
+integration_mode = "gui_compat"
+distribution = "bundled_or_override"
+license = "BSD-3-Clause"
+homepage = "https://github.com/BeichenDream/Godzilla"
+program = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/godzilla/start-godzilla.sh"
+program_sha256 = "37bd0504279ed45a11bedeb1ac3d23a9535e1b778db2b025c896f89c022ecbe9"
+cwd = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/godzilla"
+argv = []
+adapter_type = "external-launcher"
+capability = "webshell_client"
+permissions = ["network:target_scope", "desktop:gui", "tool_state:global", "project_artifacts:audit-only"]
+risk_level = "l3"
+network_policy = "target-scope-input-gate-and-audit"
+memory_max_bytes = 1073741824
+tasks_max = 256
+cpu_quota_percent = 200
+timeout_millis = 86400000
+known_state_scope = "tool-global-project-isolation-unknown"
+
+[[launcher.required_file]]
+path = "/usr/lib/FlagDeck/tool-packs/flagdeck-gui-compat/1.0.0/godzilla/godzilla.jar"
+sha256 = "62b7eff31d339fd04e6d39aba47b5f37b1b6feb27f85c3c71e4d2d600e8142c6"

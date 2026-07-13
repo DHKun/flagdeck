@@ -1,0 +1,13 @@
+schema_version = 1
+
+# This file is optional. FlagDeck discovers Tool Pack and PATH entries first.
+# Copy it to $XDG_CONFIG_HOME/flagdeck/tool-paths.toml only for tools stored in
+# custom locations. Every override requires the exact executable SHA-256.
+
+[tool.dddd]
+path = "/opt/security-tools/dddd/dddd"
+sha256 = "replace-with-64-character-sha256"
+
+[tool.fscan]
+path = "/opt/security-tools/fscan/fscan"
+sha256 = "replace-with-64-character-sha256"

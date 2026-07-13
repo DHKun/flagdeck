@@ -1,0 +1,62 @@
+:root {
+  color: #e9f3f5;
+  background: #0e171a;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+.eyebrow {
+  color: #7ed7c4;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.commands {
+  display: grid;
+  grid-template-columns: max-content minmax(220px, 1fr);
+  gap: 12px;
+  margin: 28px 0;
+}
+
+button {
+  border: 1px solid #5bb8a7;
+  border-radius: 6px;
+  color: #e9f3f5;
+  background: #173238;
+  padding: 8px 12px;
+}
+
+output,
+pre,
+code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.fixture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.fixture {
+  min-width: 0;
+  border: 1px solid #29464c;
+  border-radius: 8px;
+  background: #122126;
+  padding: 16px;
+}
+
+.fixture pre {
+  max-height: 180px;
+  overflow: auto;
+}

@@ -1,0 +1,22 @@
+schema_version = 1
+maximum_depth = 12
+maximum_entries = 50000
+maximum_preview_bytes = 65536
+
+[[source]]
+id = "local-wordlists"
+name = "Local Wordlists"
+root = "/usr/share/flagdeck/payloads/wordlists"
+labels = ["wordlist", "local"]
+variables = ["TARGET", "CALLBACK"]
+contexts = ["discovery", "intruder", "request-input"]
+risk_level = "l2"
+
+[[source]]
+id = "payloads-all-the-things"
+name = "PayloadsAllTheThings"
+root = "/usr/share/flagdeck/payloads/payloads-all-the-things"
+labels = ["payload", "reference"]
+variables = ["TARGET", "CALLBACK"]
+contexts = ["intruder", "manual-review", "request-input"]
+risk_level = "l2"

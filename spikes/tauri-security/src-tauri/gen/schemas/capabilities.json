@@ -1,0 +1,1 @@
+{"main-capability":{"identifier":"main-capability","description":"Only the trusted built-in main window can call the two R0 test commands.","local":true,"windows":["main"],"webviews":["main"],"permissions":["allow-ping","allow-read-fixture"],"platforms":["linux"]}}

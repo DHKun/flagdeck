@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-12T15:48:16+08:00",
+  "tool": {
+    "id": "curl",
+    "path": "/usr/bin/curl",
+    "version": "8.18.0",
+    "sha256": "8b275ad9e2229d7929f0355835f0a95f2be0f172aa226e6b5850d836043ec5a4"
+  },
+  "target": "http://127.0.0.1:38001/",
+  "exit_code": 0,
+  "normalization": ["response-header line endings converted to LF"],
+  "outputs": {
+    "meta.json": "a4b6e8eec5245d2c3deda94377049658f167b82e5bfea7b021aaa82074a39880",
+    "headers.txt": "913aec7638d7000a3ef2ccbd05f532a57f4546e8a85404a1b3ee27167ee43b16",
+    "body.html": "22d598cc63381c7b182e0cadb293805933cdc6595641315d23b224e4dea80cc8"
+  }
+}

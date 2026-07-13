@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-diff-http"
+description = "Enables the diff_http command without any pre-configured scope."
+commands.allow = ["diff_http"]
+
+[[permission]]
+identifier = "deny-diff-http"
+description = "Denies the diff_http command without any pre-configured scope."
+commands.deny = ["diff_http"]
