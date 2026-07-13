@@ -11,6 +11,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -18,6 +20,8 @@ use std::time::{Duration, Instant};
 use flagdeck_domain::{CommandSpec, SecretTransport, SupervisorBackend, Validate};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, killpg};
+#[cfg(target_os = "macos")]
+use nix::unistd::getpgid;
 use nix::unistd::{Pid, Uid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -72,7 +76,9 @@ pub enum ExecPolicyError {
 const SYSTEMD_RUN: &str = "/usr/bin/systemd-run";
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const ENV: &str = "/usr/bin/env";
+#[cfg(target_os = "linux")]
 const SETSID: &str = "/usr/bin/setsid";
+#[cfg(target_os = "linux")]
 const PRLIMIT: &str = "/usr/bin/prlimit";
 const SYSTEMD_UNIT_PREFIX: &str = "flagdeck-alpha";
 const START_IDENTITY_TIMEOUT: Duration = Duration::from_secs(3);
@@ -644,6 +650,7 @@ async fn start_systemd(
     })
 }
 
+#[cfg(target_os = "linux")]
 async fn start_pgid(
     spec: &CommandSpec,
     validated: &ValidatedCommand,
@@ -689,6 +696,59 @@ async fn start_pgid(
             pid: Some(wrapper_pid),
             process_group_id,
             process_start_ticks,
+            systemd_unit: None,
+            cgroup_path: None,
+            invocation_id: None,
+            target_program: validated.canonical_program.display().to_string(),
+            ownership_verified: true,
+        },
+        state,
+        started,
+        timeout: Duration::from_millis(spec.timeout_millis),
+        stop_grace: stop_grace(spec.stop_grace_millis),
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn start_pgid(
+    spec: &CommandSpec,
+    validated: &ValidatedCommand,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Result<ManagedExecution, ExecPolicyError> {
+    let stdout = OpenOptions::new().append(true).open(stdout_path)?;
+    let stderr = OpenOptions::new().append(true).open(stderr_path)?;
+    let mut command = tokio::process::Command::new(&validated.canonical_program);
+    command.as_std_mut().process_group(0);
+    command
+        .args(&validated.argv)
+        .current_dir(&validated.cwd)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .kill_on_drop(true);
+    for (name, value) in &validated.environment {
+        command.env(name, value);
+    }
+    let started = Instant::now();
+    let mut child = command.spawn().map_err(|_| ExecPolicyError::Spawn)?;
+    let wrapper_pid = child
+        .id()
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or(ExecPolicyError::ProcessIdentity)?;
+    let start_state = wait_pgid_identity(&mut child, wrapper_pid, START_IDENTITY_TIMEOUT).await?;
+    let state = match start_state {
+        PgidStartState::Running => ManagedState::Pgid(child),
+        PgidStartState::Completed(status) => ManagedState::Completed(status),
+    };
+    Ok(ManagedExecution {
+        identity: ManagedProcessIdentity {
+            supervisor_backend: SupervisorBackend::PgidFallback,
+            wrapper_pid,
+            pid: Some(wrapper_pid),
+            process_group_id: Some(wrapper_pid),
+            process_start_ticks: None,
             systemd_unit: None,
             cgroup_path: None,
             invocation_id: None,
@@ -917,6 +977,7 @@ async fn cancel_pgid(
     })
 }
 
+#[cfg(target_os = "linux")]
 fn verify_pgid_identity(identity: &ManagedProcessIdentity) -> Result<(), ExecPolicyError> {
     let pid = identity.pid.ok_or(ExecPolicyError::ProcessIdentity)?;
     let expected_pgid = identity
@@ -927,6 +988,21 @@ fn verify_pgid_identity(identity: &ManagedProcessIdentity) -> Result<(), ExecPol
         .ok_or(ExecPolicyError::ProcessIdentity)?;
     let stat = read_proc_stat(pid).map_err(|_| ExecPolicyError::OwnershipMismatch)?;
     if stat.state == 'Z' || stat.pgid != expected_pgid || stat.start_ticks != expected_start {
+        return Err(ExecPolicyError::OwnershipMismatch);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn verify_pgid_identity(identity: &ManagedProcessIdentity) -> Result<(), ExecPolicyError> {
+    let pid = identity.pid.ok_or(ExecPolicyError::ProcessIdentity)?;
+    let expected_pgid = identity
+        .process_group_id
+        .ok_or(ExecPolicyError::ProcessIdentity)?;
+    if pid != expected_pgid
+        || getpgid(Some(Pid::from_raw(pid))).map_err(|_| ExecPolicyError::OwnershipMismatch)?
+            != Pid::from_raw(expected_pgid)
+    {
         return Err(ExecPolicyError::OwnershipMismatch);
     }
     Ok(())
@@ -1093,11 +1169,13 @@ async fn wait_unit_identity(
     Err(ExecPolicyError::ProcessIdentity)
 }
 
+#[cfg(target_os = "linux")]
 enum PgidStartState {
     Running(ProcStat),
     Completed(std::process::ExitStatus),
 }
 
+#[cfg(target_os = "linux")]
 async fn wait_pgid_identity(
     child: &mut Child,
     pid: i32,
@@ -1111,6 +1189,31 @@ async fn wait_pgid_identity(
             && stat.sid == pid
         {
             return Ok(PgidStartState::Running(stat));
+        }
+        if let Some(status) = child.try_wait().map_err(|_| ExecPolicyError::Spawn)? {
+            return Ok(PgidStartState::Completed(status));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    Err(ExecPolicyError::ProcessIdentity)
+}
+
+#[cfg(target_os = "macos")]
+enum PgidStartState {
+    Running,
+    Completed(std::process::ExitStatus),
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_pgid_identity(
+    child: &mut Child,
+    pid: i32,
+    timeout: Duration,
+) -> Result<PgidStartState, ExecPolicyError> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if getpgid(Some(Pid::from_raw(pid))).is_ok_and(|pgid| pgid.as_raw() == pid) {
+            return Ok(PgidStartState::Running);
         }
         if let Some(status) = child.try_wait().map_err(|_| ExecPolicyError::Spawn)? {
             return Ok(PgidStartState::Completed(status));
@@ -1251,6 +1354,7 @@ fn cgroup_process_count(cgroup: Option<&str>) -> Result<u32, ExecPolicyError> {
     u32::try_from(count).map_err(|_| ExecPolicyError::ProcessIdentity)
 }
 
+#[cfg(target_os = "linux")]
 fn pgid_process_count(pgid: i32) -> Result<u32, ExecPolicyError> {
     let mut count = 0_u32;
     for entry in fs::read_dir("/proc")? {
@@ -1269,6 +1373,16 @@ fn pgid_process_count(pgid: i32) -> Result<u32, ExecPolicyError> {
     Ok(count)
 }
 
+#[cfg(target_os = "macos")]
+fn pgid_process_count(pgid: i32) -> Result<u32, ExecPolicyError> {
+    match killpg(Pid::from_raw(pgid), None::<Signal>) {
+        Ok(()) | Err(Errno::EPERM) => Ok(1),
+        Err(Errno::ESRCH) => Ok(0),
+        Err(_) => Err(ExecPolicyError::ProcessIdentity),
+    }
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct ProcStat {
     state: char,
     pgid: i32,

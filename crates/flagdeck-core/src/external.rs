@@ -13,6 +13,10 @@ use thiserror::Error;
 use ts_rs::TS;
 
 pub const EXTERNAL_LAUNCHERS_SOURCE: &str = include_str!("../../../config/external-launchers.toml");
+#[cfg(target_os = "linux")]
+const EXPECTED_PLATFORM: &str = "linux-x86_64";
+#[cfg(target_os = "macos")]
+const EXPECTED_PLATFORM: &str = "macos-aarch64";
 
 #[derive(Debug, Error)]
 pub enum ExternalLauncherError {
@@ -148,6 +152,7 @@ pub struct LaunchExternalRequest {
 pub fn registry() -> Result<ExternalLauncherRegistry, ExternalLauncherError> {
     let mut registry: ExternalLauncherRegistry =
         toml::from_str(EXTERNAL_LAUNCHERS_SOURCE).map_err(|_| ExternalLauncherError::Registry)?;
+    apply_platform_defaults(&mut registry);
     apply_user_overrides(&mut registry);
     let expected = BTreeSet::from(["antsword", "behinder", "godzilla", "shiro", "ysoserial"]);
     let actual = registry
@@ -159,7 +164,7 @@ pub fn registry() -> Result<ExternalLauncherRegistry, ExternalLauncherError> {
         || registry.pack.id.is_empty()
         || registry.pack.name.is_empty()
         || registry.pack.version.is_empty()
-        || registry.pack.platform != "linux-x86_64"
+        || registry.pack.platform != EXPECTED_PLATFORM
         || registry.launchers.len() != 5
         || actual != expected
         || registry.launchers.iter().any(|launcher| {
@@ -193,6 +198,34 @@ pub fn registry() -> Result<ExternalLauncherRegistry, ExternalLauncherError> {
     Ok(registry)
 }
 
+#[cfg(target_os = "linux")]
+fn apply_platform_defaults(_registry: &mut ExternalLauncherRegistry) {}
+
+#[cfg(target_os = "macos")]
+fn apply_platform_defaults(registry: &mut ExternalLauncherRegistry) {
+    EXPECTED_PLATFORM.clone_into(&mut registry.pack.platform);
+    let Some(home) = env::var_os("HOME") else {
+        return;
+    };
+    let root = PathBuf::from(home)
+        .join("Library/Application Support/FlagDeck/tool-packs")
+        .display()
+        .to_string();
+    const LINUX_ROOT: &str = "/usr/lib/FlagDeck/tool-packs";
+    for launcher in &mut registry.launchers {
+        launcher.program = launcher.program.replace(LINUX_ROOT, &root);
+        launcher.cwd = launcher.cwd.replace(LINUX_ROOT, &root);
+        launcher.argv = launcher
+            .argv
+            .iter()
+            .map(|value| value.replace(LINUX_ROOT, &root))
+            .collect();
+        for required in &mut launcher.required_file {
+            required.path = required.path.replace(LINUX_ROOT, &root);
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ExternalOverrideRegistry {
     schema_version: u32,
@@ -220,7 +253,7 @@ fn apply_user_overrides(registry: &mut ExternalLauncherRegistry) {
         .or_else(|| {
             env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|root| root.join(".config/flagdeck/external-launchers.toml"))
+                .map(|root| default_user_config(&root, "external-launchers.toml"))
         });
     let Some(path) = path else {
         return;
@@ -246,6 +279,16 @@ fn apply_user_overrides(registry: &mut ExternalLauncherRegistry) {
             "tool_pack".clone_into(&mut launcher.resolution_source);
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn default_user_config(home: &Path, name: &str) -> PathBuf {
+    home.join(".config/flagdeck").join(name)
+}
+
+#[cfg(target_os = "macos")]
+fn default_user_config(home: &Path, name: &str) -> PathBuf {
+    home.join("Library/Application Support/FlagDeck").join(name)
 }
 
 pub fn manifest(

@@ -3632,6 +3632,7 @@ fn sha256_file(path: &Path) -> Result<String, StorageError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[cfg(target_os = "linux")]
 fn current_process_start_ticks() -> Result<u64, StorageError> {
     let value = fs::read_to_string("/proc/self/stat")?;
     let end = value
@@ -3643,6 +3644,11 @@ fn current_process_start_ticks() -> Result<u64, StorageError> {
         .ok_or_else(|| StorageError::InvalidLayout("short /proc/self/stat".to_owned()))?
         .parse()
         .map_err(|_| StorageError::InvalidLayout("invalid process start ticks".to_owned()))
+}
+
+#[cfg(target_os = "macos")]
+fn current_process_start_ticks() -> Result<u64, StorageError> {
+    Ok(u64::from(std::process::id()))
 }
 
 #[cfg(test)]

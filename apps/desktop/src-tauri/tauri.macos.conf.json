@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "externalBin": [
+      "binaries/flagdeck-adapter-metasploit",
+      "binaries/flagdeck-msf-credential-launcher",
+      "binaries/uv"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-",
+      "hardenedRuntime": false
+    }
+  }
+}

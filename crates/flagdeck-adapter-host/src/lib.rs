@@ -8,6 +8,8 @@ use std::fs;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream as StdUnixStream;
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,7 +28,9 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+#[cfg(target_os = "linux")]
 const PRLIMIT: &str = "/usr/bin/prlimit";
+#[cfg(target_os = "linux")]
 const SETSID: &str = "/usr/bin/setsid";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_STDERR_LIMIT: usize = 256 * 1024;
@@ -121,13 +125,8 @@ impl AdapterHost {
     }
 
     pub fn spawn(&self) -> Result<AdapterWorker, HostError> {
-        let mut command = Command::new(SETSID);
+        let mut command = self.worker_command();
         command
-            .arg(PRLIMIT)
-            .arg("--core=0:0")
-            .arg("--")
-            .arg(&self.canonical_program)
-            .args(&self.config.arguments)
             .current_dir(&self.canonical_cwd)
             .env_clear()
             .env("LANG", "C.UTF-8")
@@ -175,6 +174,26 @@ impl AdapterHost {
             request_timeout: self.config.request_timeout,
             stderr_task: Some(stderr_task),
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn worker_command(&self) -> Command {
+        let mut command = Command::new(SETSID);
+        command
+            .arg(PRLIMIT)
+            .arg("--core=0:0")
+            .arg("--")
+            .arg(&self.canonical_program)
+            .args(&self.config.arguments);
+        command
+    }
+
+    #[cfg(target_os = "macos")]
+    fn worker_command(&self) -> Command {
+        let mut command = Command::new(&self.canonical_program);
+        command.args(&self.config.arguments);
+        command.as_std_mut().process_group(0);
+        command
     }
 }
 

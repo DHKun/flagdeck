@@ -826,6 +826,7 @@ fn create_windows(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn configured_workspaces_root() -> Result<PathBuf, &'static str> {
     if let Some(value) = env::var_os(WORKSPACES_ROOT_ENV) {
         let root = PathBuf::from(value);
@@ -844,6 +845,22 @@ fn configured_workspaces_root() -> Result<PathBuf, &'static str> {
     let home = PathBuf::from(home);
     home.is_absolute()
         .then(|| home.join(".local/share/flagdeck/workspaces"))
+        .ok_or("HOME must be absolute")
+}
+
+#[cfg(target_os = "macos")]
+fn configured_workspaces_root() -> Result<PathBuf, &'static str> {
+    if let Some(value) = env::var_os(WORKSPACES_ROOT_ENV) {
+        let root = PathBuf::from(value);
+        return root
+            .is_absolute()
+            .then_some(root)
+            .ok_or("FLAGDECK_WORKSPACES_ROOT must be absolute");
+    }
+    let home = env::var_os("HOME").ok_or("HOME is unavailable")?;
+    let home = PathBuf::from(home);
+    home.is_absolute()
+        .then(|| home.join("Library/Application Support/FlagDeck/workspaces"))
         .ok_or("HOME must be absolute")
 }
 
@@ -874,7 +891,7 @@ fn configure_linux_process() -> Result<(), &'static str> {
 
 pub fn run() {
     configure_private_process().expect("FlagDeck process hardening failed");
-    configure_linux_process().expect("FlagDeck Linux process configuration failed");
+    configure_linux_process().expect("FlagDeck platform process configuration failed");
     let workspaces_root =
         configured_workspaces_root().expect("FlagDeck workspace root configuration failed");
     let application = tauri::Builder::default()
@@ -903,9 +920,14 @@ pub fn run() {
                         .map(|root| root.join("flagdeck-msf-credential-launcher"))
                 })
                 .filter(|path| path.is_file());
-            app.manage(Arc::new(CoreService::with_resource_paths(
+            let uv_program = executable_directory
+                .as_ref()
+                .map(|root| root.join("uv"))
+                .filter(|path| path.is_file());
+            app.manage(Arc::new(CoreService::with_bundled_resources(
                 workspaces_root,
                 worker_source,
+                uv_program,
                 metasploit_adapter,
                 metasploit_launcher,
             )));
