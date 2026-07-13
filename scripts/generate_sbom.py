@@ -235,6 +235,7 @@ def main() -> None:
     lockfiles = [
         "Cargo.lock",
         "pnpm-lock.yaml",
+        "uv.lock",
         "workers/mitmproxy/uv.lock",
         "mise.lock",
     ]

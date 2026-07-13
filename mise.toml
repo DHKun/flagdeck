@@ -107,7 +107,7 @@ run = "cargo run -p flagdeck-r7-gate --release --locked -- --output tests/perfor
 
 [tasks.r7-sbom]
 description = "生成包含 Cargo、pnpm、uv 与外部工具的 CycloneDX 1.6 SBOM"
-run = "python3 scripts/generate_sbom.py --version 1.0.0 --output release/evidence/flagdeck-1.0.0.cdx.json"
+run = "uv run --locked python scripts/generate_sbom.py --version 1.0.0 --output release/evidence/flagdeck-1.0.0.cdx.json"
 
 [tasks.r7-audits]
 description = "运行 Cargo advisory/license/source/duplicate、pnpm production 与 Python production 审计"
