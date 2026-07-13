@@ -30,9 +30,6 @@ jobs:
       - name: Sync dependencies
         run: mise run sync
 
-      - name: Check macOS workspace
-        run: cargo check --workspace --all-targets --locked
-
       - name: Prepare generated resources
         run: |
           mise run generate
@@ -61,6 +58,9 @@ jobs:
           install -m 755 \
             "$RUNNER_TEMP/flagdeck-uv/uv" \
             apps/desktop/src-tauri/binaries/uv-aarch64-apple-darwin
+
+      - name: Check macOS workspace
+        run: cargo check --workspace --all-targets --locked
 
       - name: Build ad-hoc signed DMG
         run: pnpm --dir apps/desktop tauri build --target aarch64-apple-darwin --bundles dmg
