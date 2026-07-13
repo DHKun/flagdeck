@@ -67,14 +67,20 @@ jobs:
 
       - name: Verify bundle
         run: |
-          APP="target/aarch64-apple-darwin/release/bundle/macos/FlagDeck.app"
           DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -print -quit)
-          test -d "$APP"
           test -f "$DMG"
-          test "$(lipo -archs "$APP/Contents/MacOS/flagdeck-desktop")" = "arm64"
-          test "$(lipo -archs "$APP/Contents/MacOS/uv")" = "arm64"
-          codesign --verify --deep --strict --verbose=2 "$APP"
           hdiutil verify "$DMG"
+          MOUNT="$RUNNER_TEMP/flagdeck-dmg"
+          mkdir -p "$MOUNT"
+          hdiutil attach "$DMG" -readonly -nobrowse -mountpoint "$MOUNT"
+          trap 'hdiutil detach "$MOUNT"' EXIT
+          APP="$MOUNT/FlagDeck.app"
+          find "$APP/Contents/MacOS" -maxdepth 1 -type f -print
+          lipo -archs "$APP/Contents/MacOS/flagdeck-desktop" | grep -qw arm64
+          lipo -archs "$APP/Contents/MacOS/uv" | grep -qw arm64
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          hdiutil detach "$MOUNT"
+          trap - EXIT
           shasum -a 256 "$DMG" | tee "$DMG.sha256"
 
       - uses: actions/upload-artifact@v4
