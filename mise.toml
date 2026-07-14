@@ -35,7 +35,7 @@ run = "cargo run -p flagdeck-domain --bin export_contracts --locked && cargo run
 
 [tasks.dev]
 description = "启动 FlagDeck 开发桌面壳"
-depends = ["build-msf-sidecars"]
+depends = ["stage-host-runtime"]
 run = "pnpm --dir apps/desktop tauri dev"
 
 [tasks.lint-rust]
@@ -72,13 +72,28 @@ depends = ["generate", "build-msf-sidecars", "r7-sbom"]
 run = "pnpm --dir apps/desktop tauri build --no-bundle"
 
 [tasks.package]
-description = "构建 FlagDeck Fedora RPM 候选包"
-depends = ["generate", "build-msf-sidecars", "r7-sbom"]
-run = "pnpm --dir apps/desktop tauri build --bundles rpm"
+description = "构建 FlagDeck Linux AppImage、DEB 与 RPM 候选包"
+depends = ["generate", "stage-host-runtime", "r7-sbom"]
+run = "pnpm --dir apps/desktop tauri build --bundles appimage,deb,rpm"
 
 [tasks.build-msf-sidecars]
-description = "构建并暂存 R5 Metasploit Rust Adapter 与凭据 launcher"
-run = "cargo build -p flagdeck-metasploit-adapter --release --bins --locked && install -Dm755 target/release/flagdeck-adapter-metasploit apps/desktop/src-tauri/binaries/flagdeck-adapter-metasploit-x86_64-unknown-linux-gnu && install -Dm755 target/release/flagdeck-msf-credential-launcher apps/desktop/src-tauri/binaries/flagdeck-msf-credential-launcher-x86_64-unknown-linux-gnu"
+description = "构建并暂存当前平台的 Metasploit Adapter 与凭据 launcher"
+run = '''
+target="$(rustc -vV | sed -n 's/^host: //p')"
+cargo build -p flagdeck-metasploit-adapter --release --bins --locked
+mkdir -p apps/desktop/src-tauri/binaries
+install -m 755 target/release/flagdeck-adapter-metasploit "apps/desktop/src-tauri/binaries/flagdeck-adapter-metasploit-${target}"
+install -m 755 target/release/flagdeck-msf-credential-launcher "apps/desktop/src-tauri/binaries/flagdeck-msf-credential-launcher-${target}"
+'''
+
+[tasks.stage-host-runtime]
+description = "暂存当前平台安装包使用的锁定 uv 运行时"
+depends = ["build-msf-sidecars"]
+run = '''
+target="$(rustc -vV | sed -n 's/^host: //p')"
+mkdir -p apps/desktop/src-tauri/binaries
+install -m 755 "$(command -v uv)" "apps/desktop/src-tauri/binaries/uv-${target}"
+'''
 
 [tasks.r5-metasploit-static]
 description = "运行 R5 Metasploit Adapter、Scope/L3、所有权与证据合同"
