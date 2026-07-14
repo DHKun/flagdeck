@@ -1,0 +1,268 @@
+name: Packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: version
+        name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pattern='^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+          if [[ ! "$GITHUB_REF_NAME" =~ $pattern ]]; then
+            echo "release tag must use vMAJOR.MINOR.PATCH or a SemVer prerelease suffix" >&2
+            exit 1
+          fi
+
+          tag_version="${BASH_REMATCH[1]}"
+          suffix="${BASH_REMATCH[2]:-}"
+          app_version="$(jq -r '.version' apps/desktop/src-tauri/tauri.conf.json)"
+          if [[ "$tag_version" != "$app_version" ]]; then
+            echo "tag version $tag_version does not match app version $app_version" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "release tag must point to a commit on main" >&2
+            exit 1
+          fi
+
+          prerelease=false
+          [[ -n "$suffix" ]] && prerelease=true
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux x86-64
+    needs: metadata
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            rpm
+
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Sync dependencies
+        run: mise run sync
+
+      - name: Prepare generated resources and bundled runtimes
+        run: |
+          mise run generate
+          mise run r7-sbom
+          mise run stage-host-runtime
+
+      - name: Check Linux workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Build Linux packages
+        run: pnpm --dir apps/desktop tauri build --bundles appimage,deb,rpm
+
+      - name: Verify Linux packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimage="$(find target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+          deb="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          rpm_package="$(find target/release/bundle/rpm -maxdepth 1 -name '*.rpm' -print -quit)"
+          test -f "$appimage"
+          test -f "$deb"
+          test -f "$rpm_package"
+
+          file "$appimage" | grep -Eq 'x86-64|x86_64'
+          "$appimage" --appimage-extract >/dev/null
+          for binary in \
+            flagdeck-desktop \
+            flagdeck-adapter-metasploit \
+            flagdeck-msf-credential-launcher \
+            uv; do
+            test -x "squashfs-root/usr/bin/$binary"
+            file "squashfs-root/usr/bin/$binary" | grep -Eq 'x86-64|x86_64'
+          done
+
+          dpkg-deb --info "$deb" >/dev/null
+          dpkg-deb --contents "$deb" > "$RUNNER_TEMP/deb-contents.txt"
+          rpm -qpl "$rpm_package" > "$RUNNER_TEMP/rpm-contents.txt"
+          for binary in \
+            flagdeck-desktop \
+            flagdeck-adapter-metasploit \
+            flagdeck-msf-credential-launcher \
+            uv; do
+            grep -q "usr/bin/$binary" "$RUNNER_TEMP/deb-contents.txt"
+            grep -q "/usr/bin/$binary" "$RUNNER_TEMP/rpm-contents.txt"
+          done
+
+          mkdir -p dist/linux
+          install -m 755 "$appimage" dist/linux/
+          install -m 644 "$deb" "$rpm_package" dist/linux/
+          (
+            cd dist/linux
+            sha256sum ./*.AppImage ./*.deb ./*.rpm > FlagDeck-Linux-x86_64-SHA256SUMS.txt
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlagDeck-Linux-x86_64
+          path: dist/linux/*
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS Apple Silicon
+    needs: metadata
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Sync dependencies
+        run: mise run sync
+
+      - name: Prepare generated resources and bundled runtimes
+        run: |
+          mise run generate
+          mise run r7-sbom
+          mise run stage-host-runtime
+
+      - name: Check macOS workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Build ad-hoc signed DMG
+        run: pnpm --dir apps/desktop tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: Verify macOS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -print -quit)"
+          test -f "$dmg"
+          hdiutil verify "$dmg"
+
+          mount="$RUNNER_TEMP/flagdeck-dmg"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          app="$mount/FlagDeck.app"
+          for binary in \
+            flagdeck-desktop \
+            flagdeck-adapter-metasploit \
+            flagdeck-msf-credential-launcher \
+            uv; do
+            test -x "$app/Contents/MacOS/$binary"
+            lipo -archs "$app/Contents/MacOS/$binary" | grep -qw arm64
+          done
+          codesign --verify --deep --strict --verbose=2 "$app"
+          hdiutil detach "$mount"
+          trap - EXIT
+
+          mkdir -p dist/macos
+          install -m 644 "$dmg" dist/macos/
+          (
+            cd dist/macos
+            shasum -a 256 ./*.dmg > FlagDeck-macOS-arm64-SHA256SUMS.txt
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlagDeck-macOS-Apple-Silicon
+          path: dist/macos/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [metadata, linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: FlagDeck-Linux-x86_64
+          path: dist/linux
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: FlagDeck-macOS-Apple-Silicon
+          path: dist/macos
+
+      - name: Verify checksums
+        run: |
+          cd dist/linux
+          sha256sum --check FlagDeck-Linux-x86_64-SHA256SUMS.txt
+          cd ../macos
+          sha256sum --check FlagDeck-macOS-arm64-SHA256SUMS.txt
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find dist -type f -print | sort)
+          test "${#assets[@]}" -eq 6
+
+          flags=(--verify-tag --generate-notes)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" "${flags[@]}"
