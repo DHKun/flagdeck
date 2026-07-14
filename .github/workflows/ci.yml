@@ -41,7 +41,7 @@ jobs:
 
       - name: Prepare generated release resources
         run: |
-          mise run build-msf-sidecars
+          mise run stage-host-runtime
           mise run r7-sbom
 
       - name: Run checks

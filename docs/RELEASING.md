@@ -22,6 +22,6 @@ git tag -a v1.0.0-preview.2 -m "FlagDeck 1.0.0 preview 2"
 git push origin v1.0.0-preview.2
 ```
 
-`Packages` 工作流随后执行完整 Linux 检查、三种 Linux 打包、macOS DMG 打包、安装内容核验和 SHA-256 复核。带后缀的标签会发布为 GitHub Prerelease，正式版本标签会按 GitHub 的版本规则进入 Latest Release。
+`Packages` 工作流随后执行 Linux workspace 检查、三种 Linux 打包、macOS DMG 打包、安装内容核验和 SHA-256 复核。完整测试由主 `CI` 工作流执行。带后缀的标签会发布为 GitHub Prerelease，正式版本标签会按 GitHub 的版本规则进入 Latest Release。
 
 Developer ID 签名与 Apple 公证需要在仓库中配置 Apple Developer 凭据。当前 macOS 预览包使用 ad-hoc 签名，首次启动步骤记录在 [MACOS_PREVIEW.md](MACOS_PREVIEW.md)。

@@ -99,8 +99,8 @@ jobs:
           mise run r7-sbom
           mise run stage-host-runtime
 
-      - name: Run release checks
-        run: mise run test
+      - name: Check Linux workspace
+        run: cargo check --workspace --all-targets --locked
 
       - name: Build Linux packages
         run: pnpm --dir apps/desktop tauri build --bundles appimage,deb,rpm
