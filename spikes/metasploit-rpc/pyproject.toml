@@ -5,7 +5,7 @@ description = "FlagDeck R0 Metasploit RPC lifecycle gate"
 requires-python = ">=3.12,<3.13"
 license = { text = "MIT OR Apache-2.0" }
 dependencies = [
-  "msgpack==1.1.2",
+  "msgpack==1.2.1",
 ]
 
 [dependency-groups]
