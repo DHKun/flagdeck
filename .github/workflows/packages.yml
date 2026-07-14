@@ -253,6 +253,7 @@ jobs:
       - name: Create release
         shell: bash
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
         run: |
