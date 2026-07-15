@@ -74,7 +74,6 @@ pub enum ToolMode {
     ExternalLaunch,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinarySpec {
     #[serde(default)]
@@ -272,9 +271,12 @@ pub struct CatalogPaths {
 impl CatalogPaths {
     #[must_use]
     pub fn from_env() -> Self {
-        let tools_root = env::var_os("FLAGDECK_TOOLS_ROOT").map_or_else(|| PathBuf::from(DEFAULT_TOOLS_ROOT), PathBuf::from);
-        let wordlists_root = env::var_os("FLAGDECK_WORDLISTS_ROOT").map_or_else(|| tools_root.join("Wordlists"), PathBuf::from);
-        let catalog_root = env::var_os("FLAGDECK_CATALOG_ROOT").map_or_else(default_catalog_root, PathBuf::from);
+        let tools_root = env::var_os("FLAGDECK_TOOLS_ROOT")
+            .map_or_else(|| PathBuf::from(DEFAULT_TOOLS_ROOT), PathBuf::from);
+        let wordlists_root = env::var_os("FLAGDECK_WORDLISTS_ROOT")
+            .map_or_else(|| tools_root.join("Wordlists"), PathBuf::from);
+        let catalog_root =
+            env::var_os("FLAGDECK_CATALOG_ROOT").map_or_else(default_catalog_root, PathBuf::from);
         Self {
             tools_root,
             wordlists_root,
@@ -714,10 +716,11 @@ pub fn prepare_catalog_command(
     // host field may still contain a full URL from the global target bar
     if let Some(host_raw) = values.get("host").cloned().filter(|v| !v.is_empty())
         && looks_like_url(&host_raw)
-            && let Ok(parsed) = Url::parse(&host_raw)
-                && let Some(host) = parsed.host_str() {
-                    values.insert("host".to_owned(), host.to_owned());
-                }
+        && let Ok(parsed) = Url::parse(&host_raw)
+        && let Some(host) = parsed.host_str()
+    {
+        values.insert("host".to_owned(), host.to_owned());
+    }
 
     if let Some(target) = values.get("target").cloned().filter(|v| !v.is_empty()) {
         if looks_like_url(&target) {
@@ -871,9 +874,10 @@ fn resolve_cwd(
     match tool.mode {
         ToolMode::ExternalLaunch => {
             if let Some(parent) = binary.parent()
-                && parent.is_dir() {
-                    return Ok(parent.to_path_buf());
-                }
+                && parent.is_dir()
+            {
+                return Ok(parent.to_path_buf());
+            }
             Ok(job_directory.to_path_buf())
         }
         ToolMode::EmbeddedCli => Ok(job_directory.to_path_buf()),
@@ -906,11 +910,11 @@ fn build_environment(
             environment.insert("PATH".to_owned(), path);
             environment.insert("PWD".to_owned(), cwd.display().to_string());
             if !environment.contains_key("XAUTHORITY")
-                && let Some(xauth) = resolve_xauthority() {
-                    environment.insert("XAUTHORITY".to_owned(), xauth);
-                }
-            if !environment.contains_key("DISPLAY") && Path::new("/tmp/.X11-unix/X0").exists()
+                && let Some(xauth) = resolve_xauthority()
             {
+                environment.insert("XAUTHORITY".to_owned(), xauth);
+            }
+            if !environment.contains_key("DISPLAY") && Path::new("/tmp/.X11-unix/X0").exists() {
                 environment.insert("DISPLAY".to_owned(), ":0".to_owned());
             }
             environment
@@ -941,9 +945,10 @@ fn build_environment(
 
 fn resolve_xauthority() -> Option<String> {
     if let Ok(value) = env::var("XAUTHORITY")
-        && Path::new(&value).is_file() {
-            return Some(value);
-        }
+        && Path::new(&value).is_file()
+    {
+        return Some(value);
+    }
     if let Ok(home) = env::var("HOME") {
         let candidate = PathBuf::from(home).join(".Xauthority");
         if candidate.is_file() {

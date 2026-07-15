@@ -177,7 +177,9 @@ async fn catalog_lists_without_local_tools_root() {
     // Catalog metadata must load from the repo config even when /data/CTF/Tools is absent.
     let temporary = tempdir().unwrap();
     let core = CoreService::new(temporary.path().join("workspaces"));
-    let snapshot = core.list_catalog().expect("catalog should load from repo config");
+    let snapshot = core
+        .list_catalog()
+        .expect("catalog should load from repo config");
     assert!(
         snapshot.tools.iter().any(|tool| tool.id == "curl"),
         "expected curl in catalog"
