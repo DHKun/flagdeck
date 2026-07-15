@@ -1,0 +1,25 @@
+schema_version = 1
+
+[[category]]
+id = "http"
+name = "HTTP 探测"
+summary = "快速请求与响应检查"
+order = 10
+
+[[category]]
+id = "content_discovery"
+name = "目录与内容发现"
+summary = "字典驱动的路径与内容扫描"
+order = 20
+
+[[category]]
+id = "fingerprint"
+name = "资产与指纹"
+summary = "主机发现、服务识别与指纹"
+order = 30
+
+[[category]]
+id = "gui"
+name = "独立应用"
+summary = "需要独立窗口的 GUI 工具"
+order = 90

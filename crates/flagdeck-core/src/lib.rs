@@ -5,12 +5,17 @@
     clippy::too_many_lines
 )]
 
+mod catalog_api;
 mod external;
 mod http;
 mod intruder;
 mod metasploit;
 mod payloads;
 
+pub use catalog_api::{
+    CatalogCategoryDto, CatalogFormFieldDto, CatalogSnapshot, CatalogToolDto, EnsureTargetRequest,
+    RunCatalogToolRequest, WordlistDto,
+};
 pub use external::{ExternalLauncherHealthDto, ExternalLauncherId, LaunchExternalRequest};
 pub use http::*;
 pub use intruder::*;
@@ -33,17 +38,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use flagdeck_cli_adapters::{
-    AdapterError, ExpectedOutput, OutputRole, ParsedHttpResponse, PreparedToolCommand, ToolId,
-    ToolManifest, manifest, materialize_discoveries, parse_output, prepare_command, registry,
-    write_wordlist,
+    AdapterError, CatalogError, ExpectedOutput, OutputRole, ParsedHttpResponse,
+    PreparedToolCommand, ToolCatalog, ToolId, ToolManifest, manifest, materialize_discoveries,
+    parse_output, prepare_catalog_command, prepare_command, registry, write_wordlist,
 };
 use flagdeck_domain::{
     Artifact, ArtifactId, BodyState, CommandSpec, ConnectionMetadata, DictionaryId,
     DictionaryIndex, Discovery, DnsResolutionSnapshot, ExecutionStatus, ExportPolicy, HttpMessage,
     HttpSource, ImportStatus, IntruderCampaign, Job, JobId, MessageDirection, MessageId,
     MultipartDocument, NetworkClass, OrderedValue, PortRange, ProjectId, ProjectSummary,
-    ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, TargetScope, Timestamp,
-    Validate,
+    ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, SupervisorBackend,
+    TargetScope, Timestamp, Validate,
 };
 use flagdeck_exec::{
     CancellationResult, ExecPolicyError, ManagedExecutionResult, ManagedProcessIdentity,
@@ -417,6 +422,28 @@ pub struct JobPageRequest {
 pub struct JobPage {
     pub items: Vec<JobView>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct DeleteJobRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct DeleteJobResult {
+    pub job_id: JobId,
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ClearJobsRequest {
+    pub project_id: ProjectId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ClearJobsResult {
+    pub deleted: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -1350,6 +1377,69 @@ impl CoreService {
         })
     }
 
+    pub fn delete_job(&self, request: &DeleteJobRequest) -> Result<DeleteJobResult, CoreError> {
+        request
+            .job_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        let store = self.project_store(&request.project_id, true)?;
+        let stored = store.job(&request.job_id)?;
+        if is_active_execution_status(stored.job.execution_status)
+            || self
+                .active_executions
+                .lock()
+                .map_err(|_| CoreError::StateLock)?
+                .contains_key(&request.job_id)
+        {
+            return Err(CoreError::ActiveJobs);
+        }
+        let deleted = store.delete_job(&request.job_id)?;
+        if deleted {
+            let scan_dir = store.layout().scans.join(&request.job_id.0);
+            if scan_dir.is_dir() {
+                let _ = fs::remove_dir_all(&scan_dir);
+            }
+        }
+        Ok(DeleteJobResult {
+            job_id: request.job_id.clone(),
+            deleted,
+        })
+    }
+
+    pub fn clear_jobs(&self, request: &ClearJobsRequest) -> Result<ClearJobsResult, CoreError> {
+        let store = self.project_store(&request.project_id, true)?;
+        // Refuse while any job is still active in-memory or running in DB.
+        if self.active_runs.load(Ordering::SeqCst) > 0
+            || !self
+                .active_executions
+                .lock()
+                .map_err(|_| CoreError::StateLock)?
+                .is_empty()
+        {
+            return Err(CoreError::ActiveJobs);
+        }
+        let (items, _) = store.list_jobs(100, None)?;
+        if items
+            .iter()
+            .any(|item| is_active_execution_status(item.job.execution_status))
+        {
+            return Err(CoreError::ActiveJobs);
+        }
+        let scan_root = store.layout().scans.clone();
+        let deleted = store.clear_jobs()?;
+        if scan_root.is_dir()
+            && let Ok(entries) = fs::read_dir(&scan_root)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let _ = fs::remove_dir_all(path);
+                }
+            }
+        }
+        Ok(ClearJobsResult { deleted })
+    }
+
     pub fn preview_job_log(
         &self,
         request: &PreviewJobLogRequest,
@@ -1771,6 +1861,7 @@ impl CoreService {
             control,
             stdout_path: job_directory.join("stdout.log"),
             stderr_path: job_directory.join("stderr.log"),
+            detach_gui: false,
             _run_guard: run_guard,
         };
         let view = JobView::from(queued.store.job(&queued.job.job_id)?);
@@ -1805,37 +1896,22 @@ impl CoreService {
             .map_err(|_| CoreError::InvalidRequest)?;
         queued.job.started_at = Some(Timestamp::now());
         queued.store.save_job(&queued.job)?;
-        let execution =
-            start_managed(&queued.command, &queued.stdout_path, &queued.stderr_path).await;
-        if let Ok(execution) = execution {
-            let identity = execution.identity().clone();
-            set_active_identity(&queued.control, &identity)?;
-            apply_process_identity(&mut queued.job, &identity);
-            queued
-                .job
-                .transition(ExecutionStatus::Running)
-                .map_err(|_| CoreError::InvalidRequest)?;
-            queued.store.save_job(&queued.job)?;
-            let result = execution.wait().await?;
-            let cancellation = if queued.control.cancel_requested.load(Ordering::SeqCst) {
-                drive_cancellation(&queued.control).await?
-            } else {
-                result.cancellation.clone()
-            };
-            apply_execution_result(
-                &mut queued.job,
-                &result,
-                queued.control.cancel_requested.load(Ordering::SeqCst),
-                cancellation.as_ref(),
-            )?;
+
+        write_launch_banner(
+            &queued.stdout_path,
+            &queued.stderr_path,
+            &queued.command,
+            queued.detach_gui,
+        )?;
+
+        if queued.detach_gui {
+            run_detached_gui(&mut queued).await?;
         } else {
-            queued.job.exit_reason = Some("managed_execution_policy_error".to_owned());
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued
-                .job
-                .transition(ExecutionStatus::Failed)
-                .map_err(|_| CoreError::InvalidRequest)?;
+            // Catalog CLI uses a direct spawn/wait path so short-lived tools still leave logs
+            // even when systemd identity probes race with quick exits.
+            run_catalog_cli(&mut queued).await?;
         }
+
         let stdout = commit_existing_file(
             &queued.store,
             &queued.stdout_path,
@@ -1856,6 +1932,218 @@ impl CoreService {
         queued.job.stderr_artifact_id = stderr.map(|artifact| artifact.artifact_id);
         queued.store.save_job(&queued.job)?;
         Ok(())
+    }
+
+    pub fn list_catalog(&self) -> Result<CatalogSnapshot, CoreError> {
+        let catalog = ToolCatalog::load_default().map_err(|e| map_catalog_error(&e))?;
+        Ok(CatalogSnapshot {
+            tools_root: catalog.paths.tools_root.display().to_string(),
+            wordlists_root: catalog.paths.wordlists_root.display().to_string(),
+            categories: catalog
+                .categories
+                .iter()
+                .map(|category| CatalogCategoryDto {
+                    id: category.id.clone(),
+                    name: category.name.clone(),
+                    summary: category.summary.clone(),
+                    order: category.order,
+                })
+                .collect(),
+            tools: catalog
+                .tool_views()
+                .into_iter()
+                .map(|view| CatalogToolDto {
+                    id: view.id,
+                    name: view.name,
+                    category: view.category,
+                    category_name: view.category_name,
+                    summary: view.summary,
+                    usage: view.usage,
+                    mode: view.mode,
+                    featured: view.featured,
+                    available: view.available,
+                    binary_path: view.binary_path,
+                    detail: view.detail,
+                    icon: view.icon,
+                    accent: view.accent,
+                    needs_target: view.needs_target,
+                    fields: view
+                        .fields
+                        .into_iter()
+                        .map(|field| CatalogFormFieldDto {
+                            id: field.id,
+                            field_type: field.field_type,
+                            label: field.label,
+                            required: field.required,
+                            default_value: field.default,
+                            from: field.from,
+                            options: field.options,
+                            hint: field.hint,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            wordlists: catalog
+                .wordlist_views()
+                .into_iter()
+                .map(|view| WordlistDto {
+                    id: view.id,
+                    name: view.name,
+                    path: view.path,
+                    available: view.available,
+                    tags: view.tags,
+                })
+                .collect(),
+        })
+    }
+
+    pub fn ensure_target_scope(
+        &self,
+        request: &EnsureTargetRequest,
+    ) -> Result<TargetScope, CoreError> {
+        let base_url = normalize_scope_base_url(&request.base_url)?;
+        let target = parse_http_url(&base_url)?;
+        let store = self.project_store(&request.project_id, true)?;
+        for scope in store.list_target_scopes()? {
+            if validate_target_against_scope(&scope, &target).is_ok() {
+                return Ok(scope);
+            }
+        }
+        self.create_scope(&CreateScopeRequest {
+            project_id: request.project_id.clone(),
+            base_url,
+        })
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn start_catalog_tool(
+        self: &Arc<Self>,
+        request: RunCatalogToolRequest,
+    ) -> Result<JobView, CoreError> {
+        request
+            .project_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        if request.tool_id.is_empty() || request.tool_id.len() > 128 {
+            return Err(CoreError::InvalidRequest);
+        }
+        let catalog = ToolCatalog::load_default().map_err(|e| map_catalog_error(&e))?;
+        let tool = catalog
+            .tool(&request.tool_id)
+            .ok_or(CoreError::ToolUnavailable)?;
+
+        let mut form = request.form.clone();
+        for field in &tool.form.fields {
+            if field.from == "target_url" && !request.target_url.is_empty() {
+                form.entry(field.id.clone())
+                    .or_insert_with(|| request.target_url.clone());
+            }
+            if !field.default.is_empty() {
+                form.entry(field.id.clone())
+                    .or_insert_with(|| field.default.clone());
+            }
+        }
+
+        // Scope only when the tool actually needs a network target.
+        let scope_seed = form
+            .get("url")
+            .cloned()
+            .filter(|value| !value.is_empty())
+            .or_else(|| form.get("target").cloned().filter(|v| !v.is_empty()))
+            .or_else(|| form.get("host").cloned().filter(|v| !v.is_empty()))
+            .or_else(|| (!request.target_url.is_empty()).then(|| request.target_url.clone()));
+
+        let scope = if let Some(seed) = &scope_seed {
+            let scope = self.ensure_target_scope(&EnsureTargetRequest {
+                project_id: request.project_id.clone(),
+                base_url: seed.clone(),
+            })?;
+            if let Ok(base) = normalize_scope_base_url(seed) {
+                let target = parse_http_url(&base)?;
+                validate_target_against_scope(&scope, &target)?;
+            }
+            scope
+        } else {
+            let store = self.project_store(&request.project_id, true)?;
+            if let Some(scope) = store.list_target_scopes()?.into_iter().next() {
+                scope
+            } else {
+                self.create_scope(&CreateScopeRequest {
+                    project_id: request.project_id.clone(),
+                    base_url: "http://127.0.0.1/".to_owned(),
+                })?
+            }
+        };
+
+        let (store, run_guard) = self.begin_run(&request.project_id)?;
+        let job_id = JobId::new();
+        let job_directory = create_job_directory(store.layout().scans.as_path(), &job_id)?;
+        let prepared = prepare_catalog_command(
+            &catalog,
+            &request.tool_id,
+            &scope.scope_id,
+            &form,
+            &job_directory,
+        )
+        .map_err(|e| map_catalog_error(&e))?;
+
+        let command = prepared.spec;
+        store.save_command_spec(&command)?;
+
+        let job = Job {
+            job_id: job_id.clone(),
+            parent_job_id: None,
+            command_spec_id: command.command_spec_id.clone(),
+            execution_status: ExecutionStatus::Queued,
+            import_status: ImportStatus::Skipped,
+            created_at: Timestamp::now(),
+            started_at: None,
+            stopped_at: None,
+            pid: None,
+            process_group_id: None,
+            process_start_ticks: None,
+            exit_code: None,
+            exit_reason: None,
+            systemd_unit: None,
+            cgroup_path: None,
+            invocation_id: None,
+            supervisor_backend: None,
+            ownership_verified: false,
+            cleanup_verified: false,
+            residual_processes: 0,
+            cancel_duration_millis: None,
+            stdout_artifact_id: None,
+            stderr_artifact_id: None,
+            retry_count: 0,
+            source_job_id: None,
+        };
+        store.save_job(&job)?;
+        let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
+        self.active_executions
+            .lock()
+            .map_err(|_| CoreError::StateLock)?
+            .insert(job_id, Arc::clone(&control));
+
+        let detach_gui = matches!(
+            prepared.mode,
+            flagdeck_cli_adapters::ToolMode::ExternalLaunch
+        );
+        let queued = PreparedExternalRun {
+            store,
+            command,
+            job,
+            control,
+            stdout_path: prepared.stdout_path,
+            stderr_path: prepared.stderr_path,
+            detach_gui,
+            _run_guard: run_guard,
+        };
+        let view = JobView::from(queued.store.job(&queued.job.job_id)?);
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = core.execute_external_launch(queued).await;
+        });
+        Ok(view)
     }
 
     pub fn start_tool(self: &Arc<Self>, request: RunToolRequest) -> Result<JobView, CoreError> {
@@ -2308,6 +2596,8 @@ struct PreparedExternalRun {
     control: Arc<ActiveExecution>,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
+    /// GUI tools: spawn detached outside systemd so DISPLAY/XAUTHORITY work.
+    detach_gui: bool,
     _run_guard: ActiveRunGuard,
 }
 
@@ -2349,6 +2639,373 @@ fn valid_archive_name(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn map_catalog_error(error: &CatalogError) -> CoreError {
+    match error {
+        CatalogError::NotFound | CatalogError::BinaryMissing => CoreError::ToolUnavailable,
+        CatalogError::InvalidInput | CatalogError::Url(_) => CoreError::InvalidRequest,
+        CatalogError::Invalid(_) | CatalogError::Toml(_) | CatalogError::Io(_) => {
+            CoreError::Adapter(AdapterError::InvalidInput)
+        }
+    }
+}
+
+fn is_active_execution_status(status: ExecutionStatus) -> bool {
+    matches!(
+        status,
+        ExecutionStatus::Queued
+            | ExecutionStatus::Starting
+            | ExecutionStatus::Running
+            | ExecutionStatus::Stopping
+    )
+}
+
+fn append_job_log(path: &Path, text: &str) -> Result<(), CoreError> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    Ok(())
+}
+
+fn write_launch_banner(
+    stdout_path: &Path,
+    stderr_path: &Path,
+    command: &CommandSpec,
+    detach_gui: bool,
+) -> Result<(), CoreError> {
+    let argv = command.argv_exec.join(" ");
+    let banner = format!(
+        "=== FlagDeck launch ===\n\
+         tool_id: {}\n\
+         program: {}\n\
+         argv: {}\n\
+         cwd: {}\n\
+         mode: {}\n\
+         timeout_ms: {}\n\
+         started_at: {}\n\
+         =======================\n",
+        command.tool_id,
+        command.program,
+        argv,
+        command.cwd,
+        if detach_gui {
+            "detached_gui"
+        } else {
+            "managed_cli"
+        },
+        command.timeout_millis,
+        Timestamp::now().0
+    );
+    append_job_log(stdout_path, &banner)?;
+    append_job_log(stderr_path, &banner)?;
+    // Surface missing GUI session early in the log pane.
+    if detach_gui {
+        let display = command
+            .env_exec
+            .get("DISPLAY")
+            .cloned()
+            .unwrap_or_else(|| "(unset)".to_owned());
+        let xauth = command
+            .env_exec
+            .get("XAUTHORITY")
+            .cloned()
+            .unwrap_or_else(|| "(unset)".to_owned());
+        append_job_log(
+            stdout_path,
+            &format!("[flagdeck] gui env DISPLAY={display} XAUTHORITY={xauth}\n"),
+        )?;
+    }
+    Ok(())
+}
+
+fn open_job_log_file(path: &Path) -> Result<fs::File, CoreError> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    Ok(file)
+}
+
+fn spawn_catalog_process(
+    command: &CommandSpec,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Result<std::process::Child, CoreError> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let stdout = open_job_log_file(stdout_path)?;
+    let stderr = open_job_log_file(stderr_path)?;
+    let mut process = Command::new(&command.program);
+    process
+        .args(&command.argv_exec)
+        .current_dir(&command.cwd)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    for (key, value) in &command.env_exec {
+        process.env(key, value);
+    }
+    process.process_group(0);
+    process.spawn().map_err(CoreError::Io)
+}
+
+async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreError> {
+    queued
+        .job
+        .transition(ExecutionStatus::Running)
+        .map_err(|_| CoreError::InvalidRequest)?;
+    queued.store.save_job(&queued.job)?;
+
+    let mut child =
+        match spawn_catalog_process(&queued.command, &queued.stdout_path, &queued.stderr_path) {
+            Ok(child) => child,
+            Err(error) => {
+                let detail = format!("[flagdeck] cli spawn failed: {error}\n");
+                append_job_log(&queued.stderr_path, &detail)?;
+                append_job_log(&queued.stdout_path, &detail)?;
+                queued.job.exit_reason = Some(format!("cli_spawn_failed:{error}"));
+                queued.job.stopped_at = Some(Timestamp::now());
+                queued
+                    .job
+                    .transition(ExecutionStatus::Failed)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+                return Ok(());
+            }
+        };
+
+    let pid = i32::try_from(child.id()).unwrap_or_default();
+    queued.job.pid = Some(pid);
+    queued.job.process_group_id = Some(pid);
+    queued.job.ownership_verified = true;
+    queued.job.supervisor_backend = Some(SupervisorBackend::PgidFallback);
+    let identity = ManagedProcessIdentity {
+        supervisor_backend: SupervisorBackend::PgidFallback,
+        wrapper_pid: pid,
+        pid: Some(pid),
+        process_group_id: Some(pid),
+        process_start_ticks: None,
+        systemd_unit: None,
+        cgroup_path: None,
+        invocation_id: None,
+        target_program: queued.command.program.clone(),
+        ownership_verified: true,
+    };
+    set_active_identity(&queued.control, &identity)?;
+    queued.store.save_job(&queued.job)?;
+    append_job_log(
+        &queued.stdout_path,
+        &format!("[flagdeck] process started pid={pid}\n"),
+    )?;
+
+    let timeout = Duration::from_millis(queued.command.timeout_millis.max(1_000));
+    let wait_result =
+        tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || child.wait())).await;
+
+    match wait_result {
+        Ok(Ok(Ok(status))) => {
+            let code = status.code();
+            append_job_log(
+                &queued.stdout_path,
+                &format!("\n[flagdeck] finished exit={code:?} status={status}\n"),
+            )?;
+            queued.job.exit_code = code;
+            queued.job.exit_reason = Some(format!("exit:{status}"));
+            queued.job.stopped_at = Some(Timestamp::now());
+            queued.job.cleanup_verified = true;
+            if status.success() {
+                queued
+                    .job
+                    .transition(ExecutionStatus::Succeeded)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+            } else {
+                queued
+                    .job
+                    .transition(ExecutionStatus::Failed)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+            }
+        }
+        Ok(Ok(Err(error))) => {
+            append_job_log(
+                &queued.stderr_path,
+                &format!("[flagdeck] wait failed: {error}\n"),
+            )?;
+            queued.job.exit_reason = Some(format!("wait_failed:{error}"));
+            queued.job.stopped_at = Some(Timestamp::now());
+            queued
+                .job
+                .transition(ExecutionStatus::Failed)
+                .map_err(|_| CoreError::InvalidRequest)?;
+        }
+        Ok(Err(_)) => {
+            append_job_log(
+                &queued.stderr_path,
+                "[flagdeck] internal join error while waiting for process\n",
+            )?;
+            queued.job.exit_reason = Some("wait_join_error".to_owned());
+            queued.job.stopped_at = Some(Timestamp::now());
+            queued
+                .job
+                .transition(ExecutionStatus::Failed)
+                .map_err(|_| CoreError::InvalidRequest)?;
+        }
+        Err(_) => {
+            append_job_log(
+                &queued.stdout_path,
+                &format!(
+                    "\n[flagdeck] timed out after {} ms; sending SIGKILL to process group\n",
+                    timeout.as_millis()
+                ),
+            )?;
+            if pid > 1 {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            queued.job.exit_reason = Some(format!("timeout_ms:{}", timeout.as_millis()));
+            queued.job.stopped_at = Some(Timestamp::now());
+            queued.job.cleanup_verified = true;
+            queued
+                .job
+                .transition(ExecutionStatus::TimedOut)
+                .map_err(|_| CoreError::InvalidRequest)?;
+        }
+    }
+    queued.store.save_job(&queued.job)?;
+    Ok(())
+}
+
+async fn run_detached_gui(queued: &mut PreparedExternalRun) -> Result<(), CoreError> {
+    queued
+        .job
+        .transition(ExecutionStatus::Running)
+        .map_err(|_| CoreError::InvalidRequest)?;
+    queued.store.save_job(&queued.job)?;
+
+    let mut child =
+        match spawn_catalog_process(&queued.command, &queued.stdout_path, &queued.stderr_path) {
+            Ok(child) => child,
+            Err(error) => {
+                let detail = format!("[flagdeck] gui spawn failed: {error}\n");
+                append_job_log(&queued.stderr_path, &detail)?;
+                append_job_log(&queued.stdout_path, &detail)?;
+                queued.job.exit_reason = Some(format!("gui_spawn_failed:{error}"));
+                queued.job.stopped_at = Some(Timestamp::now());
+                queued
+                    .job
+                    .transition(ExecutionStatus::Failed)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+                return Ok(());
+            }
+        };
+
+    let pid = i32::try_from(child.id()).unwrap_or_default();
+    queued.job.pid = Some(pid);
+    queued.job.process_group_id = Some(pid);
+    queued.store.save_job(&queued.job)?;
+    append_job_log(
+        &queued.stdout_path,
+        &format!("[flagdeck] gui process spawned pid={pid}\n"),
+    )?;
+
+    // Give the UI a moment to crash with a visible error if DISPLAY/Xauth is wrong.
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            let code = status.code();
+            append_job_log(
+                &queued.stdout_path,
+                &format!("[flagdeck] gui exited early code={code:?} status={status}\n"),
+            )?;
+            queued.job.exit_code = code;
+            queued.job.exit_reason = Some(format!("gui_exited_early:{status}"));
+            queued.job.stopped_at = Some(Timestamp::now());
+            queued.job.cleanup_verified = true;
+            if status.success() {
+                queued
+                    .job
+                    .transition(ExecutionStatus::Succeeded)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+            } else {
+                queued
+                    .job
+                    .transition(ExecutionStatus::Failed)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+            }
+        }
+        Ok(None) => {
+            append_job_log(
+                &queued.stdout_path,
+                &format!(
+                    "[flagdeck] gui still running after probe; detaching pid={pid}\n\
+                     [flagdeck] 独立窗口应已打开。此任务标记为成功，进程不再由 FlagDeck 等待。\n"
+                ),
+            )?;
+            // Reap zombies without blocking the Tokio runtime / tests.
+            std::thread::Builder::new()
+                .name(format!("flagdeck-gui-reaper-{pid}"))
+                .spawn(move || {
+                    let _ = child.wait();
+                })
+                .ok();
+            queued.job.exit_reason = Some(format!("gui_detached_pid_{pid}"));
+            queued.job.stopped_at = Some(Timestamp::now());
+            queued.job.cleanup_verified = true;
+            queued
+                .job
+                .transition(ExecutionStatus::Succeeded)
+                .map_err(|_| CoreError::InvalidRequest)?;
+        }
+        Err(error) => {
+            append_job_log(
+                &queued.stderr_path,
+                &format!("[flagdeck] gui wait error: {error}\n"),
+            )?;
+            queued.job.exit_reason = Some(format!("gui_wait_error:{error}"));
+            queued.job.stopped_at = Some(Timestamp::now());
+            queued
+                .job
+                .transition(ExecutionStatus::Failed)
+                .map_err(|_| CoreError::InvalidRequest)?;
+        }
+    }
+    queued.store.save_job(&queued.job)?;
+    Ok(())
+}
+
+/// Accept full http(s) URL or bare host/IP/CIDR-ish target for scope registration.
+fn normalize_scope_base_url(value: &str) -> Result<String, CoreError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let _ = parse_http_url(trimmed)?;
+        return Ok(trimmed.to_owned());
+    }
+    // Strip path-like noise: "1.2.3.4/24" is ok for display scope host side;
+    // create_scope expects a URL — wrap as http://host/
+    let host = trimmed.split('/').next().unwrap_or(trimmed);
+    if host.is_empty() || host.contains(' ') {
+        return Err(CoreError::InvalidRequest);
+    }
+    let synthesized = format!("http://{host}/");
+    let _ = parse_http_url(&synthesized)?;
+    Ok(synthesized)
 }
 
 fn parse_http_url(value: &str) -> Result<Url, CoreError> {
@@ -3054,9 +3711,20 @@ pub fn typescript_declarations() -> String {
         declaration!(PayloadPreview),
         declaration!(AlphaTool),
         declaration!(RunToolRequest),
+        declaration!(CatalogCategoryDto),
+        declaration!(CatalogFormFieldDto),
+        declaration!(CatalogToolDto),
+        declaration!(WordlistDto),
+        declaration!(CatalogSnapshot),
+        declaration!(RunCatalogToolRequest),
+        declaration!(EnsureTargetRequest),
         declaration!(JobView),
         declaration!(JobPageRequest),
         declaration!(JobPage),
+        declaration!(DeleteJobRequest),
+        declaration!(DeleteJobResult),
+        declaration!(ClearJobsRequest),
+        declaration!(ClearJobsResult),
         declaration!(JobLogStream),
         declaration!(PreviewJobLogRequest),
         declaration!(JobLogPreview),

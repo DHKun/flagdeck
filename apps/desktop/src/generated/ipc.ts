@@ -150,11 +150,33 @@ export type AlphaTool = "curl" | "dddd" | "ffuf" | "arjun" | "fscan" | "gobuster
 
 export type RunToolRequest = { project_id: ProjectId, scope_id: ScopeId, tool: AlphaTool, target_url: string, wordlist_terms: Array<string>, };
 
+export type CatalogCategoryDto = { id: string, name: string, summary: string, order: number, };
+
+export type CatalogFormFieldDto = { id: string, field_type: string, label: string, required: boolean, default_value: string, from: string, options: Array<string>, hint: string, };
+
+export type CatalogToolDto = { id: string, name: string, category: string, category_name: string, summary: string, usage: string, mode: string, featured: boolean, available: boolean, binary_path: string, detail: string, icon: string, accent: string, fields: Array<CatalogFormFieldDto>, needs_target: boolean, };
+
+export type WordlistDto = { id: string, name: string, path: string, available: boolean, tags: Array<string>, };
+
+export type CatalogSnapshot = { tools_root: string, wordlists_root: string, categories: Array<CatalogCategoryDto>, tools: Array<CatalogToolDto>, wordlists: Array<WordlistDto>, };
+
+export type RunCatalogToolRequest = { project_id: ProjectId, tool_id: string, target_url: string, form: { [key in string]: string }, };
+
+export type EnsureTargetRequest = { project_id: ProjectId, base_url: string, };
+
 export type JobView = { job: Job, tool_id: string, command_preview: string, network_isolation: string, parser_id: string | null, parser_version: string | null, parser_error: string | null, discovery_count: number, http_message_count: number, };
 
 export type JobPageRequest = { project_id: ProjectId, cursor: string | null, limit: number, };
 
 export type JobPage = { items: Array<JobView>, next_cursor: string | null, };
+
+export type DeleteJobRequest = { project_id: ProjectId, job_id: JobId, };
+
+export type DeleteJobResult = { job_id: JobId, deleted: boolean, };
+
+export type ClearJobsRequest = { project_id: ProjectId, };
+
+export type ClearJobsResult = { deleted: number, };
 
 export type JobLogStream = "stdout" | "stderr";
 

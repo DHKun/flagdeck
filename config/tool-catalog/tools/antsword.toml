@@ -1,0 +1,45 @@
+id = "antsword"
+name = "AntSword"
+category = "gui"
+summary = "蚁剑 WebShell 管理端（独立窗口）"
+
+usage = """
+【类型】独立 GUI（蚁剑 WebShell 管理端）
+
+【FlagDeck】
+一键启动本地 Loader，无需填写目标 URL。
+Shell 连接、编码、插件均在蚁剑窗口内操作。
+
+【注意】
+• 需要图形桌面会话（DISPLAY / XAUTHORITY）
+• 首次启动可能较慢
+• 仅在授权靶场 / CTF 环境使用
+"""
+mode = "external_launch"
+featured = true
+# 直接启动 Loader 可执行文件，cwd 为其目录
+cwd = "Active/webshell-tools/AntSword/loader/AntSword-Loader-v4.0.3-linux-x64"
+
+[binary]
+command = "AntSword"
+path = "Active/webshell-tools/AntSword/loader/AntSword-Loader-v4.0.3-linux-x64/AntSword"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "app"
+accent = "gray"
+
+# GUI 不需要目标 URL 字段
+[form]
+fields = []
+
+[argv]
+template = []
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 2147483648
+tasks_max = 256

@@ -1,0 +1,187 @@
+id = "ffuf"
+name = "ffuf"
+category = "content_discovery"
+summary = "目录/路径模糊测试（FUZZ）"
+
+usage = """
+【FlagDeck 表单】
+• URL：默认在末尾加 /FUZZ；若已含 FUZZ 关键字则不改
+• 字典 / 线程 / 匹配与过滤状态码 / 扩展名
+• 方法、POST 体、请求头、代理、自动校准、递归、速率
+
+【实际调用】
+ffuf -u ... -w dict -t N -mc ... [可选开关]
+  -o out.json -of json -noninteractive -s
+
+完整帮助：ffuf -h
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "ffuf"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "folder"
+accent = "orange"
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标 URL -u"
+required = true
+from = "target_url"
+hint = "默认追加 /FUZZ；URL 中已有 FUZZ 则保持原样"
+
+[[form.fields]]
+id = "wordlist"
+type = "wordlist"
+label = "字典 -w"
+required = true
+default = "seclists-common"
+
+[[form.fields]]
+id = "threads"
+type = "number"
+label = "线程 -t"
+default = "40"
+required = true
+
+[[form.fields]]
+id = "mc"
+type = "text"
+label = "匹配状态码 -mc"
+default = "200,204,301,302,307,401,403"
+required = true
+
+[[form.fields]]
+id = "fc"
+type = "text"
+label = "过滤状态码 -fc（可选）"
+default = ""
+required = false
+hint = "例 404"
+
+[[form.fields]]
+id = "extensions"
+type = "text"
+label = "扩展名 -e（可选）"
+default = ""
+required = false
+hint = "例 php,asp,aspx,jsp,txt"
+
+[[form.fields]]
+id = "method"
+type = "select"
+label = "方法 -X"
+default = "GET"
+options = ["GET", "POST", "PUT", "HEAD"]
+required = true
+
+[[form.fields]]
+id = "post_data"
+type = "text"
+label = "POST 体 -d（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "headers"
+type = "text"
+label = "请求头 -H（可选）"
+default = ""
+required = false
+hint = "单条 Header: Value"
+
+[[form.fields]]
+id = "proxy"
+type = "text"
+label = "代理 -x（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "auto_calibrate"
+type = "select"
+label = "自动校准 -ac"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "recursion"
+type = "select"
+label = "递归 -recursion"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "rate"
+type = "number"
+label = "速率 -rate（0=不限）"
+default = "0"
+required = true
+
+[argv]
+template = [
+  "-u",
+  "{ffuf_url}",
+  "-w",
+  "{wordlist}",
+  "-t",
+  "{threads}",
+  "-mc",
+  "{mc}",
+  "-X",
+  "{method}",
+  "-o",
+  "{job_dir}/ffuf-output.json",
+  "-of",
+  "json",
+  "-noninteractive",
+  "-s",
+]
+
+[[argv.optional]]
+field = "fc"
+args = ["-fc", "{fc}"]
+
+[[argv.optional]]
+field = "extensions"
+args = ["-e", "{extensions}"]
+
+[[argv.optional]]
+field = "post_data"
+args = ["-d", "{post_data}"]
+
+[[argv.optional]]
+field = "headers"
+args = ["-H", "{headers}"]
+
+[[argv.optional]]
+field = "proxy"
+args = ["-x", "{proxy}"]
+
+[[argv.optional]]
+field = "auto_calibrate"
+equals = "yes"
+args = ["-ac"]
+
+[[argv.optional]]
+field = "recursion"
+equals = "yes"
+args = ["-recursion"]
+
+[[argv.optional]]
+field = "rate"
+args = ["-rate", "{rate}"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 268435456

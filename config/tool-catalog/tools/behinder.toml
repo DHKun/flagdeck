@@ -1,0 +1,42 @@
+id = "behinder"
+name = "Behinder"
+category = "gui"
+summary = "冰蝎 WebShell 管理端（独立窗口）"
+
+usage = """
+【类型】独立 GUI（冰蝎 WebShell 管理端）
+
+【FlagDeck】
+通过 start-behinder.sh 启动本地 Java 客户端，无需目标 URL。
+连接信息在冰蝎界面中配置。
+
+【注意】
+• 依赖本机 Java 与图形环境
+• 仅在授权靶场 / CTF 环境使用
+"""
+mode = "external_launch"
+featured = true
+cwd = "Active/webshell-tools/Behinder/app"
+
+[binary]
+command = "start-behinder.sh"
+path = "Active/webshell-tools/Behinder/app/start-behinder.sh"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "app"
+accent = "gray"
+
+[form]
+fields = []
+
+[argv]
+template = []
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 1073741824
+tasks_max = 256

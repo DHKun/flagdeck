@@ -1,0 +1,156 @@
+id = "fscan"
+name = "fscan"
+category = "fingerprint"
+summary = "主机/端口/服务扫描（Active/fscan）"
+
+usage = """
+【FlagDeck 表单】
+• 主机 -h、端口 -p、模式 -m
+• 可开关：禁用 ping / POC / 爆破、全量 POC、输出格式与超时
+
+【实际调用】
+fscan -h <主机> -p <端口> -m <模式> [ -np ] [ -nopoc ] [ -nobr ] [ -full ]
+  -f <格式> -o 输出 -gt <超时>
+
+完整帮助：fscan -help
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "fscan"
+path = "Active/fscan/fscan_2.1.3_linux_x64"
+resolve = ["tools_root", "path", "system"]
+
+[ui]
+icon = "scan"
+accent = "teal"
+
+[[form.fields]]
+id = "host"
+type = "host"
+label = "目标主机 -h"
+required = true
+from = "target_url"
+hint = "IP、IP 段、域名（不要带路径）"
+
+[[form.fields]]
+id = "ports"
+type = "text"
+label = "端口 -p"
+default = "80,443,8080,8000,8443,22,3389,3306,6379"
+required = true
+hint = "逗号分隔；留空不可（本界面要求填写）"
+
+[[form.fields]]
+id = "mode"
+type = "select"
+label = "扫描模式 -m"
+default = "all"
+options = ["all", "icmp"]
+required = true
+hint = "all=完整流程；icmp=仅存活"
+
+[[form.fields]]
+id = "no_ping"
+type = "select"
+label = "禁用 ping -np"
+default = "yes"
+options = ["yes", "no"]
+required = true
+
+[[form.fields]]
+id = "no_poc"
+type = "select"
+label = "禁用 POC -nopoc"
+default = "yes"
+options = ["yes", "no"]
+required = true
+
+[[form.fields]]
+id = "no_brute"
+type = "select"
+label = "禁用爆破 -nobr"
+default = "yes"
+options = ["yes", "no"]
+required = true
+
+[[form.fields]]
+id = "full_poc"
+type = "select"
+label = "全量 POC -full"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "更慢、更吵；默认关闭"
+
+[[form.fields]]
+id = "output_format"
+type = "select"
+label = "输出格式 -f"
+default = "json"
+options = ["json", "txt", "csv"]
+required = true
+
+[[form.fields]]
+id = "global_timeout"
+type = "number"
+label = "全局超时秒 -gt"
+default = "120"
+required = true
+
+[[form.fields]]
+id = "proxy"
+type = "text"
+label = "HTTP 代理 -proxy（可选）"
+default = ""
+required = false
+
+[argv]
+template = [
+  "-h",
+  "{host}",
+  "-p",
+  "{ports}",
+  "-m",
+  "{mode}",
+  "-f",
+  "{output_format}",
+  "-o",
+  "{job_dir}/fscan-output.{output_format}",
+  "-gt",
+  "{global_timeout}",
+  "-nocolor",
+  "-nopg",
+]
+
+[[argv.optional]]
+field = "no_ping"
+equals = "yes"
+args = ["-np"]
+
+[[argv.optional]]
+field = "no_poc"
+equals = "yes"
+args = ["-nopoc"]
+
+[[argv.optional]]
+field = "no_brute"
+equals = "yes"
+args = ["-nobr"]
+
+[[argv.optional]]
+field = "full_poc"
+equals = "yes"
+args = ["-full"]
+
+[[argv.optional]]
+field = "proxy"
+args = ["-proxy", "{proxy}"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 536870912

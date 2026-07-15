@@ -11,26 +11,27 @@ use std::sync::Arc;
 
 use flagdeck_core::{
     AppStatus, ArtifactPage, ArtifactPageRequest, ArtifactPreview, CampaignRequest,
-    CancelAllJobsResult, CancelJobRequest, CancelJobResult, CommandError, CoreError, CoreEvent,
-    CoreService, CreateDictionaryRequest, CreateNoteRequest, CreateProjectRequest,
-    CreateScopeRequest, CreateSqlmapRequestFileRequest, DictionaryPage, DictionarySearchResult,
-    DiffHttpMessagesRequest, DiscoveryPage, DiscoveryPageRequest, ExecuteMetasploitModuleRequest,
-    ExportProjectRequest, ExportProjectResult, ExternalLauncherHealthDto, GetHttpMessageRequest,
-    GetMetasploitOptionsRequest, HttpHistoryPage, HttpHistoryPageRequest, HttpMessageDiff,
-    ImportPackagePage, ImportProjectRequest, ImportProjectResult, IntruderAttemptPage,
-    IntruderAttemptPageRequest, IntruderCampaignPage, JobLogPreview, JobPage, JobPageRequest,
-    JobView, LaunchExternalRequest, ListIntruderCampaignsRequest, ListPayloadsRequest,
-    MetasploitConsoleCommandRequest, MetasploitEntityPage, MetasploitExecutionResult,
-    MetasploitModuleOption, MetasploitModuleSummary, MetasploitSessionCommandRequest,
-    MetasploitStatus, MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest,
-    OpenHttpBrowserPreviewResult, OpenProjectRequest, ParseMultipartRequest, PayloadPage,
-    PayloadPreview, PayloadSourceHealthDto, PreviewArtifactRequest, PreviewJobLogRequest,
-    PreviewPayloadRequest, ProjectContextRequest, ProjectPage, ProjectPageRequest,
-    RepeatHttpRequest, RepeatHttpResult, RunToolRequest, ScopePage, SearchDictionaryRequest,
-    SearchMetasploitModulesRequest, SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest,
-    StartMetasploitRequest, StartProxyRequest, StartUploadCampaignRequest,
-    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, ToolHealthDto,
-    ToolPackHealthDto,
+    CancelAllJobsResult, CancelJobRequest, CancelJobResult, CatalogSnapshot, ClearJobsRequest,
+    ClearJobsResult, CommandError, CoreError, CoreEvent, CoreService, CreateDictionaryRequest,
+    CreateNoteRequest, CreateProjectRequest, CreateScopeRequest, CreateSqlmapRequestFileRequest,
+    DeleteJobRequest, DeleteJobResult, DictionaryPage, DictionarySearchResult,
+    DiffHttpMessagesRequest, DiscoveryPage, DiscoveryPageRequest, EnsureTargetRequest,
+    ExecuteMetasploitModuleRequest, ExportProjectRequest, ExportProjectResult,
+    ExternalLauncherHealthDto, GetHttpMessageRequest, GetMetasploitOptionsRequest, HttpHistoryPage,
+    HttpHistoryPageRequest, HttpMessageDiff, ImportPackagePage, ImportProjectRequest,
+    ImportProjectResult, IntruderAttemptPage, IntruderAttemptPageRequest, IntruderCampaignPage,
+    JobLogPreview, JobPage, JobPageRequest, JobView, LaunchExternalRequest,
+    ListIntruderCampaignsRequest, ListPayloadsRequest, MetasploitConsoleCommandRequest,
+    MetasploitEntityPage, MetasploitExecutionResult, MetasploitModuleOption,
+    MetasploitModuleSummary, MetasploitSessionCommandRequest, MetasploitStatus,
+    MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult,
+    OpenProjectRequest, ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
+    PreviewArtifactRequest, PreviewJobLogRequest, PreviewPayloadRequest, ProjectContextRequest,
+    ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest,
+    RunToolRequest, ScopePage, SearchDictionaryRequest, SearchMetasploitModulesRequest,
+    SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest, StartMetasploitRequest,
+    StartProxyRequest, StartUploadCampaignRequest, StopMetasploitEntityRequest,
+    StopMetasploitRequest, StopProxyRequest, ToolHealthDto, ToolPackHealthDto,
 };
 use flagdeck_domain::{
     AdapterEntity, Artifact, DictionaryIndex, HttpMessage, IntruderCampaign, MultipartDocument,
@@ -196,6 +197,68 @@ async fn tool_health(
 ) -> Result<Vec<ToolHealthDto>, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.tool_health()).await
+}
+
+#[tauri::command]
+async fn list_catalog(state: State<'_, Arc<CoreService>>) -> Result<CatalogSnapshot, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.list_catalog()).await
+}
+
+#[tauri::command]
+async fn ensure_target(
+    app: AppHandle,
+    state: State<'_, Arc<CoreService>>,
+    request: EnsureTargetRequest,
+) -> Result<flagdeck_domain::TargetScope, CommandError> {
+    let core = Arc::clone(state.inner());
+    let worker = Arc::clone(&core);
+    let project_id = request.project_id.clone();
+    let scope = run_core(move || worker.ensure_target_scope(&request)).await?;
+    emit_core_event(&app, &core, "scope_saved", Some(project_id));
+    Ok(scope)
+}
+
+#[tauri::command]
+async fn run_catalog_tool(
+    app: AppHandle,
+    state: State<'_, Arc<CoreService>>,
+    request: RunCatalogToolRequest,
+) -> Result<JobView, CommandError> {
+    let core = Arc::clone(state.inner());
+    let worker = Arc::clone(&core);
+    let project_id = request.project_id.clone();
+    let job = run_core(move || worker.start_catalog_tool(request)).await?;
+    emit_core_event(&app, &core, "job_started", Some(project_id));
+    Ok(job)
+}
+
+#[tauri::command]
+async fn delete_job(
+    app: AppHandle,
+    state: State<'_, Arc<CoreService>>,
+    request: DeleteJobRequest,
+) -> Result<DeleteJobResult, CommandError> {
+    let core = Arc::clone(state.inner());
+    let worker = Arc::clone(&core);
+    let project_id = request.project_id.clone();
+    let result = run_core(move || worker.delete_job(&request)).await?;
+    emit_core_event(&app, &core, "job_deleted", Some(project_id));
+    Ok(result)
+}
+
+#[tauri::command]
+async fn clear_jobs(
+    app: AppHandle,
+    state: State<'_, Arc<CoreService>>,
+    request: ClearJobsRequest,
+) -> Result<ClearJobsResult, CommandError> {
+    let core = Arc::clone(state.inner());
+    let worker = Arc::clone(&core);
+    let project_id = request.project_id.clone();
+    let result = run_core(move || worker.clear_jobs(&request)).await?;
+    emit_core_event(&app, &core, "jobs_cleared", Some(project_id));
+    Ok(result)
 }
 
 #[tauri::command]
@@ -946,6 +1009,11 @@ pub fn run() {
             create_scope,
             list_scopes,
             tool_health,
+            list_catalog,
+            ensure_target,
+            run_catalog_tool,
+            delete_job,
+            clear_jobs,
             tool_pack_health,
             external_launcher_health,
             payload_source_health,

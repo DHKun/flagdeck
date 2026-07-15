@@ -1,0 +1,47 @@
+id = "shiro"
+name = "ShiroExploit"
+category = "gui"
+summary = "Shiro 专用桌面客户端（独立窗口，依赖 JavaFX）"
+
+usage = """
+【类型】独立 GUI（ShiroExploit）
+
+【FlagDeck】
+通过 start-shiro.sh 启动。
+使用目录内 Liberica Full JDK 8（自带 JavaFX），因该工具依赖旧版 JavaFX API。
+
+【界面内常见能力】
+• rememberMe 反序列化检测
+• key / gadget 相关测试
+• 具体操作在 GUI 中完成
+
+【注意】
+• 需要图形桌面
+• 仅在授权靶场 / CTF 环境使用
+"""
+mode = "external_launch"
+featured = true
+cwd = "Active/ShiroExploit.V2.51"
+
+[binary]
+command = "start-shiro.sh"
+path = "Active/ShiroExploit.V2.51/start-shiro.sh"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "app"
+accent = "gray"
+
+[form]
+fields = []
+
+[argv]
+template = []
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 1073741824
+tasks_max = 256

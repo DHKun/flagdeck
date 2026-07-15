@@ -13,6 +13,11 @@
     "create_scope",
     "list_scopes",
     "tool_health",
+    "list_catalog",
+    "ensure_target",
+    "run_catalog_tool",
+    "delete_job",
+    "clear_jobs",
     "tool_pack_health",
     "external_launcher_health",
     "payload_source_health",
@@ -174,6 +179,7 @@
       case "app_status":
       case "close_project":
       case "tool_health":
+      case "list_catalog":
       case "tool_pack_health":
       case "list_import_packages":
         valid = Object.keys(payload).length === 0;
@@ -290,6 +296,39 @@
           request.wordlist_terms.every(
             (value) => boundedString(value, 128) && value.length > 0,
           );
+        break;
+      case "ensure_target":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          boundedString(request.base_url, 4096) &&
+          request.base_url.length > 0;
+        break;
+      case "run_catalog_tool":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          boundedString(request.tool_id, 128) &&
+          request.tool_id.length > 0 &&
+          boundedString(request.target_url, 4096) &&
+          object(request.form) &&
+          !Array.isArray(request.form) &&
+          Object.keys(request.form).length <= 64 &&
+          Object.entries(request.form).every(
+            ([key, value]) =>
+              boundedString(key, 128) &&
+              typeof value === "string" &&
+              value.length <= 16_384,
+          );
+        break;
+      case "delete_job":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id);
+        break;
+      case "clear_jobs":
+        valid = object(request) && projectId(request.project_id);
         break;
       case "cancel_job":
         valid =

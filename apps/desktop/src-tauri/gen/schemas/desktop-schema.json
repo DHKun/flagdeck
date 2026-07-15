@@ -201,6 +201,12 @@
           "markdownDescription": "Enables the cancel_job command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_jobs command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-jobs",
+          "markdownDescription": "Enables the clear_jobs command without any pre-configured scope."
+        },
+        {
           "description": "Enables the close_project command without any pre-configured scope.",
           "type": "string",
           "const": "allow-close-project",
@@ -243,10 +249,22 @@
           "markdownDescription": "Enables the create_sqlmap_request command without any pre-configured scope."
         },
         {
+          "description": "Enables the delete_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-job",
+          "markdownDescription": "Enables the delete_job command without any pre-configured scope."
+        },
+        {
           "description": "Enables the diff_http command without any pre-configured scope.",
           "type": "string",
           "const": "allow-diff-http",
           "markdownDescription": "Enables the diff_http command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ensure_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ensure-target",
+          "markdownDescription": "Enables the ensure_target command without any pre-configured scope."
         },
         {
           "description": "Enables the execute_metasploit_module command without any pre-configured scope.",
@@ -301,6 +319,12 @@
           "type": "string",
           "const": "allow-list-artifacts",
           "markdownDescription": "Enables the list_artifacts command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-catalog",
+          "markdownDescription": "Enables the list_catalog command without any pre-configured scope."
         },
         {
           "description": "Enables the list_dictionaries command without any pre-configured scope.",
@@ -441,6 +465,12 @@
           "markdownDescription": "Enables the resume_intruder_campaign command without any pre-configured scope."
         },
         {
+          "description": "Enables the run_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-catalog-tool",
+          "markdownDescription": "Enables the run_catalog_tool command without any pre-configured scope."
+        },
+        {
           "description": "Enables the run_tool command without any pre-configured scope.",
           "type": "string",
           "const": "allow-run-tool",
@@ -543,6 +573,12 @@
           "markdownDescription": "Denies the cancel_job command without any pre-configured scope."
         },
         {
+          "description": "Denies the clear_jobs command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-jobs",
+          "markdownDescription": "Denies the clear_jobs command without any pre-configured scope."
+        },
+        {
           "description": "Denies the close_project command without any pre-configured scope.",
           "type": "string",
           "const": "deny-close-project",
@@ -585,10 +621,22 @@
           "markdownDescription": "Denies the create_sqlmap_request command without any pre-configured scope."
         },
         {
+          "description": "Denies the delete_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-job",
+          "markdownDescription": "Denies the delete_job command without any pre-configured scope."
+        },
+        {
           "description": "Denies the diff_http command without any pre-configured scope.",
           "type": "string",
           "const": "deny-diff-http",
           "markdownDescription": "Denies the diff_http command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ensure_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ensure-target",
+          "markdownDescription": "Denies the ensure_target command without any pre-configured scope."
         },
         {
           "description": "Denies the execute_metasploit_module command without any pre-configured scope.",
@@ -643,6 +691,12 @@
           "type": "string",
           "const": "deny-list-artifacts",
           "markdownDescription": "Denies the list_artifacts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-catalog",
+          "markdownDescription": "Denies the list_catalog command without any pre-configured scope."
         },
         {
           "description": "Denies the list_dictionaries command without any pre-configured scope.",
@@ -781,6 +835,12 @@
           "type": "string",
           "const": "deny-resume-intruder-campaign",
           "markdownDescription": "Denies the resume_intruder_campaign command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-catalog-tool",
+          "markdownDescription": "Denies the run_catalog_tool command without any pre-configured scope."
         },
         {
           "description": "Denies the run_tool command without any pre-configured scope.",

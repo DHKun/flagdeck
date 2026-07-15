@@ -66,6 +66,13 @@ import type {
   StopProxyRequest,
   ToolHealthDto,
   ToolPackHealthDto,
+  CatalogSnapshot,
+  EnsureTargetRequest,
+  RunCatalogToolRequest,
+  DeleteJobRequest,
+  DeleteJobResult,
+  ClearJobsRequest,
+  ClearJobsResult,
   ExecuteMetasploitModuleRequest,
   GetMetasploitOptionsRequest,
   MetasploitConsoleCommandRequest,
@@ -117,6 +124,15 @@ export const ipc = {
   listScopes: (request: ProjectContextRequest): Promise<ScopePage> =>
     invoke("list_scopes", { request }),
   toolHealth: (): Promise<ToolHealthDto[]> => invoke("tool_health"),
+  listCatalog: (): Promise<CatalogSnapshot> => invoke("list_catalog"),
+  ensureTarget: (request: EnsureTargetRequest): Promise<TargetScope> =>
+    invoke("ensure_target", { request }),
+  runCatalogTool: (request: RunCatalogToolRequest): Promise<JobView> =>
+    invoke("run_catalog_tool", { request }),
+  deleteJob: (request: DeleteJobRequest): Promise<DeleteJobResult> =>
+    invoke("delete_job", { request }),
+  clearJobs: (request: ClearJobsRequest): Promise<ClearJobsResult> =>
+    invoke("clear_jobs", { request }),
   toolPackHealth: (): Promise<ToolPackHealthDto[]> =>
     invoke("tool_pack_health"),
   externalLauncherHealth: (

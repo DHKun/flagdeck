@@ -6,6 +6,14 @@
     clippy::too_many_lines
 )]
 
+pub mod catalog;
+
+pub use catalog::{
+    CatalogCategory, CatalogError, CatalogPaths, CatalogToolManifest, CatalogToolView,
+    PreparedCatalogCommand, ToolCatalog, ToolMode, WordlistShortcut, WordlistView,
+    prepare_catalog_command,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::{self, Display};

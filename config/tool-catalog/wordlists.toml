@@ -1,0 +1,33 @@
+schema_version = 1
+
+# Paths are relative to FLAGDECK_WORDLISTS_ROOT (default /data/CTF/Tools/Wordlists)
+
+[[wordlist]]
+id = "seclists-common"
+name = "SecLists common.txt"
+path = "SecLists/Discovery/Web-Content/common.txt"
+tags = ["web", "dirs"]
+
+[[wordlist]]
+id = "seclists-combined-dirs"
+name = "SecLists combined_directories"
+path = "SecLists/Discovery/Web-Content/combined_directories.txt"
+tags = ["web", "dirs"]
+
+[[wordlist]]
+id = "ffuf-dicc-php"
+name = "ffuf-dicc PHP"
+path = "ffuf-dicc/dicc_php.txt"
+tags = ["web", "php"]
+
+[[wordlist]]
+id = "ffuf-dicc-full"
+name = "ffuf-dicc full"
+path = "ffuf-dicc/full.txt"
+tags = ["web", "dirs"]
+
+[[wordlist]]
+id = "ctf-fuzz-cmdi"
+name = "CtfFuzz cmdi"
+path = "CtfFuzz/cmdi.txt"
+tags = ["fuzz"]

@@ -1507,6 +1507,44 @@ impl ProjectStore {
         })
     }
 
+    /// Delete a job row (imports cascade). Scan directory cleanup is caller's concern.
+    pub fn delete_job(&self, job_id: &flagdeck_domain::JobId) -> Result<bool, StorageError> {
+        job_id
+            .validate()
+            .map_err(|error| StorageError::Domain(error.to_string()))?;
+        let id = job_id.0.clone();
+        self.writable_writer()?.call(move |connection| {
+            // Null out soft references so historical discovery/artifact rows stay valid.
+            connection.execute(
+                "UPDATE discovery_observations SET source_job_id=NULL WHERE source_job_id=?1",
+                params![id],
+            )?;
+            connection.execute(
+                "UPDATE artifacts SET source_job_id=NULL WHERE source_job_id=?1",
+                params![id],
+            )?;
+            let removed = connection.execute("DELETE FROM jobs WHERE job_id=?1", params![id])?;
+            Ok(removed > 0)
+        })
+    }
+
+    /// Delete all jobs. Returns the number of removed rows.
+    pub fn clear_jobs(&self) -> Result<usize, StorageError> {
+        self.writable_writer()?.call(move |connection| {
+            connection.execute(
+                "UPDATE discovery_observations SET source_job_id=NULL WHERE source_job_id IS NOT NULL",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE artifacts SET source_job_id=NULL WHERE source_job_id IS NOT NULL",
+                [],
+            )?;
+            // job_imports cascade on job delete
+            let removed = connection.execute("DELETE FROM jobs", [])?;
+            Ok(removed)
+        })
+    }
+
     pub fn job(&self, job_id: &flagdeck_domain::JobId) -> Result<StoredJob, StorageError> {
         job_id
             .validate()

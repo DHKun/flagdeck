@@ -1,0 +1,176 @@
+id = "gobuster"
+name = "gobuster"
+category = "content_discovery"
+summary = "目录枚举（gobuster dir）"
+
+usage = """
+【FlagDeck 表单】
+• URL、字典、线程、扩展名 -x
+• 可开关：忽略证书 -k、跟随重定向 -r
+• 可选 Cookie / 基本认证 / 自定义头 / 状态码黑名单
+
+【实际调用】
+gobuster dir -u URL -w dict -t N [-x ext] [-k] [-r] ...
+  -o out.txt -q --no-error --no-color
+
+完整帮助：gobuster dir -h
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "gobuster"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "folder"
+accent = "orange"
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标 URL -u"
+required = true
+from = "target_url"
+
+[[form.fields]]
+id = "wordlist"
+type = "wordlist"
+label = "字典 -w"
+required = true
+default = "seclists-common"
+
+[[form.fields]]
+id = "threads"
+type = "number"
+label = "线程 -t"
+default = "20"
+required = true
+
+[[form.fields]]
+id = "extensions"
+type = "text"
+label = "扩展名 -x（可选）"
+default = ""
+required = false
+hint = "例 php,txt,bak,zip"
+
+[[form.fields]]
+id = "status_blacklist"
+type = "text"
+label = "状态码黑名单（可选）"
+default = "404"
+required = false
+hint = "对应 --status-codes-blacklist"
+
+[[form.fields]]
+id = "insecure"
+type = "select"
+label = "忽略 TLS 证书 -k"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "follow_redirect"
+type = "select"
+label = "跟随重定向 -r"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "cookies"
+type = "text"
+label = "Cookie -c（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "headers"
+type = "text"
+label = "请求头 -H（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "username"
+type = "text"
+label = "基本认证用户 -U（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "password"
+type = "text"
+label = "基本认证密码 -P（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "timeout"
+type = "text"
+label = "超时 --timeout"
+default = "10s"
+required = true
+hint = "如 10s、30s"
+
+[argv]
+template = [
+  "dir",
+  "-u",
+  "{url}",
+  "-w",
+  "{wordlist}",
+  "-t",
+  "{threads}",
+  "--timeout",
+  "{timeout}",
+  "-o",
+  "{job_dir}/gobuster-output.txt",
+  "-q",
+  "--no-error",
+  "--no-color",
+]
+
+[[argv.optional]]
+field = "extensions"
+args = ["-x", "{extensions}"]
+
+[[argv.optional]]
+field = "status_blacklist"
+args = ["--status-codes-blacklist", "{status_blacklist}"]
+
+[[argv.optional]]
+field = "insecure"
+equals = "yes"
+args = ["-k"]
+
+[[argv.optional]]
+field = "follow_redirect"
+equals = "yes"
+args = ["-r"]
+
+[[argv.optional]]
+field = "cookies"
+args = ["-c", "{cookies}"]
+
+[[argv.optional]]
+field = "headers"
+args = ["-H", "{headers}"]
+
+[[argv.optional]]
+field = "username"
+args = ["-U", "{username}"]
+
+[[argv.optional]]
+field = "password"
+args = ["-P", "{password}"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 268435456

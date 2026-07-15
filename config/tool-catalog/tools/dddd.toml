@@ -1,0 +1,146 @@
+id = "dddd"
+name = "dddd"
+category = "fingerprint"
+summary = "批量信息收集与指纹探测（Active/dddd）"
+
+usage = """
+【FlagDeck 表单】对应 dddd 常用开关
+• 目标 -t：IP / CIDR / 域名 / host:port / URL
+• 端口 -p：空=Top1000
+• 扫描方式 -st、禁用主机发现 -Pn、关闭 POC / 目录探测等
+
+【实际调用】
+dddd -t <目标> [ -p 端口 ] [-Pn] [-st tcp|syn] [-npoc] [-nd] ...
+  -o 输出.jsonl -ot json
+
+完整帮助：dddd -h
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "dddd"
+path = "Active/dddd/dddd"
+resolve = ["tools_root", "path", "system"]
+
+[ui]
+icon = "radar"
+accent = "indigo"
+
+[[form.fields]]
+id = "target"
+type = "host"
+label = "目标 -t"
+required = true
+from = "target_url"
+hint = "IP、网段、域名、host:port 或 URL；也支持资产文件路径"
+
+[[form.fields]]
+id = "ports"
+type = "text"
+label = "端口 -p（可选）"
+default = ""
+required = false
+hint = "空=Top1000；例 80,443,8000-8010"
+
+[[form.fields]]
+id = "scan_type"
+type = "select"
+label = "端口扫描 -st"
+default = "tcp"
+options = ["tcp", "syn"]
+required = true
+
+[[form.fields]]
+id = "skip_host_discovery"
+type = "select"
+label = "禁用主机发现 -Pn"
+default = "yes"
+options = ["yes", "no"]
+required = true
+hint = "对 loopback/已知存活目标建议 yes"
+
+[[form.fields]]
+id = "no_poc"
+type = "select"
+label = "关闭漏洞探测 -npoc"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=只做信息收集，更快更安全"
+
+[[form.fields]]
+id = "no_dir"
+type = "select"
+label = "关闭主动目录指纹 -nd"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "proxy"
+type = "text"
+label = "HTTP 代理 -proxy（可选）"
+default = ""
+required = false
+hint = "例 http://127.0.0.1:8080"
+
+[[form.fields]]
+id = "web_threads"
+type = "number"
+label = "Web 线程 -wt"
+default = "50"
+required = true
+
+[[form.fields]]
+id = "web_timeout"
+type = "number"
+label = "Web 超时秒 -wto"
+default = "10"
+required = true
+
+[argv]
+template = [
+  "-t",
+  "{target}",
+  "-st",
+  "{scan_type}",
+  "-wt",
+  "{web_threads}",
+  "-wto",
+  "{web_timeout}",
+  "-o",
+  "{job_dir}/dddd-output.jsonl",
+  "-ot",
+  "json",
+]
+
+[[argv.optional]]
+field = "ports"
+args = ["-p", "{ports}"]
+
+[[argv.optional]]
+field = "skip_host_discovery"
+equals = "yes"
+args = ["-Pn"]
+
+[[argv.optional]]
+field = "no_poc"
+equals = "yes"
+args = ["-npoc"]
+
+[[argv.optional]]
+field = "no_dir"
+equals = "yes"
+args = ["-nd"]
+
+[[argv.optional]]
+field = "proxy"
+args = ["-proxy", "{proxy}"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 536870912

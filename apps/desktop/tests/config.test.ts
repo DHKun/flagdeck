@@ -27,6 +27,11 @@ const commands = [
   "create_scope",
   "list_scopes",
   "tool_health",
+  "list_catalog",
+  "ensure_target",
+  "run_catalog_tool",
+  "delete_job",
+  "clear_jobs",
   "tool_pack_health",
   "external_launcher_health",
   "payload_source_health",
@@ -116,7 +121,9 @@ describe("Tauri Stable security configuration", () => {
   it("renders target-controlled content through text bindings", () => {
     expect(application).not.toContain("{@html");
     expect(application).not.toContain("innerHTML");
-    expect(application).toContain('data-testid="artifact-preview"');
+    // Workbench shows tool output as text in the log pane, never as HTML.
+    expect(application).toContain("log-pane");
+    expect(application).toContain("jobLogContent");
   });
 
   it("keeps filesystem paths out of command DTOs", () => {

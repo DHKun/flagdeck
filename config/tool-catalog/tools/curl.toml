@@ -1,0 +1,122 @@
+id = "curl"
+name = "curl"
+category = "http"
+summary = "发送 HTTP 请求，把响应头和正文写入任务目录"
+
+usage = """
+【FlagDeck 表单】
+• URL：目标地址
+• 方法 / 超时 / 请求头 / POST 体 / 代理 / 忽略证书
+
+【实际调用要点】
+curl -X METHOD --max-time N [-H ...] [-d body] [-x proxy] [-k]
+  --dump-header headers.txt --output body.bin URL
+
+完整帮助：curl --help all
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "curl"
+path = "/usr/bin/curl"
+resolve = ["path", "system"]
+
+[ui]
+icon = "arrow"
+accent = "blue"
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标 URL"
+required = true
+from = "target_url"
+hint = "完整 http(s) 地址"
+
+[[form.fields]]
+id = "method"
+type = "select"
+label = "HTTP 方法"
+default = "GET"
+options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+required = true
+
+[[form.fields]]
+id = "max_time"
+type = "number"
+label = "超时秒数 --max-time"
+default = "30"
+required = true
+
+[[form.fields]]
+id = "headers"
+type = "text"
+label = "请求头 -H（可选）"
+default = ""
+required = false
+hint = "单条，例如 Authorization: Bearer xxx"
+
+[[form.fields]]
+id = "data"
+type = "text"
+label = "请求体 -d（可选）"
+default = ""
+required = false
+hint = "POST/PUT 等时填写，如表单或 JSON"
+
+[[form.fields]]
+id = "proxy"
+type = "text"
+label = "代理 -x（可选）"
+default = ""
+required = false
+hint = "例如 http://127.0.0.1:8080"
+
+[[form.fields]]
+id = "insecure"
+type = "select"
+label = "忽略证书错误 -k"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[argv]
+template = [
+  "--silent",
+  "--show-error",
+  "--location",
+  "--max-time",
+  "{max_time}",
+  "-X",
+  "{method}",
+  "--dump-header",
+  "{job_dir}/headers.txt",
+  "--output",
+  "{job_dir}/body.bin",
+]
+suffix = ["{url}"]
+
+[[argv.optional]]
+field = "headers"
+args = ["-H", "{headers}"]
+
+[[argv.optional]]
+field = "data"
+args = ["-d", "{data}"]
+
+[[argv.optional]]
+field = "proxy"
+args = ["-x", "{proxy}"]
+
+[[argv.optional]]
+field = "insecure"
+equals = "yes"
+args = ["-k"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 120000
+memory_max_bytes = 268435456

@@ -1119,13 +1119,38 @@ fn append_environment(command: &mut tokio::process::Command, environment: &[(Str
 }
 
 fn validate_output_path(cwd: &Path, output: &Path) -> Result<(), ExecPolicyError> {
-    if output.file_name().is_none() || output.parent() != Some(cwd) || output.exists() {
+    if output.file_name().is_none() {
         return Err(ExecPolicyError::ProgramPath);
+    }
+    // Compare canonical parents so pre-created log files (launch banners) are accepted.
+    let parent = output.parent().ok_or(ExecPolicyError::ProgramPath)?;
+    let canonical_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let canonical_parent = if parent.exists() {
+        fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf())
+    } else {
+        parent.to_path_buf()
+    };
+    if canonical_parent != canonical_cwd {
+        return Err(ExecPolicyError::ProgramPath);
+    }
+    if output.exists() {
+        let metadata = fs::metadata(output)?;
+        if !metadata.is_file() {
+            return Err(ExecPolicyError::ProgramPath);
+        }
     }
     Ok(())
 }
 
 fn create_private_output(path: &Path) -> Result<(), ExecPolicyError> {
+    // Allow pre-seeded launch banners: keep existing private log files.
+    if path.is_file() {
+        let metadata = fs::metadata(path)?;
+        if metadata.mode() & 0o077 != 0 {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        return Ok(());
+    }
     let file = OpenOptions::new()
         .create_new(true)
         .write(true)

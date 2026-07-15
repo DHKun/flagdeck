@@ -5,180 +5,134 @@
 [![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20macOS%20arm64-4f7cff)](#运行环境)
 [![License](https://img.shields.io/badge/license-MIT-65c99a)](LICENSE)
 
-FlagDeck 是面向 Linux 与 Apple Silicon macOS 的安全测试工具箱。常用命令行工具可以直接在界面里配置和运行，任务输出、日志与解析结果统一留在 FlagDeck；少量 GUI 工具通过兼容入口启动。
+FlagDeck 是面向 **Linux x86-64** 与 **Apple Silicon macOS** 的本地安全测试工作台。
 
-适用范围包括 CTF、靶场、实验环境和已经取得明确授权的安全测试。
+设计目标是把本机已有的 CLI 工具做成「选工具 → 填表单 → 运行 → 看日志」，而不是再去各个目录敲命令；少数必须 GUI 的工具提供一键启动。工具二进制**不进入本仓库**，通过本机路径或 Tool Pack 接入。
 
-## 功能
+适用范围：CTF、靶场、实验环境与已获明确授权的安全测试。
 
-- **工具箱**：集成 curl、dddd、ffuf、Arjun、fscan、gobuster、wafw00f，支持 Tool Pack、系统路径和用户路径覆盖。
-- **统一运行**：后台管理工具进程，在界面中查看 stdout、stderr、任务状态与结构化发现结果。
-- **HTTP 工作台**：包含代理捕获、History、Repeater、Diff、Raw HTTP 和 SQLMap 请求文件生成。
-- **Metasploit**：通过本地 Loopback RPC 管理模块、选项、Job、Console 与 Session。
-- **Intruder 与上传测试**：支持四种攻击模式、请求位置选择、Multipart 变异、状态宏与结果验证。
-- **Payload 库**：浏览本地 TXT、YAML、JSON 数据源，提供分页、搜索和有界预览。
-- **独立工具入口**：为 ShiroExploit、AntSword、Behinder、Godzilla 等桌面客户端提供启动和运行记录。
+## 功能概览
 
-FlagDeck 启动时会自动维护本地工作区。用户只需要选择工具、填写目标并运行，无需创建或切换项目。
+- **声明式工具目录（Tool Catalog）**：`config/tool-catalog/` 用 TOML 描述工具表单、参数与 argv；新增工具通常只需加清单，不必改枚举。
+- **表单驱动运行**：curl / dddd / fscan / ffuf / gobuster 等按各自 CLI 定制字段；任务标签切换日志，支持删除与清空。
+- **独立应用入口**：ShiroExploit、AntSword、Behinder、Godzilla 等一键启动（需本机安装对应客户端）。
+- **统一任务与日志**：stdout / stderr 写入本地工作区，可刷新、切换、清理。
+- **扩展能力（进阶）**：HTTP 工作台、Metasploit RPC、Intruder / 上传、Payload 浏览等仍保留在代码中，可按需使用。
+
+详细扩展说明见 [docs/TOOL_CATALOG.md](docs/TOOL_CATALOG.md)。
 
 ## 下载与安装
 
-[GitHub Releases](https://github.com/DHKun/flagdeck/releases) 提供以下安装包：
+[GitHub Releases](https://github.com/DHKun/flagdeck/releases) 在推送 `v*` 标签后由 Actions 构建：
 
-- Linux x86-64：AppImage、Debian/Ubuntu 使用的 DEB、Fedora/RHEL 系使用的 RPM。
-- Apple Silicon macOS：适用于 M1–M4 的 arm64 DMG，最低系统版本为 macOS 13。
-
-AppImage 下载后直接运行：
+| 平台 | 产物 |
+| --- | --- |
+| Linux x86-64 | AppImage、DEB、RPM |
+| macOS arm64（Apple Silicon） | DMG（macOS 13+） |
 
 ```bash
+# AppImage
 chmod +x FlagDeck_*_amd64.AppImage
 ./FlagDeck_*_amd64.AppImage
-```
 
-DEB 和 RPM 使用系统包管理器安装：
-
-```bash
+# DEB / RPM
 sudo apt install ./FlagDeck_*_amd64.deb
 sudo dnf install ./FlagDeck-*.x86_64.rpm
 ```
 
-每次标签发布都会附带 Linux 与 macOS 的 SHA-256 校验文件。macOS 的首次启动步骤见 [macOS 预览版文档](docs/MACOS_PREVIEW.md)。
+发布说明见 [docs/RELEASING.md](docs/RELEASING.md)。macOS 首次启动见 [docs/MACOS_PREVIEW.md](docs/MACOS_PREVIEW.md)。
 
-## 架构
+## 架构（简图）
 
 ```mermaid
 flowchart LR
-    UI["Tauri + Svelte"] --> Core["Rust Core"]
-
-    Core --> Registry["Tool Pack / 工具注册表"]
-    Core --> Runner["受管进程与任务队列"]
-    Core --> Adapters["HTTP / Metasploit / 外部工具 Adapter"]
-    Core --> Storage["SQLite + 日志 + Artifact"]
-
-    Registry --> CLI["CLI 工具"]
-    Registry --> GUI["GUI Compatibility Pack"]
+    UI["Tauri 2 + Svelte"] --> Core["Rust Core"]
+    Core --> Catalog["Tool Catalog TOML"]
+    Core --> Runner["进程启动 / 任务 / 日志"]
+    Core --> Storage["SQLite + Artifact"]
+    Catalog --> CLI["本机 CLI 工具"]
+    Catalog --> GUI["本机 GUI 客户端"]
     Runner --> CLI
-    Adapters --> Mitm["mitmproxy Worker"]
-    Adapters --> Msf["Metasploit RPC"]
-    Adapters --> GUI
-
-    Storage --> Results["发现结果 / HTTP 记录 / 笔记"]
+    Runner --> GUI
 ```
 
-界面只调用经过授权的 Tauri 命令。Rust Core 负责目标范围、工具完整性、进程生命周期、资源限制、日志读取和结果写入。详细的工具包布局与解析顺序见 [Tool Pack 文档](docs/TOOL_PACKS.md)。
+- **本仓库**：应用壳、Core、catalog 清单、mitmproxy worker 源码、合同与测试。
+- **不入库**：ffuf、dddd、fscan、各类 WebShell 客户端、JavaFX/JDK 运行时、字典数据包等上游二进制。
 
-## 工具接入方式
+## 本机工具与字典
 
-| 类型         | 接入方式                               | 仓库内容                        |
-| ------------ | -------------------------------------- | ------------------------------- |
-| CLI 工具     | 在 FlagDeck 内配置、运行、看日志和结果 | Adapter、清单、参数策略和解析器 |
-| HTTP Runtime | 进程隔离的 mitmproxy Worker            | Worker 源码与锁文件             |
-| Metasploit   | 本地 RPC Adapter                       | Rust Adapter 与凭据启动器源码   |
-| GUI 工具     | 兼容入口启动独立客户端                 | Launcher 清单与完整性策略       |
-| Payload 数据 | 本地目录或独立数据包                   | 浏览器实现与示例配置            |
+默认工具根与字典根（可用环境变量覆盖）：
 
-第三方安全工具二进制不进入源码仓库。用户可以安装官方 Tool Pack，或者通过本机配置复用已经安装的工具：
+| 变量 | 默认 |
+| --- | --- |
+| `FLAGDECK_TOOLS_ROOT` | `/data/CTF/Tools` |
+| `FLAGDECK_WORDLISTS_ROOT` | `$FLAGDECK_TOOLS_ROOT/Wordlists` |
+| `FLAGDECK_CATALOG_ROOT` | 安装包/仓库内 `config/tool-catalog` |
+
+示例布局（**用户自备，不随本仓库分发**）：
+
+```text
+/data/CTF/Tools/
+  Active/dddd/dddd
+  Active/fscan/...
+  Active/webshell-tools/...
+  Active/ShiroExploit.V2.51/...
+  Wordlists/SecLists/...
+```
+
+也可继续使用系统 PATH、Tool Pack 或用户配置：
 
 ```text
 $XDG_CONFIG_HOME/flagdeck/tool-paths.toml
 $XDG_CONFIG_HOME/flagdeck/external-launchers.toml
-$XDG_CONFIG_HOME/flagdeck/payload-sources.toml
-
-~/Library/Application Support/FlagDeck/tool-paths.toml
-~/Library/Application Support/FlagDeck/external-launchers.toml
 ```
 
-工具路径覆盖需要同时提供 SHA-256。示例见 [tool-paths.example.toml](config/tool-paths.example.toml)。
-
-## 运行环境
-
-Linux x86-64 版本需要 GTK 3 和 WebKitGTK 4.1。systemd user manager 与 cgroup v2 提供完整的进程管理，PGID 后端覆盖其他 Linux 桌面环境。
-
-Apple Silicon 版本支持 macOS 13 及以上系统，M1–M4 芯片直接运行 arm64 DMG。安装与首次启动说明见 [macOS 预览版文档](docs/MACOS_PREVIEW.md)。
-
-Fedora：
-
-```bash
-sudo dnf install \
-  webkit2gtk4.1-devel openssl-devel curl wget file \
-  libappindicator-gtk3-devel librsvg2-devel libxdo-devel
-sudo dnf group install "C Development Tools and Libraries"
-```
-
-Ubuntu / Debian：
-
-```bash
-sudo apt update
-sudo apt install \
-  libwebkit2gtk-4.1-dev build-essential curl wget file \
-  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-```
+详见 [docs/TOOL_PACKS.md](docs/TOOL_PACKS.md) 与 [config/tool-paths.example.toml](config/tool-paths.example.toml)。
 
 ## 从源码运行
 
-项目使用 [mise](https://mise.jdx.dev/) 固定 Rust、Node、pnpm、Python、uv 与 Java 版本。
+使用 [mise](https://mise.jdx.dev/) 固定工具链：
 
 ```bash
 git clone https://github.com/DHKun/flagdeck.git
 cd flagdeck
-
 mise install
 mise run sync-all
 mise run dev
 ```
 
-构建 Release 二进制：
+常用命令：
 
 ```bash
-mise run build
+mise run test        # 主程序门禁（fmt/clippy/cargo test/UI/合同）
+mise run test-all    # 含 Python mitmproxy worker
+mise run build       # Release 二进制
+mise run package     # Linux AppImage/DEB/RPM
 ```
 
-构建 Linux AppImage、DEB 与 RPM：
+## CI 与双平台发布
 
-```bash
-mise run package
-```
+| Workflow | 触发 | 作用 |
+| --- | --- | --- |
+| [ci.yml](.github/workflows/ci.yml) | `push`/`PR` → `main` | Ubuntu 上 `mise run test` |
+| [packages.yml](.github/workflows/packages.yml) | `v*` 标签、PR、`workflow_dispatch` | **Linux** 与 **macOS arm64** 打包；标签推送时创建 GitHub Release |
 
-维护者推送与应用版本一致的 `v*` 标签后，GitHub Actions 会同时构建 Linux 和 macOS 安装包，并自动创建 GitHub Release。发布步骤见 [发布文档](docs/RELEASING.md)。
+推送与 `apps/desktop/src-tauri/tauri.conf.json` 中版本一致的标签即可发布，例如 `v1.0.0`。
 
-## 开发检查
+说明：CI 只构建 FlagDeck 自身，**不会**打包你的 `/data/CTF/Tools` 第三方工具。发布包是工作台；安全工具仍由用户本机安装。
 
-```bash
-mise run test
-```
+## 许可证与第三方
 
-完整检查包含 Rust 格式、Clippy、Workspace 测试、Svelte 类型检查、前端测试、生产构建和 Adapter 合同测试。mitmproxy Worker 的 Python 检查使用：
+- FlagDeck **自有代码**： [MIT License](LICENSE)
+- **依赖库**：见锁文件与 [THIRD_PARTY.md](THIRD_PARTY.md)
+- **外部安全工具**（dddd、ffuf、fscan、蚁剑、冰蝎、哥斯拉、ShiroExploit 等）：**不在本仓库分发**；使用时遵守各自上游许可证与当地法律，仅限授权场景
 
-```bash
-mise run test-all
-```
-
-## 仓库结构
-
-```text
-apps/desktop/              Tauri 2 + Svelte 桌面端
-crates/                    Core、存储、执行器与协议实现
-adapters/metasploit/       Metasploit RPC Adapter
-workers/mitmproxy/         HTTP Worker
-config/                    工具与策略清单
-docs/                      Tool Pack 文档与架构决策
-tests/                     合同、GUI、性能与真实输出 fixture
-```
-
-## 安全边界
-
-- 运行目标需要进入受控 TargetScope。
-- 工具入口在运行前检查路径、权限、所有权和 SHA-256。
-- 高风险操作要求精确确认短语并写入审计记录。
-- 日志与 Artifact 通过有界接口读取，目标 HTML 不在主 WebView 中渲染。
-- 工作区、数据库、日志和证据文件使用私有权限保存。
-
-安全问题请按 [SECURITY.md](SECURITY.md) 提交。公开 Issue 和截图应清除 Cookie、Token、目标地址与测试数据。
+请勿将未获再分发授权的上游二进制、JDK/JavaFX 运行时或大型字典打进本仓库或公开 Release 附件。
 
 ## 参与开发
 
-提交 Issue 或 Pull Request 前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。新增工具需要提供清单、固定版本、许可证信息、参数策略、解析器和对应测试。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。新增 catalog 工具：在 `config/tool-catalog/tools/` 增加 TOML，并按 [docs/TOOL_CATALOG.md](docs/TOOL_CATALOG.md) 填写表单与 argv。
 
-## 许可证
+## 安全
 
-FlagDeck 自有代码使用 [MIT License](LICENSE)。外部工具、运行时和数据源遵循各自的上游许可证，详细列表见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+见 [SECURITY.md](SECURITY.md)。公开 Issue / 截图请脱敏 Cookie、Token 与目标地址。

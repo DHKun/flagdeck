@@ -1,0 +1,43 @@
+id = "godzilla"
+name = "Godzilla"
+category = "gui"
+summary = "哥斯拉 WebShell 管理端（独立窗口）"
+
+usage = """
+【类型】独立 GUI（哥斯拉 WebShell 管理端）
+
+【FlagDeck】
+通过 start-godzilla.sh 启动 godzilla.jar，无需目标 URL。
+Payload / 加密器 / 插件在哥斯拉窗口内管理。
+
+【注意】
+• 依赖 Java 与图形环境
+• 启动时可能联网校验 hash（上游行为）
+• 仅在授权靶场 / CTF 环境使用
+"""
+mode = "external_launch"
+featured = true
+cwd = "Active/webshell-tools/Godzilla"
+
+[binary]
+command = "start-godzilla.sh"
+path = "Active/webshell-tools/Godzilla/start-godzilla.sh"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "app"
+accent = "gray"
+
+[form]
+fields = []
+
+[argv]
+template = []
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 1073741824
+tasks_max = 256
