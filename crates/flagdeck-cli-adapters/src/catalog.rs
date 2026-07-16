@@ -493,10 +493,15 @@ fn load_tools(root: &Path) -> Result<Vec<CatalogToolManifest>, CatalogError> {
                 path.display()
             )));
         }
-        // external_launch may have empty argv (binary is the full entrypoint)
-        if tool.mode == ToolMode::EmbeddedCli && tool.argv.template.is_empty() {
+        // external_launch may have empty argv (binary is the full entrypoint).
+        // embedded_cli needs at least one of template / optional / suffix so prepare can build argv.
+        if tool.mode == ToolMode::EmbeddedCli
+            && tool.argv.template.is_empty()
+            && tool.argv.optional.is_empty()
+            && tool.argv.suffix.is_empty()
+        {
             return Err(CatalogError::Invalid(format!(
-                "{} embedded_cli requires argv.template",
+                "{} embedded_cli requires argv.template, optional, or suffix",
                 path.display()
             )));
         }

@@ -3,7 +3,7 @@ schema_version = 1
 [[category]]
 id = "http"
 name = "HTTP 探测"
-summary = "快速请求与响应检查"
+summary = "快速请求、参数发现与 WAF 识别"
 order = 10
 
 [[category]]
@@ -19,13 +19,43 @@ summary = "主机发现、服务识别与指纹"
 order = 30
 
 [[category]]
+id = "web_exploit"
+name = "Web 利用"
+summary = "注入、LFI 链生成与上传验证等"
+order = 35
+
+[[category]]
+id = "dns"
+name = "DNS 与信息"
+summary = "域名解析、Whois 与公开情报"
+order = 38
+
+[[category]]
+id = "crypto"
+name = "密码学与编码"
+summary = "RSA、分解、编解码与哈希"
+order = 45
+
+[[category]]
+id = "binary"
+name = "二进制与逆向"
+summary = "strings、解包与 Pwn 辅助"
+order = 50
+
+[[category]]
+id = "defensive"
+name = "防守与应急"
+summary = "AWD 监控、主机排查与蓝队脚本"
+order = 60
+
+[[category]]
 id = "decode"
 name = "解密与分析"
-summary = "流量解密、编码解码与辅助分析"
-order = 40
+summary = "流量解密与辅助分析"
+order = 70
 
 [[category]]
 id = "gui"
 name = "独立应用"
-summary = "需要独立窗口的 GUI 工具"
+summary = "需要独立窗口或本地 Web 服务的工具"
 order = 90

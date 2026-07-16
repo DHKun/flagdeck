@@ -1,0 +1,179 @@
+id = "sqlmap"
+name = "sqlmap"
+category = "web_exploit"
+summary = "自动化 SQL 注入检测与利用（PATH）"
+
+usage = """
+【FlagDeck 表单】
+• URL（可含 ?id=1）/ 可选 POST 体、Cookie、参数名
+• level / risk / 技术类型 / 代理 / batch
+
+【实际调用】
+sqlmap -u URL [--data] [--cookie] [-p] --level N --risk N --technique T --batch
+
+完整帮助：sqlmap -h / sqlmap -hh
+仅限 CTF / 靶场 / 书面授权目标。
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "sqlmap"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "db"
+accent = "red"
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标 URL -u"
+required = true
+from = "target_url"
+hint = "例 http://target/vuln.php?id=1"
+
+[[form.fields]]
+id = "data"
+type = "text"
+label = "POST 体 --data（可选）"
+default = ""
+required = false
+hint = "例 id=1&user=a"
+
+[[form.fields]]
+id = "cookie"
+type = "text"
+label = "Cookie --cookie（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "param"
+type = "text"
+label = "测试参数 -p（可选）"
+default = ""
+required = false
+hint = "例 id 或 id,user"
+
+[[form.fields]]
+id = "level"
+type = "select"
+label = "检测等级 --level"
+default = "1"
+options = ["1", "2", "3", "4", "5"]
+required = true
+
+[[form.fields]]
+id = "risk"
+type = "select"
+label = "风险等级 --risk"
+default = "1"
+options = ["1", "2", "3"]
+required = true
+
+[[form.fields]]
+id = "technique"
+type = "text"
+label = "技术 --technique（可选）"
+default = "BEUSTQ"
+required = false
+hint = "默认 BEUSTQ；子集如 BU"
+
+[[form.fields]]
+id = "proxy"
+type = "text"
+label = "代理 --proxy（可选）"
+default = ""
+required = false
+hint = "http://127.0.0.1:8080"
+
+[[form.fields]]
+id = "enum"
+type = "select"
+label = "枚举动作"
+default = "banner"
+options = ["none", "banner", "current-db", "current-user", "dbs", "tables", "dump"]
+required = true
+hint = "none 仅检测；其余追加对应开关"
+
+[[form.fields]]
+id = "batch"
+type = "select"
+label = "非交互 --batch"
+default = "yes"
+options = ["yes", "no"]
+required = true
+
+[argv]
+template = [
+  "-u",
+  "{url}",
+  "--level",
+  "{level}",
+  "--risk",
+  "{risk}",
+]
+
+[[argv.optional]]
+field = "data"
+args = ["--data", "{data}"]
+
+[[argv.optional]]
+field = "cookie"
+args = ["--cookie", "{cookie}"]
+
+[[argv.optional]]
+field = "param"
+args = ["-p", "{param}"]
+
+[[argv.optional]]
+field = "technique"
+args = ["--technique", "{technique}"]
+
+[[argv.optional]]
+field = "proxy"
+args = ["--proxy", "{proxy}"]
+
+[[argv.optional]]
+field = "batch"
+equals = "yes"
+args = ["--batch"]
+
+[[argv.optional]]
+field = "enum"
+equals = "banner"
+args = ["--banner"]
+
+[[argv.optional]]
+field = "enum"
+equals = "current-db"
+args = ["--current-db"]
+
+[[argv.optional]]
+field = "enum"
+equals = "current-user"
+args = ["--current-user"]
+
+[[argv.optional]]
+field = "enum"
+equals = "dbs"
+args = ["--dbs"]
+
+[[argv.optional]]
+field = "enum"
+equals = "tables"
+args = ["--tables"]
+
+[[argv.optional]]
+field = "enum"
+equals = "dump"
+args = ["--dump"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 3600000
+memory_max_bytes = 536870912

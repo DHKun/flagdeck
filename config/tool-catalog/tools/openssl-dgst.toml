@@ -1,0 +1,50 @@
+id = "openssl-dgst"
+name = "openssl dgst"
+category = "crypto"
+summary = "计算文件摘要（MD5/SHA 等）"
+
+usage = """
+【FlagDeck 表单】
+• 文件路径与摘要算法
+
+【实际调用】
+openssl dgst -ALGORITHM FILE
+
+完整帮助：openssl dgst -help
+"""
+mode = "embedded_cli"
+featured = false
+
+[binary]
+command = "openssl"
+path = "/usr/bin/openssl"
+resolve = ["path", "system"]
+
+[ui]
+icon = "hash"
+accent = "teal"
+
+[[form.fields]]
+id = "file"
+type = "text"
+label = "文件路径"
+required = true
+hint = "绝对路径"
+
+[[form.fields]]
+id = "algo"
+type = "select"
+label = "算法"
+default = "sha256"
+options = ["md5", "sha1", "sha256", "sha384", "sha512", "blake2b512"]
+required = true
+
+[argv]
+template = ["dgst", "-{algo}", "{file}"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 120000
+memory_max_bytes = 134217728

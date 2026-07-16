@@ -16,10 +16,12 @@ python Behinder-Decrypt.py -f pcap -u path -t type -k key [-p]
 mode = "embedded_cli"
 featured = false
 
+cwd = "Active/behinder-decryptor"
+
 [binary]
 command = "python3"
-path = "Active/behinder-decryptor/Behinder-Decrypt.py"
-resolve = ["tools_root", "path", "system"]
+path = ""
+resolve = ["system"]
 
 [ui]
 icon = "key"
@@ -65,6 +67,7 @@ required = true
 
 [argv]
 template = [
+  "{tools_root}/Active/behinder-decryptor/Behinder-Decrypt.py",
   "-f",
   "{pcap}",
   "-u",

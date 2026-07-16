@@ -85,3 +85,27 @@ id = "password-dic-usernames"
 name = "PasswordDic 用户名 top500"
 path = "PasswordDic/用户名字典/username-CN-top500.txt"
 tags = ["password", "username"]
+
+[[wordlist]]
+id = "seclists-passwords-top10k"
+name = "SecLists Pwdb top-10000"
+path = "SecLists/Passwords/Common-Credentials/Pwdb_top-10000.txt"
+tags = ["password"]
+
+[[wordlist]]
+id = "seclists-passwords-cn-10k"
+name = "SecLists 中文常见口令 top-10000"
+path = "SecLists/Passwords/Common-Credentials/Language-Specific/Chinese-common-password-list-top-10000.txt"
+tags = ["password"]
+
+[[wordlist]]
+id = "ctf-fuzz-sqli"
+name = "CtfFuzz sqli"
+path = "CtfFuzz/sqli.txt"
+tags = ["fuzz", "sqli"]
+
+[[wordlist]]
+id = "fuzzdb-discovery"
+name = "fuzzdb discovery"
+path = "fuzzdb/discovery/predictable-filepaths/filename-dirname-bruteforce/raft-large-directories.txt"
+tags = ["web", "dirs"]

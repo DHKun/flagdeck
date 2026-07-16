@@ -1,0 +1,47 @@
+id = "pyinstxtractor"
+name = "pyinstxtractor"
+category = "binary"
+summary = "PyInstaller 可执行文件解包（Binary/Reverse）"
+
+usage = """
+【FlagDeck 表单】
+• 目标 .exe / ELF 绝对路径
+
+【实际调用】
+python3 pyinstxtractor.py <filename>
+
+解包结果默认写在文件同目录的 *_extracted/。
+建议用与打包时相近的 Python 大版本。
+"""
+mode = "embedded_cli"
+featured = true
+cwd = "Binary/Reverse/sec-import/pyinstxtractor"
+
+[binary]
+command = "python3"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "box"
+accent = "purple"
+
+[[form.fields]]
+id = "file"
+type = "text"
+label = "PyInstaller 文件路径"
+required = true
+hint = "绝对路径，例 /tmp/app.exe 或 /tmp/app"
+
+[argv]
+template = [
+  "{tools_root}/Binary/Reverse/sec-import/pyinstxtractor/pyinstxtractor.py",
+  "{file}",
+]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 1073741824

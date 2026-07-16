@@ -1,0 +1,134 @@
+id = "rsa-ctf-tool"
+name = "RsaCtfTool"
+category = "crypto"
+summary = "RSA CTF 公钥攻击 / 私钥恢复（Scripts）"
+
+usage = """
+【FlagDeck 表单】
+• 公钥文件 或 n/e；可选攻击名、超时、是否输出私钥
+• 可选密文 --decrypt
+
+【实际调用】
+python3 RsaCtfTool.py --publickey key.pub --private
+python3 RsaCtfTool.py -n N -e E --private --attack all
+
+上游：RsaCtfTool。仅限 CTF / 靶场。
+"""
+mode = "embedded_cli"
+featured = true
+cwd = "Scripts/sec-import/Crypto/RsaCtfTool"
+
+[binary]
+command = "python3"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "key"
+accent = "purple"
+
+[[form.fields]]
+id = "publickey"
+type = "text"
+label = "公钥文件 --publickey（可选）"
+default = ""
+required = false
+hint = "绝对路径 .pub / PEM；与 n/e 二选一"
+
+[[form.fields]]
+id = "n"
+type = "text"
+label = "模数 -n（可选）"
+default = ""
+required = false
+hint = "十进制或 0x 十六进制"
+
+[[form.fields]]
+id = "e"
+type = "text"
+label = "指数 -e（可选）"
+default = "65537"
+required = false
+
+[[form.fields]]
+id = "attack"
+type = "text"
+label = "攻击 --attack（可选）"
+default = "all"
+required = false
+hint = "all 或 wiener,fermat,factordb 等"
+
+[[form.fields]]
+id = "timeout"
+type = "number"
+label = "超时秒 --timeout"
+default = "60"
+required = true
+
+[[form.fields]]
+id = "private"
+type = "select"
+label = "输出私钥 --private"
+default = "yes"
+options = ["yes", "no"]
+required = true
+
+[[form.fields]]
+id = "decrypt"
+type = "text"
+label = "解密密文 --decrypt（可选）"
+default = ""
+required = false
+hint = "密文整数；多个用逗号分隔"
+
+[[form.fields]]
+id = "output"
+type = "select"
+label = "结果写入任务目录"
+default = "yes"
+options = ["yes", "no"]
+required = true
+
+[argv]
+template = [
+  "{tools_root}/Scripts/sec-import/Crypto/RsaCtfTool/RsaCtfTool.py",
+  "--timeout",
+  "{timeout}",
+]
+
+[[argv.optional]]
+field = "publickey"
+args = ["--publickey", "{publickey}"]
+
+[[argv.optional]]
+field = "n"
+args = ["-n", "{n}"]
+
+[[argv.optional]]
+field = "e"
+args = ["-e", "{e}"]
+
+[[argv.optional]]
+field = "attack"
+args = ["--attack", "{attack}"]
+
+[[argv.optional]]
+field = "private"
+equals = "yes"
+args = ["--private"]
+
+[[argv.optional]]
+field = "decrypt"
+args = ["--decrypt", "{decrypt}"]
+
+[[argv.optional]]
+field = "output"
+equals = "yes"
+args = ["--output", "{job_dir}/rsa-result.txt"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 1073741824

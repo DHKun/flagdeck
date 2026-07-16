@@ -1,0 +1,54 @@
+id = "whoamifuck"
+name = "Whoamifuck"
+category = "defensive"
+summary = "Linux 主机入侵排查脚本（需 root）"
+
+usage = """
+【FlagDeck 表单】
+• 运行模式：帮助 / 自动排查（脚本交互能力有限）
+
+【实际调用】
+bash whoamifuck.sh -h
+sudo bash whoamifuck.sh   # 多数检查项需要 root
+
+上游：enomothem/Whoamifuck。仅限授权主机自查 / AWD 防守。
+若未 root，脚本会直接退出并提示权限。
+"""
+mode = "embedded_cli"
+featured = false
+cwd = "Defensive/Incident-Response/sec-import/Whoamifuck"
+
+[binary]
+command = "bash"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "shield"
+accent = "green"
+
+[[form.fields]]
+id = "mode"
+type = "select"
+label = "模式"
+default = "help"
+options = ["help", "default"]
+required = true
+hint = "help 打印帮助；default 尝试完整运行（需 root）"
+
+[argv]
+template = [
+  "{tools_root}/Defensive/Incident-Response/sec-import/Whoamifuck/whoamifuck.sh",
+]
+
+[[argv.optional]]
+field = "mode"
+equals = "help"
+args = ["-h"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 268435456

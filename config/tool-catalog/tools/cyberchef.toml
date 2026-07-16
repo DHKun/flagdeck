@@ -1,0 +1,42 @@
+id = "cyberchef"
+name = "CyberChef"
+category = "crypto"
+summary = "离线编解码 / 变换工作台（浏览器打开 HTML）"
+
+usage = """
+【类型】本地 HTML 工具（CyberChef）
+
+【FlagDeck】
+用 xdg-open 打开离线 CyberChef 页面（优先 v10.19.2）。
+无需目标 URL。
+
+部分浏览器 file:// 限制 Worker 时，可手动在目录起 http.server。
+"""
+mode = "external_launch"
+featured = true
+detach = true
+cwd = "Crypto/sec-import/CYH-assets"
+
+[binary]
+command = "xdg-open"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "chef"
+accent = "orange"
+
+[form]
+fields = []
+
+[argv]
+template = [
+  "{tools_root}/Crypto/sec-import/CYH-assets/CyberChef_v10.19.2.html",
+]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 60000
+memory_max_bytes = 134217728

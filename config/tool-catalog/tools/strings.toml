@@ -1,0 +1,87 @@
+id = "strings"
+name = "strings"
+category = "binary"
+summary = "从二进制中提取可打印字符串"
+
+usage = """
+【FlagDeck 表单】
+• 文件路径、最小长度 -n、可选 -a 全文件、进制偏移 -t
+
+【实际调用】
+strings [-a] [-n N] [-t radix] FILE
+
+完整帮助：strings --help
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "strings"
+path = "/usr/bin/strings"
+resolve = ["path", "system"]
+
+[ui]
+icon = "code"
+accent = "purple"
+
+[[form.fields]]
+id = "file"
+type = "text"
+label = "文件路径"
+required = true
+hint = "绝对路径，例 /tmp/challenge"
+
+[[form.fields]]
+id = "min_len"
+type = "number"
+label = "最小长度 -n"
+default = "4"
+required = true
+
+[[form.fields]]
+id = "all"
+type = "select"
+label = "扫描整个文件 -a"
+default = "yes"
+options = ["yes", "no"]
+required = true
+
+[[form.fields]]
+id = "radix"
+type = "select"
+label = "打印偏移 -t（可选）"
+default = "none"
+options = ["none", "x", "d", "o"]
+required = true
+hint = "x=十六进制偏移"
+
+[argv]
+template = ["-n", "{min_len}"]
+suffix = ["{file}"]
+
+[[argv.optional]]
+field = "all"
+equals = "yes"
+args = ["-a"]
+
+[[argv.optional]]
+field = "radix"
+equals = "x"
+args = ["-t", "x"]
+
+[[argv.optional]]
+field = "radix"
+equals = "d"
+args = ["-t", "d"]
+
+[[argv.optional]]
+field = "radix"
+equals = "o"
+args = ["-t", "o"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 120000
+memory_max_bytes = 268435456

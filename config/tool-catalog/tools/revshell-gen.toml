@@ -1,0 +1,49 @@
+id = "revshell-gen"
+name = "Reverse Shell Generator"
+category = "web_exploit"
+summary = "反弹 Shell 载荷生成器（本地 HTTP 预览）"
+
+usage = """
+【类型】本地 Web 页面（reverse-shell-generator）
+
+【FlagDeck】
+在工具目录起 python -m http.server，默认端口 8765：
+  http://127.0.0.1:8765/
+
+任务保持运行中时可「停止当前任务」结束服务。
+仅限 CTF / 靶场 / 授权场景。
+"""
+mode = "external_launch"
+featured = true
+detach = false
+cwd = "Scripts/sec-import/reverse-shell-generator"
+
+[binary]
+command = "python3"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "shell"
+accent = "red"
+
+[form]
+fields = []
+
+[argv]
+template = [
+  "-m",
+  "http.server",
+  "8765",
+  "--bind",
+  "127.0.0.1",
+  "--directory",
+  "{tools_root}/Scripts/sec-import/reverse-shell-generator",
+]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 268435456

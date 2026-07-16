@@ -1,0 +1,95 @@
+id = "dig"
+name = "dig"
+category = "dns"
+summary = "DNS 查询（A/AAAA/MX/TXT 等）"
+
+usage = """
+【FlagDeck 表单】
+• 域名、记录类型、可选 @服务器、+short
+• 反向查询对 IP 使用 -x
+
+【实际调用】
+dig [@server] name TYPE [+short]
+dig [@server] -x IP [+short]
+
+完整帮助：dig -h
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "dig"
+path = "/usr/bin/dig"
+resolve = ["path", "system"]
+
+[ui]
+icon = "dns"
+accent = "blue"
+
+[[form.fields]]
+id = "name"
+type = "text"
+label = "域名 / 主机 / IP"
+required = true
+hint = "例 example.com；反向时填 IP"
+
+[[form.fields]]
+id = "qtype"
+type = "select"
+label = "记录类型（正向）"
+default = "A"
+options = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "ANY"]
+required = true
+
+[[form.fields]]
+id = "server"
+type = "text"
+label = "@DNS 服务器（可选）"
+default = ""
+required = false
+hint = "例 8.8.8.8（不要写 @）"
+
+[[form.fields]]
+id = "short"
+type = "select"
+label = "+short 精简输出"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "reverse"
+type = "select"
+label = "反向查询 -x"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[argv]
+template = []
+
+[[argv.optional]]
+field = "server"
+args = ["@{server}"]
+
+[[argv.optional]]
+field = "reverse"
+equals = "yes"
+args = ["-x", "{name}"]
+
+[[argv.optional]]
+field = "reverse"
+equals = "no"
+args = ["{name}", "{qtype}"]
+
+[[argv.optional]]
+field = "short"
+equals = "yes"
+args = ["+short"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 60000
+memory_max_bytes = 67108864

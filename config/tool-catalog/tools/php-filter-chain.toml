@@ -1,0 +1,61 @@
+id = "php-filter-chain"
+name = "PHP Filter Chain"
+category = "web_exploit"
+summary = "LFI → RCE 用 PHP filter 链生成（Scripts）"
+
+usage = """
+【FlagDeck 表单】
+• --chain 要生成的 PHP 代码字符串（注意末尾可补空格）
+• 可选 --rawbase64 调试
+
+【实际调用】
+python3 php_filter_chain_generator.py --chain '<?php phpinfo(); ?>  '
+
+上游：synacktiv/php_filter_chain_generator。仅限 CTF / 授权靶场。
+"""
+mode = "embedded_cli"
+featured = true
+cwd = "Scripts/sec-import/php_filter_chain_generator"
+
+[binary]
+command = "python3"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "code"
+accent = "orange"
+
+[[form.fields]]
+id = "chain"
+type = "text"
+label = "PHP 内容 --chain"
+required = true
+default = "<?php phpinfo(); ?>  "
+hint = "生成 filter 链对应的 PHP 代码；末尾空格可能必要"
+
+[[form.fields]]
+id = "rawbase64"
+type = "text"
+label = "--rawbase64（可选调试）"
+default = ""
+required = false
+hint = "一般留空"
+
+[argv]
+template = [
+  "{tools_root}/Scripts/sec-import/php_filter_chain_generator/php_filter_chain_generator.py",
+  "--chain",
+  "{chain}",
+]
+
+[[argv.optional]]
+field = "rawbase64"
+args = ["--rawbase64", "{rawbase64}"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 120000
+memory_max_bytes = 268435456

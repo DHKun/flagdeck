@@ -1,0 +1,69 @@
+id = "whois"
+name = "whois"
+category = "dns"
+summary = "查询域名 / IP 注册信息"
+
+usage = """
+【FlagDeck 表单】
+• 查询对象（域名或 IP）
+• 可选指定 whois 服务器 -h
+
+【实际调用】
+whois [-h HOST] [--verbose] OBJECT
+
+完整帮助：whois --help
+"""
+mode = "embedded_cli"
+featured = false
+
+[binary]
+command = "whois"
+path = "/usr/bin/whois"
+resolve = ["path", "system"]
+
+[ui]
+icon = "search"
+accent = "gray"
+
+[[form.fields]]
+id = "object"
+type = "text"
+label = "查询对象"
+required = true
+hint = "域名或 IP，例 example.com"
+
+[[form.fields]]
+id = "host"
+type = "text"
+label = "Whois 服务器 -h（可选）"
+default = ""
+required = false
+hint = "例 whois.verisign-grs.com"
+
+[[form.fields]]
+id = "verbose"
+type = "select"
+label = "详细 --verbose"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[argv]
+template = []
+suffix = ["{object}"]
+
+[[argv.optional]]
+field = "host"
+args = ["-h", "{host}"]
+
+[[argv.optional]]
+field = "verbose"
+equals = "yes"
+args = ["--verbose"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 60000
+memory_max_bytes = 67108864

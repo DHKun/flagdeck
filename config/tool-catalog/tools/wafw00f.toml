@@ -1,0 +1,104 @@
+id = "wafw00f"
+name = "wafw00f"
+category = "http"
+summary = "识别目标站前 WAF / CDN（PATH）"
+
+usage = """
+【FlagDeck 表单】
+• 目标 URL；可选找全部匹配、不跟随重定向、代理、超时
+
+【实际调用】
+wafw00f URL [-a] [-r] [-p PROXY] [-T TIMEOUT] [-o 输出]
+
+完整帮助：wafw00f -h
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "wafw00f"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "shield"
+accent = "orange"
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标 URL"
+required = true
+from = "target_url"
+
+[[form.fields]]
+id = "findall"
+type = "select"
+label = "找全部匹配 -a"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "noredirect"
+type = "select"
+label = "不跟随重定向 -r"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[[form.fields]]
+id = "proxy"
+type = "text"
+label = "代理 -p（可选）"
+default = ""
+required = false
+hint = "http://host:8080 或 socks5://host:1080"
+
+[[form.fields]]
+id = "timeout"
+type = "number"
+label = "超时 -T 秒（可选）"
+default = ""
+required = false
+
+[[form.fields]]
+id = "verbose"
+type = "select"
+label = "详细输出 -v"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[argv]
+template = ["{url}"]
+
+[[argv.optional]]
+field = "findall"
+equals = "yes"
+args = ["-a"]
+
+[[argv.optional]]
+field = "noredirect"
+equals = "yes"
+args = ["-r"]
+
+[[argv.optional]]
+field = "proxy"
+args = ["-p", "{proxy}"]
+
+[[argv.optional]]
+field = "timeout"
+args = ["-T", "{timeout}"]
+
+[[argv.optional]]
+field = "verbose"
+equals = "yes"
+args = ["-v"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 300000
+memory_max_bytes = 268435456
