@@ -24,7 +24,8 @@ config/tool-catalog/
 
 见 `tools/*.toml`。字段含义：
 
-- `mode`：`embedded_cli`（应用内运行）或 `external_launch`（一键启动 GUI）
+- `mode`：`embedded_cli`（应用内运行）或 `external_launch`（一键启动 GUI / 本机服务）
+- `detach`：仅 `external_launch` 有效。默认 `true`（短探测后分离，适合窗口 GUI）。长驻服务（如 `npm run dev`）应设 `detach = false`，任务保持运行中，可点「停止」取消。
 - `cwd`：工作目录（GUI 很重要）；相对路径基于工具根
 - `binary.path` / `binary.command` / `binary.resolve`
 - `form.fields`：动态表单。**没有字段 = 无需目标 URL**

@@ -7,21 +7,25 @@ usage = """
 【类型】独立 GUI（UploadRanger）
 
 【FlagDeck】
-通过 python3 启动 main.py，无需填写目标 URL。
-上传点、Payload、绕过策略在窗口内配置。
+通过工具目录内 UploadRanger.sh 启动：
+• 使用隔离 .venv（含 PySide6 等依赖）
+• 无需填写目标 URL
 
 【注意】
-• 需要图形桌面与 Python/Qt 依赖
+• 需要图形桌面会话（DISPLAY / XAUTHORITY）
+• 首次运行脚本可能通过 uv 安装依赖
 • 仅在授权靶场 / CTF 环境使用
 """
 mode = "external_launch"
 featured = true
 cwd = "Active/UploadRanger"
+# Windowed GUI: detach after probe (cancel not needed once the window is up).
+detach = true
 
 [binary]
-command = "python3"
-path = "Active/UploadRanger/main.py"
-resolve = ["tools_root", "path", "system"]
+command = "UploadRanger.sh"
+path = "Active/UploadRanger/UploadRanger.sh"
+resolve = ["tools_root", "path"]
 
 [ui]
 icon = "app"

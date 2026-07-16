@@ -2193,10 +2193,9 @@ impl CoreService {
             .map_err(|_| CoreError::StateLock)?
             .insert(job_id, Arc::clone(&control));
 
-        let detach_gui = matches!(
-            prepared.mode,
-            flagdeck_cli_adapters::ToolMode::ExternalLaunch
-        );
+        // Classic GUI windows detach after a short probe; long-running servers
+        // (npm run dev, etc.) set catalog `detach = false` so cancel stays available.
+        let detach_gui = prepared.detach;
         let queued = PreparedExternalRun {
             store,
             command,

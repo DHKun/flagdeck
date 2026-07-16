@@ -219,6 +219,14 @@ pub struct CatalogToolManifest {
     /// Working directory (absolute, or relative to tools root). Empty = job dir (CLI) or binary parent (GUI).
     #[serde(default)]
     pub cwd: String,
+    /// Process lifecycle for `external_launch` tools.
+    ///
+    /// - `true` (default): spawn, brief probe, mark succeeded and detach (classic GUI windows).
+    /// - `false`: keep waiting so cancel/stop works (long-running servers like `npm run dev`).
+    ///
+    /// Ignored for `embedded_cli` (always managed).
+    #[serde(default)]
+    pub detach: Option<bool>,
     #[serde(default)]
     pub binary: BinarySpec,
     #[serde(default)]
@@ -622,6 +630,8 @@ pub struct PreparedCatalogCommand {
     pub tool_id: String,
     pub tool_name: String,
     pub mode: ToolMode,
+    /// See [`CatalogToolManifest::detach`].
+    pub detach: bool,
     pub spec: CommandSpec,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
@@ -857,10 +867,15 @@ pub fn prepare_catalog_command(
         network_isolation: "input-gate-and-audit".to_owned(),
     };
 
+    let detach = tool
+        .detach
+        .unwrap_or(matches!(tool.mode, ToolMode::ExternalLaunch));
+
     Ok(PreparedCatalogCommand {
         tool_id: tool.id.clone(),
         tool_name: tool.name.clone(),
         mode: tool.mode.clone(),
+        detach,
         spec,
         stdout_path: job_directory.join("stdout.log"),
         stderr_path: job_directory.join("stderr.log"),

@@ -1085,7 +1085,9 @@
                     disabled={busy}
                     onclick={() => void cancelSelectedJob()}
                   >
-                    取消当前任务
+                    {selectedTool?.mode === "external_launch"
+                      ? "停止当前任务"
+                      : "取消当前任务"}
                   </button>
                 {/if}
               </div>
@@ -1339,13 +1341,25 @@
                       >
                       <small>{item.command_preview}</small>
                     </button>
-                    <button
-                      class="btn btn-danger job-delete"
-                      type="button"
-                      disabled={busy || jobIsActive(item)}
-                      onclick={() => void deleteJobById(item.job.job_id)}
-                      >删除</button
-                    >
+                    {#if jobIsActive(item)}
+                      <button
+                        class="btn btn-danger job-delete"
+                        type="button"
+                        disabled={busy}
+                        onclick={() => {
+                          selectedLogJobId = item.job.job_id;
+                          void cancelSelectedJob();
+                        }}>停止</button
+                      >
+                    {:else}
+                      <button
+                        class="btn btn-danger job-delete"
+                        type="button"
+                        disabled={busy}
+                        onclick={() => void deleteJobById(item.job.job_id)}
+                        >删除</button
+                      >
+                    {/if}
                   </div>
                 {/each}
               </div>
