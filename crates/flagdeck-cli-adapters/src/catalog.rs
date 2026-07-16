@@ -1202,21 +1202,20 @@ mod prepare_all_tests {
                         form.entry(field.id.clone())
                             .or_insert_with(|| "1".to_owned());
                     }
-                    "text" | "textarea" | "select" => {
-                        if field.required {
-                            form.entry(field.id.clone()).or_insert_with(|| {
-                                if field.id.contains("key") {
-                                    "deadbeef".to_owned()
-                                } else if field.id.contains("pcap") || field.id.contains("file") {
-                                    "/tmp/flagdeck-test.pcap".to_owned()
-                                } else if field.id.contains("path") || field.id.contains("url") {
-                                    "/shell.php".to_owned()
-                                } else {
-                                    "test".to_owned()
-                                }
-                            });
-                        }
+                    "text" | "textarea" | "select" if field.required => {
+                        form.entry(field.id.clone()).or_insert_with(|| {
+                            if field.id.contains("key") {
+                                "deadbeef".to_owned()
+                            } else if field.id.contains("pcap") || field.id.contains("file") {
+                                "/tmp/flagdeck-test.pcap".to_owned()
+                            } else if field.id.contains("path") || field.id.contains("url") {
+                                "/shell.php".to_owned()
+                            } else {
+                                "test".to_owned()
+                            }
+                        });
                     }
+                    "text" | "textarea" | "select" => {}
                     _ => {}
                 }
                 if field.from == "target_url" && !form.contains_key(&field.id) {
