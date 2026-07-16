@@ -1,18 +1,23 @@
 id = "githacker"
 name = "GitHacker"
 category = "web_exploit"
-summary = "多线程还原暴露的 .git（含分支/标签爆破，WangYihang）"
+summary = "Web .git 泄露综合还原（分支/标签/历史，Active/git-leak）"
 
 usage = """
-【典型用途】
-git-dumper 不全时用 GitHacker 做更完整还原（branch/tag、history）。
+【定位】本库唯一 Git 泄露综合工具（GitHacker）。
+相对简单 dump 脚本更完整：工作区、提交历史、分支/标签，可选爆破 refs。
+
+【典型流程】
+1. 确认 http://target/.git/HEAD 可访问
+2. 本工具下载并还原到任务目录 githacker-out/
+3. 在输出子目录中 git log / 搜 flag
 
 【实际调用】
 python -m githacker --url URL --output-folder DIR [--brute] [--threads N]
 
 输出：output-folder 下以 md5(url) 命名的子目录。
 上游：https://github.com/WangYihang/GitHacker
-仅限 CTF/授权；建议对不可信目标在容器中运行。
+仅限 CTF/靶场/书面授权；不可信目标建议容器中运行。
 """
 mode = "embedded_cli"
 featured = true
