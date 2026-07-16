@@ -1,0 +1,61 @@
+id = "gittools-finder"
+name = "GitTools Finder"
+category = "web_exploit"
+summary = "批量探测 URL 列表是否暴露 /.git/HEAD"
+
+usage = """
+【实际调用】
+python gitfinder.py -i urls.txt -o hits.txt [-t threads]
+
+输入文件：一行一个 http(s) 基址（不要带 .git）。
+工具会请求 base/.git/HEAD 判断是否泄露。
+
+上游：GitTools/Finder
+"""
+mode = "embedded_cli"
+featured = false
+cwd = "Active/git-leak/GitTools/Finder"
+
+[binary]
+command = "python3"
+path = "Active/git-leak/GitTools/Finder/.venv/bin/python"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "search"
+accent = "gray"
+
+[[form.fields]]
+id = "inputfile"
+type = "text"
+label = "URL 列表文件 -i"
+required = true
+hint = "绝对路径；每行一个站点根 URL，例 http://a.com"
+
+[[form.fields]]
+id = "threads"
+type = "number"
+label = "线程 -t（可选）"
+default = "10"
+required = false
+hint = "并发探测线程数"
+
+[argv]
+template = [
+  "{tools_root}/Active/git-leak/GitTools/Finder/gitfinder.py",
+  "-i",
+  "{inputfile}",
+  "-o",
+  "{job_dir}/gitfinder-hits.txt",
+]
+
+[[argv.optional]]
+field = "threads"
+args = ["-t", "{threads}"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 3600000
+memory_max_bytes = 268435456
