@@ -340,24 +340,23 @@ impl ToolCatalog {
                     .map_or_else(|| tool.category.clone(), |category| category.name.clone());
                 let resolved = resolve_binary(tool, &self.paths);
                 let (available, binary_path, detail) = match resolved {
+                    Ok(path) if tool.cwd.is_empty() => {
+                        (true, path.display().to_string(), "ready".to_owned())
+                    }
                     Ok(path) => {
-                        if tool.cwd.is_empty() {
+                        let cwd = if Path::new(&tool.cwd).is_absolute() {
+                            PathBuf::from(&tool.cwd)
+                        } else {
+                            self.paths.tools_root.join(&tool.cwd)
+                        };
+                        if cwd.is_dir() {
                             (true, path.display().to_string(), "ready".to_owned())
                         } else {
-                            let cwd = if Path::new(&tool.cwd).is_absolute() {
-                                PathBuf::from(&tool.cwd)
-                            } else {
-                                self.paths.tools_root.join(&tool.cwd)
-                            };
-                            if cwd.is_dir() {
-                                (true, path.display().to_string(), "ready".to_owned())
-                            } else {
-                                (
-                                    false,
-                                    path.display().to_string(),
-                                    format!("working directory not found: {}", cwd.display()),
-                                )
-                            }
+                            (
+                                false,
+                                path.display().to_string(),
+                                format!("working directory not found: {}", cwd.display()),
+                            )
                         }
                     }
                     Err(error) => (false, String::new(), error.to_string()),
