@@ -1444,6 +1444,20 @@ fn read_proc_stat(pid: i32) -> Result<ProcStat, std::io::Error> {
     })
 }
 
+/// Read Linux `/proc/<pid>/stat` starttime for ownership-checked cancellation.
+#[must_use]
+pub fn process_start_ticks(pid: i32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        read_proc_stat(pid).ok().map(|stat| stat.start_ticks)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 fn stop_grace(value: u64) -> Duration {
     Duration::from_millis(value.min(2_000))
 }

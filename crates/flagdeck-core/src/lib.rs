@@ -52,7 +52,8 @@ use flagdeck_domain::{
 };
 use flagdeck_exec::{
     CancellationResult, ExecPolicyError, ManagedExecutionResult, ManagedProcessIdentity,
-    SecretPolicy, SupervisorPolicy, cancel_managed, start_managed, validate_program,
+    SecretPolicy, SupervisorPolicy, cancel_managed, process_start_ticks, start_managed,
+    validate_program,
 };
 use flagdeck_storage::{
     ArtifactWriteRequest, JobImportRecord, MAX_DICTIONARY_TERM_BYTES, MAX_DICTIONARY_TERMS,
@@ -2870,8 +2871,11 @@ async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreErr
         };
 
     let pid = i32::try_from(child.id()).unwrap_or_default();
+    // Required by cancel_pgid ownership checks on Linux.
+    let start_ticks = process_start_ticks(pid);
     queued.job.pid = Some(pid);
     queued.job.process_group_id = Some(pid);
+    queued.job.process_start_ticks = start_ticks;
     queued.job.ownership_verified = true;
     queued.job.supervisor_backend = Some(SupervisorBackend::PgidFallback);
     let identity = ManagedProcessIdentity {
@@ -2879,7 +2883,7 @@ async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreErr
         wrapper_pid: pid,
         pid: Some(pid),
         process_group_id: Some(pid),
-        process_start_ticks: None,
+        process_start_ticks: start_ticks,
         systemd_unit: None,
         cgroup_path: None,
         invocation_id: None,
@@ -2890,12 +2894,13 @@ async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreErr
     queued.store.save_job(&queued.job)?;
     append_job_log(
         &queued.stdout_path,
-        &format!("[flagdeck] process started pid={pid}\n"),
+        &format!("[flagdeck] process started pid={pid} start_ticks={start_ticks:?}\n"),
     )?;
 
     let timeout = Duration::from_millis(queued.command.timeout_millis.max(1_000));
     let wait_result =
         tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || child.wait())).await;
+    let cancelled = queued.control.cancel_requested.load(Ordering::SeqCst);
 
     match wait_result {
         Ok(Ok(Ok(status))) => {
@@ -2905,31 +2910,43 @@ async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreErr
                 &format!("\n[flagdeck] finished exit={code:?} status={status}\n"),
             )?;
             queued.job.exit_code = code;
-            queued.job.exit_reason = Some(format!("exit:{status}"));
+            queued.job.exit_reason = Some(if cancelled {
+                format!("cancelled:exit:{status}")
+            } else {
+                format!("exit:{status}")
+            });
             queued.job.stopped_at = Some(Timestamp::now());
             queued.job.cleanup_verified = true;
-            if status.success() {
-                queued
-                    .job
-                    .transition(ExecutionStatus::Succeeded)
-                    .map_err(|_| CoreError::InvalidRequest)?;
+            let terminal = if cancelled {
+                ExecutionStatus::Cancelled
+            } else if status.success() {
+                ExecutionStatus::Succeeded
             } else {
-                queued
-                    .job
-                    .transition(ExecutionStatus::Failed)
-                    .map_err(|_| CoreError::InvalidRequest)?;
-            }
+                ExecutionStatus::Failed
+            };
+            queued
+                .job
+                .transition(terminal)
+                .map_err(|_| CoreError::InvalidRequest)?;
         }
         Ok(Ok(Err(error))) => {
             append_job_log(
                 &queued.stderr_path,
                 &format!("[flagdeck] wait failed: {error}\n"),
             )?;
-            queued.job.exit_reason = Some(format!("wait_failed:{error}"));
+            queued.job.exit_reason = Some(if cancelled {
+                format!("cancelled:wait_failed:{error}")
+            } else {
+                format!("wait_failed:{error}")
+            });
             queued.job.stopped_at = Some(Timestamp::now());
             queued
                 .job
-                .transition(ExecutionStatus::Failed)
+                .transition(if cancelled {
+                    ExecutionStatus::Cancelled
+                } else {
+                    ExecutionStatus::Failed
+                })
                 .map_err(|_| CoreError::InvalidRequest)?;
         }
         Ok(Err(_)) => {
@@ -2937,11 +2954,19 @@ async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreErr
                 &queued.stderr_path,
                 "[flagdeck] internal join error while waiting for process\n",
             )?;
-            queued.job.exit_reason = Some("wait_join_error".to_owned());
+            queued.job.exit_reason = Some(if cancelled {
+                "cancelled:wait_join_error".to_owned()
+            } else {
+                "wait_join_error".to_owned()
+            });
             queued.job.stopped_at = Some(Timestamp::now());
             queued
                 .job
-                .transition(ExecutionStatus::Failed)
+                .transition(if cancelled {
+                    ExecutionStatus::Cancelled
+                } else {
+                    ExecutionStatus::Failed
+                })
                 .map_err(|_| CoreError::InvalidRequest)?;
         }
         Err(_) => {
