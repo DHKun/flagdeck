@@ -110,6 +110,9 @@ config/tool-catalog/
 | ID | 模式 | 说明 |
 |---|---|---|
 | php-filter-chain | embedded | LFI filter 链生成 |
+| git-dumper | embedded | `.git` 下载还原（arthaud，推荐） |
+| githacker | embedded | `.git` 多线程完整还原 |
+| gittools-dumper / extractor / finder | embedded | 经典 GitTools 三件套 |
 | revshell-gen | external managed | 反弹 shell 生成器本地 HTTP |
 | payloader | external managed | Payload 参考站 `npm run dev` |
 | uploadranger | external | 上传漏洞 GUI |

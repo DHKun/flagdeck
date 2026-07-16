@@ -1,0 +1,143 @@
+id = "githacker"
+name = "GitHacker"
+category = "web_exploit"
+summary = "多线程还原暴露的 .git（含分支/标签爆破，WangYihang）"
+
+usage = """
+【典型用途】
+git-dumper 不全时用 GitHacker 做更完整还原（branch/tag、history）。
+
+【实际调用】
+python -m githacker --url URL --output-folder DIR [--brute] [--threads N]
+
+输出：output-folder 下以 md5(url) 命名的子目录。
+上游：https://github.com/WangYihang/GitHacker
+仅限 CTF/授权；建议对不可信目标在容器中运行。
+"""
+mode = "embedded_cli"
+featured = true
+cwd = "Active/git-leak/GitHacker"
+
+[binary]
+command = "python3"
+path = "Active/git-leak/GitHacker/.venv/bin/python"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "git"
+accent = "red"
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标 --url"
+required = true
+from = "target_url"
+hint = "暴露 .git 的站点 URL，例 http://target/.git/ 或 http://target/"
+
+[[form.fields]]
+id = "brute"
+type = "select"
+label = "爆破分支/标签 --brute"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=爆破常见 branch/tag 名，更慢更全；简单泄露可 no"
+
+[[form.fields]]
+id = "threads"
+type = "number"
+label = "线程 --threads（可选）"
+default = "10"
+required = false
+hint = "下载并发数；过大可能触发限流"
+
+[[form.fields]]
+id = "delay"
+type = "number"
+label = "请求间隔 --delay 秒（可选）"
+default = ""
+required = false
+hint = "两次 HTTP 之间的延迟，降速保活/躲 WAF"
+
+[[form.fields]]
+id = "insecure"
+type = "select"
+label = "忽略证书 --insecure"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=跳过 TLS 校验（自签 HTTPS 靶场）"
+
+[[form.fields]]
+id = "branch_wordlist"
+type = "text"
+label = "分支字典 --branch-wordlist（可选）"
+default = ""
+required = false
+hint = "额外分支名文件绝对路径（一行一个）；配合 --brute"
+
+[[form.fields]]
+id = "tag_wordlist"
+type = "text"
+label = "标签字典 --tag-wordlist（可选）"
+default = ""
+required = false
+hint = "额外 tag 名文件绝对路径；配合 --brute"
+
+[[form.fields]]
+id = "skip_dangerous"
+type = "select"
+label = "跳过危险文件检查开关"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=启用 --enable-manually-check-dangerous-git-files：不下载可能 RCE 的危险 git 文件（更安全）"
+
+[argv]
+template = [
+  "-m",
+  "githacker",
+  "--url",
+  "{url}",
+  "--output-folder",
+  "{job_dir}/githacker-out",
+]
+
+[[argv.optional]]
+field = "brute"
+equals = "yes"
+args = ["--brute"]
+
+[[argv.optional]]
+field = "threads"
+args = ["--threads", "{threads}"]
+
+[[argv.optional]]
+field = "delay"
+args = ["--delay", "{delay}"]
+
+[[argv.optional]]
+field = "insecure"
+equals = "yes"
+args = ["--insecure"]
+
+[[argv.optional]]
+field = "branch_wordlist"
+args = ["--branch-wordlist", "{branch_wordlist}"]
+
+[[argv.optional]]
+field = "tag_wordlist"
+args = ["--tag-wordlist", "{tag_wordlist}"]
+
+[[argv.optional]]
+field = "skip_dangerous"
+equals = "yes"
+args = ["--enable-manually-check-dangerous-git-files"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 3600000
+memory_max_bytes = 1073741824
