@@ -1215,7 +1215,6 @@ mod prepare_all_tests {
                             }
                         });
                     }
-                    "text" | "textarea" | "select" => {}
                     _ => {}
                 }
                 if field.from == "target_url" && !form.contains_key(&field.id) {
