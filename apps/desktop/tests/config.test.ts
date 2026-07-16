@@ -43,6 +43,7 @@ const commands = [
   "cancel_all_jobs",
   "list_jobs",
   "preview_job_log",
+  "preview_job_file",
   "list_discoveries",
   "create_dictionary",
   "list_dictionaries",

@@ -31,3 +31,51 @@ id = "ctf-fuzz-cmdi"
 name = "CtfFuzz cmdi"
 path = "CtfFuzz/cmdi.txt"
 tags = ["fuzz"]
+
+[[wordlist]]
+id = "seclists-big"
+name = "SecLists big.txt"
+path = "SecLists/Discovery/Web-Content/big.txt"
+tags = ["web", "dirs"]
+
+[[wordlist]]
+id = "seclists-raft-large-dirs"
+name = "SecLists raft-large-directories"
+path = "SecLists/Discovery/Web-Content/raft-large-directories.txt"
+tags = ["web", "dirs"]
+
+[[wordlist]]
+id = "seclists-api"
+name = "SecLists common-api-endpoints"
+path = "SecLists/Discovery/Web-Content/common-api-endpoints-mazen160.txt"
+tags = ["web", "api"]
+
+[[wordlist]]
+id = "seclists-params"
+name = "SecLists burp-parameter-names"
+path = "SecLists/Discovery/Web-Content/burp-parameter-names.txt"
+tags = ["web", "params"]
+
+[[wordlist]]
+id = "fuzzdicts-dicc"
+name = "fuzzDicts dicc"
+path = "fuzzDicts/directoryDicts/dicc.txt"
+tags = ["web", "dirs"]
+
+[[wordlist]]
+id = "fuzzdicts-php"
+name = "fuzzDicts php dirs"
+path = "fuzzDicts/directoryDicts/php"
+tags = ["web", "php"]
+
+[[wordlist]]
+id = "rockyou"
+name = "rockyou.txt"
+path = "rockyou.txt"
+tags = ["password"]
+
+[[wordlist]]
+id = "password-dic-readme"
+name = "PasswordDic（目录说明）"
+path = "PasswordDic/README.md"
+tags = ["password", "meta"]

@@ -33,6 +33,7 @@
     "allow-cancel-all-jobs",
     "allow-list-jobs",
     "allow-preview-job-log",
+    "allow-preview-job-file",
     "allow-list-discoveries",
     "allow-create-dictionary",
     "allow-list-dictionaries",

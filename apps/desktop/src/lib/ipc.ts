@@ -39,6 +39,7 @@ import type {
   HttpMessageDiff,
   JobPage,
   JobPageRequest,
+  JobFilePreview,
   JobLogPreview,
   JobView,
   LaunchExternalRequest,
@@ -50,6 +51,7 @@ import type {
   PayloadPreview,
   PayloadSourceHealthDto,
   PreviewArtifactRequest,
+  PreviewJobFileRequest,
   PreviewJobLogRequest,
   PreviewPayloadRequest,
   ProjectContextRequest,
@@ -160,6 +162,8 @@ export const ipc = {
     invoke("list_jobs", { request }),
   previewJobLog: (request: PreviewJobLogRequest): Promise<JobLogPreview> =>
     invoke("preview_job_log", { request }),
+  previewJobFile: (request: PreviewJobFileRequest): Promise<JobFilePreview> =>
+    invoke("preview_job_file", { request }),
   listDiscoveries: (request: DiscoveryPageRequest): Promise<DiscoveryPage> =>
     invoke("list_discoveries", { request }),
   createDictionary: (

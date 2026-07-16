@@ -441,6 +441,12 @@
           "markdownDescription": "Enables the preview_artifact command without any pre-configured scope."
         },
         {
+          "description": "Enables the preview_job_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-job-file",
+          "markdownDescription": "Enables the preview_job_file command without any pre-configured scope."
+        },
+        {
           "description": "Enables the preview_job_log command without any pre-configured scope.",
           "type": "string",
           "const": "allow-preview-job-log",
@@ -811,6 +817,12 @@
           "type": "string",
           "const": "deny-preview-artifact",
           "markdownDescription": "Denies the preview_artifact command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preview_job_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-job-file",
+          "markdownDescription": "Denies the preview_job_file command without any pre-configured scope."
         },
         {
           "description": "Denies the preview_job_log command without any pre-configured scope.",

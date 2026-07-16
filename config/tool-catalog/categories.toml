@@ -19,6 +19,12 @@ summary = "主机发现、服务识别与指纹"
 order = 30
 
 [[category]]
+id = "decode"
+name = "解密与分析"
+summary = "流量解密、编码解码与辅助分析"
+order = 40
+
+[[category]]
 id = "gui"
 name = "独立应用"
 summary = "需要独立窗口的 GUI 工具"

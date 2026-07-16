@@ -1,0 +1,81 @@
+id = "arjun"
+name = "arjun"
+category = "http"
+summary = "HTTP 参数发现（隐藏参数爆破）"
+
+usage = """
+【FlagDeck 表单】
+• 目标 URL、线程、方法
+• 结果写入任务目录 arjun-output.json
+
+【实际调用】
+arjun -u URL -t N -m METHOD -o JSON -q
+
+完整帮助：arjun -h
+"""
+mode = "embedded_cli"
+featured = true
+
+[binary]
+command = "arjun"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "search"
+accent = "blue"
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标 URL -u"
+required = true
+from = "target_url"
+
+[[form.fields]]
+id = "threads"
+type = "number"
+label = "线程 -t"
+default = "5"
+required = true
+
+[[form.fields]]
+id = "method"
+type = "select"
+label = "方法 -m"
+default = "GET"
+options = ["GET", "POST", "JSON", "XML"]
+required = true
+
+[[form.fields]]
+id = "stable"
+type = "select"
+label = "稳定模式 --stable"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[argv]
+template = [
+  "-u",
+  "{url}",
+  "-t",
+  "{threads}",
+  "-m",
+  "{method}",
+  "-o",
+  "{job_dir}/arjun-output.json",
+  "-q",
+]
+
+[[argv.optional]]
+field = "stable"
+equals = "yes"
+args = ["--stable"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 268435456

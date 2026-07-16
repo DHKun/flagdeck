@@ -1,0 +1,88 @@
+id = "behinder-decryptor"
+name = "Behinder Decryptor"
+category = "decode"
+summary = "冰蝎流量解密（pcap → 明文请求/响应）"
+
+usage = """
+【FlagDeck 表单】
+• pcap 文件、URL 路径、脚本类型、密文 key
+• 可选预览服务 -p
+
+【实际调用】
+python Behinder-Decrypt.py -f pcap -u path -t type -k key [-p]
+
+依赖：pyshark 等（见工具目录 requirement.txt）
+"""
+mode = "embedded_cli"
+featured = false
+
+[binary]
+command = "python3"
+path = "Active/behinder-decryptor/Behinder-Decrypt.py"
+resolve = ["tools_root", "path", "system"]
+
+[ui]
+icon = "key"
+accent = "teal"
+
+[[form.fields]]
+id = "pcap"
+type = "text"
+label = "pcap 文件 -f"
+required = true
+hint = "绝对路径，如 /tmp/capture.pcap"
+
+[[form.fields]]
+id = "url_path"
+type = "text"
+label = "URL 路径 -u"
+required = true
+default = "/shell.php"
+hint = "例如 /uploads/shell.php"
+
+[[form.fields]]
+id = "script_type"
+type = "select"
+label = "脚本类型 -t"
+default = "php"
+options = ["php", "asp", "aspx", "jsp"]
+required = true
+
+[[form.fields]]
+id = "key"
+type = "text"
+label = "密文 key -k"
+required = true
+hint = "webshell 中的 key，如 e45e329feb5d925b"
+
+[[form.fields]]
+id = "preview"
+type = "select"
+label = "启动预览 -p"
+default = "no"
+options = ["no", "yes"]
+required = true
+
+[argv]
+template = [
+  "-f",
+  "{pcap}",
+  "-u",
+  "{url_path}",
+  "-t",
+  "{script_type}",
+  "-k",
+  "{key}",
+]
+
+[[argv.optional]]
+field = "preview"
+equals = "yes"
+args = ["-p"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 536870912

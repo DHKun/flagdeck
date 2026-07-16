@@ -175,6 +175,17 @@ const attempts = [
     },
   ],
   [
+    "preview_job_file",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+        filename: "ffuf-output.json",
+        limit: 1,
+      },
+    },
+  ],
+  [
     "list_discoveries",
     {
       request: {

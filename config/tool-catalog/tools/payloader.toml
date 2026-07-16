@@ -1,0 +1,42 @@
+id = "payloader"
+name = "Payloader"
+category = "gui"
+summary = "Payload 构造工作台（Vite 前端，独立浏览器）"
+
+usage = """
+【类型】本地 Web 工具（Payloader）
+
+【FlagDeck】
+在工具目录执行 npm run dev，浏览器访问本地开发服务。
+首次需在目录内 npm install。
+
+【注意】
+• 需要本机 Node.js / npm
+• 仅作辅助构造，不自动对目标发包
+"""
+mode = "external_launch"
+featured = false
+cwd = "Active/Payloader"
+
+[binary]
+command = "npm"
+path = ""
+resolve = ["system"]
+
+[ui]
+icon = "app"
+accent = "indigo"
+
+[form]
+fields = []
+
+[argv]
+template = ["run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"]
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 1073741824
+tasks_max = 64

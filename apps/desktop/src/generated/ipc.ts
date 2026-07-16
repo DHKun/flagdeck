@@ -184,6 +184,14 @@ export type PreviewJobLogRequest = { project_id: ProjectId, job_id: JobId, strea
 
 export type JobLogPreview = { job_id: JobId, stream: JobLogStream, content: string, bytes_returned: number, next_offset: number, eof: boolean, };
 
+export type PreviewJobFileRequest = { project_id: ProjectId, job_id: JobId, 
+/**
+ * Basename only; must match a safe allowlist pattern.
+ */
+filename: string, limit: number, };
+
+export type JobFilePreview = { job_id: JobId, filename: string, content: string, bytes_returned: number, found: boolean, };
+
 export type DiscoveryPageRequest = { project_id: ProjectId, cursor: string | null, limit: number, };
 
 export type DiscoveryPage = { items: Array<Discovery>, next_cursor: string | null, };

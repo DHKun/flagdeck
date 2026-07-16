@@ -70,6 +70,7 @@ pub const MAX_PROJECT_PAGE: usize = 100;
 pub const MAX_NOTE_BYTES: usize = 1024 * 1024;
 pub const MAX_DICTIONARY_INPUT_BYTES: usize = 1024 * 1024;
 pub const MAX_JOB_LOG_PREVIEW_BYTES: usize = 64 * 1024;
+pub const MAX_JOB_FILE_PREVIEW_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
@@ -473,6 +474,25 @@ pub struct JobLogPreview {
     #[ts(type = "number")]
     pub next_offset: u64,
     pub eof: bool,
+}
+
+/// Read a sidecar result file from a job scan directory (e.g. ffuf-output.json).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PreviewJobFileRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+    /// Basename only; must match a safe allowlist pattern.
+    pub filename: String,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct JobFilePreview {
+    pub job_id: JobId,
+    pub filename: String,
+    pub content: String,
+    pub bytes_returned: usize,
+    pub found: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -1493,6 +1513,55 @@ impl CoreService {
                 bytes_returned: read_length,
                 next_offset,
                 eof: stored.job.stopped_at.is_some() && next_offset == metadata.len(),
+            })
+        })
+    }
+
+    pub fn preview_job_file(
+        &self,
+        request: &PreviewJobFileRequest,
+    ) -> Result<JobFilePreview, CoreError> {
+        if request.limit == 0 || request.limit > MAX_JOB_FILE_PREVIEW_BYTES {
+            return Err(CoreError::InvalidRequest);
+        }
+        let filename = request.filename.trim();
+        if !is_safe_job_sidecar_filename(filename) {
+            return Err(CoreError::InvalidRequest);
+        }
+        self.with_active(&request.project_id, |store| {
+            let _stored = store.job(&request.job_id)?;
+            let path = store.layout().scans.join(&request.job_id.0).join(filename);
+            let mut file = match File::options()
+                .read(true)
+                .custom_flags(nix::libc::O_NOFOLLOW)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(JobFilePreview {
+                        job_id: request.job_id.clone(),
+                        filename: filename.to_owned(),
+                        content: String::new(),
+                        bytes_returned: 0,
+                        found: false,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(CoreError::InvalidRequest);
+            }
+            let read_length = usize::try_from(metadata.len().min(request.limit as u64))
+                .map_err(|_| CoreError::InvalidRequest)?;
+            let mut bytes = vec![0_u8; read_length];
+            file.read_exact(&mut bytes)?;
+            Ok(JobFilePreview {
+                job_id: request.job_id.clone(),
+                filename: filename.to_owned(),
+                content: String::from_utf8_lossy(&bytes).into_owned(),
+                bytes_returned: read_length,
+                found: true,
             })
         })
     }
@@ -2651,6 +2720,20 @@ fn map_catalog_error(error: &CatalogError) -> CoreError {
     }
 }
 
+fn is_safe_job_sidecar_filename(filename: &str) -> bool {
+    if filename.is_empty() || filename.len() > 128 {
+        return false;
+    }
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return false;
+    }
+    // Allow names like ffuf-output.json, dddd-output.jsonl, fscan-output.txt
+    filename
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        && filename.contains('.')
+}
+
 fn is_active_execution_status(status: ExecutionStatus) -> bool {
     matches!(
         status,
@@ -3728,6 +3811,8 @@ pub fn typescript_declarations() -> String {
         declaration!(JobLogStream),
         declaration!(PreviewJobLogRequest),
         declaration!(JobLogPreview),
+        declaration!(PreviewJobFileRequest),
+        declaration!(JobFilePreview),
         declaration!(DiscoveryPageRequest),
         declaration!(DiscoveryPage),
         declaration!(ToolHealthDto),

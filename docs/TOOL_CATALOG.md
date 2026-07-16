@@ -70,13 +70,21 @@ config/tool-catalog/
 
 **无需**修改 `AlphaTool`、无需改前端表单代码（动态渲染）。
 
-## 首批工具
+## 工具列表（catalog）
 
 | ID | 模式 | 说明 |
 |---|---|---|
 | curl | embedded | 系统 curl |
+| arjun | embedded | HTTP 参数发现（PATH） |
 | dddd | embedded | Active/dddd |
 | fscan | embedded | Active/fscan |
 | ffuf | embedded | PATH 或自行配置 path |
 | gobuster | embedded | PATH 或自行配置 path |
-| shiro / godzilla / antsword | external | GUI 一键启动 |
+| behinder-decryptor | embedded | 冰蝎 pcap 解密 |
+| shiro / godzilla / antsword / behinder | external | WebShell / Shiro GUI |
+| uploadranger | external | 上传漏洞测试 GUI |
+| payloader | external | `npm run dev` Payload 构造页 |
+
+### 结构化结果
+
+任务目录旁路文件（如 `ffuf-output.json`）可通过 `preview_job_file` 读取；工作台「结果」页对 ffuf / dddd / fscan / gobuster / arjun 做前端表格解析。其它工具默认只看日志。

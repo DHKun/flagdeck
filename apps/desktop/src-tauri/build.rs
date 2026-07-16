@@ -25,6 +25,7 @@ fn main() {
             "launch_external",
             "run_tool",
             "preview_job_log",
+            "preview_job_file",
             "cancel_job",
             "cancel_all_jobs",
             "list_jobs",

@@ -20,18 +20,19 @@ use flagdeck_core::{
     ExternalLauncherHealthDto, GetHttpMessageRequest, GetMetasploitOptionsRequest, HttpHistoryPage,
     HttpHistoryPageRequest, HttpMessageDiff, ImportPackagePage, ImportProjectRequest,
     ImportProjectResult, IntruderAttemptPage, IntruderAttemptPageRequest, IntruderCampaignPage,
-    JobLogPreview, JobPage, JobPageRequest, JobView, LaunchExternalRequest,
+    JobFilePreview, JobLogPreview, JobPage, JobPageRequest, JobView, LaunchExternalRequest,
     ListIntruderCampaignsRequest, ListPayloadsRequest, MetasploitConsoleCommandRequest,
     MetasploitEntityPage, MetasploitExecutionResult, MetasploitModuleOption,
     MetasploitModuleSummary, MetasploitSessionCommandRequest, MetasploitStatus,
     MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult,
     OpenProjectRequest, ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
-    PreviewArtifactRequest, PreviewJobLogRequest, PreviewPayloadRequest, ProjectContextRequest,
-    ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest,
-    RunToolRequest, ScopePage, SearchDictionaryRequest, SearchMetasploitModulesRequest,
-    SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest, StartMetasploitRequest,
-    StartProxyRequest, StartUploadCampaignRequest, StopMetasploitEntityRequest,
-    StopMetasploitRequest, StopProxyRequest, ToolHealthDto, ToolPackHealthDto,
+    PreviewArtifactRequest, PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest,
+    ProjectContextRequest, ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult,
+    RunCatalogToolRequest, RunToolRequest, ScopePage, SearchDictionaryRequest,
+    SearchMetasploitModulesRequest, SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest,
+    StartMetasploitRequest, StartProxyRequest, StartUploadCampaignRequest,
+    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, ToolHealthDto,
+    ToolPackHealthDto,
 };
 use flagdeck_domain::{
     AdapterEntity, Artifact, DictionaryIndex, HttpMessage, IntruderCampaign, MultipartDocument,
@@ -276,6 +277,15 @@ async fn preview_job_log(
 ) -> Result<JobLogPreview, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.preview_job_log(&request)).await
+}
+
+#[tauri::command]
+async fn preview_job_file(
+    state: State<'_, Arc<CoreService>>,
+    request: PreviewJobFileRequest,
+) -> Result<JobFilePreview, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.preview_job_file(&request)).await
 }
 
 #[tauri::command]
@@ -1022,6 +1032,7 @@ pub fn run() {
             launch_external,
             run_tool,
             preview_job_log,
+            preview_job_file,
             cancel_job,
             cancel_all_jobs,
             list_jobs,

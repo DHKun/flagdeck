@@ -1,0 +1,42 @@
+id = "uploadranger"
+name = "UploadRanger"
+category = "gui"
+summary = "文件上传漏洞测试 GUI（独立窗口）"
+
+usage = """
+【类型】独立 GUI（UploadRanger）
+
+【FlagDeck】
+通过 python3 启动 main.py，无需填写目标 URL。
+上传点、Payload、绕过策略在窗口内配置。
+
+【注意】
+• 需要图形桌面与 Python/Qt 依赖
+• 仅在授权靶场 / CTF 环境使用
+"""
+mode = "external_launch"
+featured = true
+cwd = "Active/UploadRanger"
+
+[binary]
+command = "python3"
+path = "Active/UploadRanger/main.py"
+resolve = ["tools_root", "path", "system"]
+
+[ui]
+icon = "app"
+accent = "purple"
+
+[form]
+fields = []
+
+[argv]
+template = []
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 2147483648
+tasks_max = 256

@@ -29,6 +29,7 @@
     "cancel_all_jobs",
     "list_jobs",
     "preview_job_log",
+    "preview_job_file",
     "list_discoveries",
     "create_dictionary",
     "list_dictionaries",
@@ -356,6 +357,21 @@
           Number.isSafeInteger(request.limit) &&
           request.limit >= 1 &&
           request.limit <= 65_536;
+        break;
+      case "preview_job_file":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id) &&
+          typeof request.filename === "string" &&
+          request.filename.length > 0 &&
+          request.filename.length <= 128 &&
+          !request.filename.includes("/") &&
+          !request.filename.includes("\\") &&
+          !request.filename.includes("..") &&
+          Number.isSafeInteger(request.limit) &&
+          request.limit >= 1 &&
+          request.limit <= 1_048_576;
         break;
       case "create_dictionary":
         valid =
