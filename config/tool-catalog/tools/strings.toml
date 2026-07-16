@@ -5,10 +5,8 @@ summary = "从二进制中提取可打印字符串"
 
 usage = """
 【FlagDeck 表单】
-• 文件路径、最小长度 -n、可选 -a 全文件、进制偏移 -t
-
-【实际调用】
-strings [-a] [-n N] [-t radix] FILE
+• 必填：文件路径、最小长度
+• 可选：全文件扫描、偏移进制、编码、输出分隔
 
 完整帮助：strings --help
 """
@@ -29,7 +27,7 @@ id = "file"
 type = "text"
 label = "文件路径"
 required = true
-hint = "绝对路径，例 /tmp/challenge"
+hint = "要提取字符串的二进制/固件绝对路径"
 
 [[form.fields]]
 id = "min_len"
@@ -37,6 +35,7 @@ type = "number"
 label = "最小长度 -n"
 default = "4"
 required = true
+hint = "至少连续多少个可打印字符才输出；调大可降噪"
 
 [[form.fields]]
 id = "all"
@@ -45,15 +44,43 @@ label = "扫描整个文件 -a"
 default = "yes"
 options = ["yes", "no"]
 required = true
+hint = "yes=扫全文件；no=主要扫数据段（部分格式）"
 
 [[form.fields]]
 id = "radix"
 type = "select"
-label = "打印偏移 -t（可选）"
+label = "打印偏移 -t"
 default = "none"
 options = ["none", "x", "d", "o"]
 required = true
-hint = "x=十六进制偏移"
+hint = "在每行前打印偏移：x 十六进制 / d 十进制 / o 八进制"
+
+[[form.fields]]
+id = "encoding"
+type = "select"
+label = "编码 -e（可选）"
+default = "default"
+options = ["default", "s", "S", "b", "l", "B", "L"]
+required = true
+hint = "s=7bit，S=8bit，b/l=16bit 大/小端，B/L=32bit 大/小端；default=工具默认"
+
+[[form.fields]]
+id = "print_filename"
+type = "select"
+label = "打印文件名 -f"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=每行前带文件名（批量文件时有用）"
+
+[[form.fields]]
+id = "include_whitespace"
+type = "select"
+label = "包含空白 -w"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=把空白也算作可打印序列的一部分"
 
 [argv]
 template = ["-n", "{min_len}"]
@@ -78,6 +105,46 @@ args = ["-t", "d"]
 field = "radix"
 equals = "o"
 args = ["-t", "o"]
+
+[[argv.optional]]
+field = "encoding"
+equals = "s"
+args = ["-e", "s"]
+
+[[argv.optional]]
+field = "encoding"
+equals = "S"
+args = ["-e", "S"]
+
+[[argv.optional]]
+field = "encoding"
+equals = "b"
+args = ["-e", "b"]
+
+[[argv.optional]]
+field = "encoding"
+equals = "l"
+args = ["-e", "l"]
+
+[[argv.optional]]
+field = "encoding"
+equals = "B"
+args = ["-e", "B"]
+
+[[argv.optional]]
+field = "encoding"
+equals = "L"
+args = ["-e", "L"]
+
+[[argv.optional]]
+field = "print_filename"
+equals = "yes"
+args = ["-f"]
+
+[[argv.optional]]
+field = "include_whitespace"
+equals = "yes"
+args = ["-w"]
 
 [parser]
 kind = "none"

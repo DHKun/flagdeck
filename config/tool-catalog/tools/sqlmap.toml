@@ -5,11 +5,11 @@ summary = "自动化 SQL 注入检测与利用（PATH）"
 
 usage = """
 【FlagDeck 表单】
-• URL（可含 ?id=1）/ 可选 POST 体、Cookie、参数名
-• level / risk / 技术类型 / 代理 / batch
+• 必填：URL、level、risk
+• 可选：POST/Cookie/参数、DBMS、线程、代理、tamper、枚举动作
 
 【实际调用】
-sqlmap -u URL [--data] [--cookie] [-p] --level N --risk N --technique T --batch
+sqlmap -u URL [--data] [--cookie] [-p] --level N --risk N --batch …
 
 完整帮助：sqlmap -h / sqlmap -hh
 仅限 CTF / 靶场 / 书面授权目标。
@@ -32,7 +32,7 @@ type = "url"
 label = "目标 URL -u"
 required = true
 from = "target_url"
-hint = "例 http://target/vuln.php?id=1"
+hint = "含注入点的地址，例 http://target/vuln.php?id=1"
 
 [[form.fields]]
 id = "data"
@@ -40,7 +40,7 @@ type = "text"
 label = "POST 体 --data（可选）"
 default = ""
 required = false
-hint = "例 id=1&user=a"
+hint = "POST 注入时填，例 id=1&user=a；会改为请求体传参"
 
 [[form.fields]]
 id = "cookie"
@@ -48,6 +48,7 @@ type = "text"
 label = "Cookie --cookie（可选）"
 default = ""
 required = false
+hint = "会话 Cookie，例 PHPSESSID=xxx；也可测 Cookie 注入"
 
 [[form.fields]]
 id = "param"
@@ -55,7 +56,32 @@ type = "text"
 label = "测试参数 -p（可选）"
 default = ""
 required = false
-hint = "例 id 或 id,user"
+hint = "只测指定参数，例 id 或 id,user；留空=自动发现"
+
+[[form.fields]]
+id = "headers"
+type = "text"
+label = "额外头 --headers（可选）"
+default = ""
+required = false
+hint = "多行用 \\n 分隔，例 X-Forwarded-For: 127.0.0.1"
+
+[[form.fields]]
+id = "user_agent"
+type = "text"
+label = "User-Agent（可选）"
+default = ""
+required = false
+hint = "自定义 UA；与「随机 UA」二选一即可"
+
+[[form.fields]]
+id = "random_agent"
+type = "select"
+label = "随机 UA --random-agent"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=每次请求随机浏览器 UA，降低简单指纹拦截"
 
 [[form.fields]]
 id = "level"
@@ -64,6 +90,7 @@ label = "检测等级 --level"
 default = "1"
 options = ["1", "2", "3", "4", "5"]
 required = true
+hint = "1 最快/最浅；越高测试的参数位置与 payload 越多（更慢更吵）"
 
 [[form.fields]]
 id = "risk"
@@ -72,6 +99,7 @@ label = "风险等级 --risk"
 default = "1"
 options = ["1", "2", "3"]
 required = true
+hint = "1 最安全；2/3 含更重的 OR/UPDATE 等可能改数据的 payload"
 
 [[form.fields]]
 id = "technique"
@@ -79,7 +107,39 @@ type = "text"
 label = "技术 --technique（可选）"
 default = "BEUSTQ"
 required = false
-hint = "默认 BEUSTQ；子集如 BU"
+hint = "B布尔/E报错/U联合/S堆叠/T时间/Q内联；子集如 BU 只测布尔+联合"
+
+[[form.fields]]
+id = "dbms"
+type = "text"
+label = "强制 DBMS --dbms（可选）"
+default = ""
+required = false
+hint = "已知后端时加速，例 MySQL、PostgreSQL、Microsoft SQL Server、Oracle"
+
+[[form.fields]]
+id = "threads"
+type = "number"
+label = "线程 --threads（可选）"
+default = ""
+required = false
+hint = "并发请求数，默认 1；盲目注入可适当提高（靶场）"
+
+[[form.fields]]
+id = "timeout"
+type = "number"
+label = "连接超时 --timeout（可选）"
+default = ""
+required = false
+hint = "单请求等待秒数，默认约 30；网络差可调大"
+
+[[form.fields]]
+id = "delay"
+type = "number"
+label = "请求间隔 --delay（可选）"
+default = ""
+required = false
+hint = "两次请求间隔秒数，用于降速防 WAF/限流"
 
 [[form.fields]]
 id = "proxy"
@@ -87,16 +147,56 @@ type = "text"
 label = "代理 --proxy（可选）"
 default = ""
 required = false
-hint = "http://127.0.0.1:8080"
+hint = "例 http://127.0.0.1:8080 走 Burp 观察流量"
+
+[[form.fields]]
+id = "tamper"
+type = "text"
+label = "Tamper --tamper（可选）"
+default = ""
+required = false
+hint = "绕过脚本名，例 space2comment,between；多个逗号分隔"
+
+[[form.fields]]
+id = "prefix"
+type = "text"
+label = "前缀 --prefix（可选）"
+default = ""
+required = false
+hint = "payload 前拼接字符串，用于闭合引号/括号等特殊上下文"
+
+[[form.fields]]
+id = "suffix"
+type = "text"
+label = "后缀 --suffix（可选）"
+default = ""
+required = false
+hint = "payload 后拼接，例 -- 或 # 做注释收尾"
+
+[[form.fields]]
+id = "db"
+type = "text"
+label = "库名 -D（可选）"
+default = ""
+required = false
+hint = "枚举/导出时指定数据库名（配合 tables/columns/dump）"
+
+[[form.fields]]
+id = "table"
+type = "text"
+label = "表名 -T（可选）"
+default = ""
+required = false
+hint = "指定表；dump/columns 时常用"
 
 [[form.fields]]
 id = "enum"
 type = "select"
 label = "枚举动作"
 default = "banner"
-options = ["none", "banner", "current-db", "current-user", "dbs", "tables", "dump"]
+options = ["none", "banner", "current-db", "current-user", "is-dba", "dbs", "tables", "columns", "dump", "dump-all"]
 required = true
-hint = "none 仅检测；其余追加对应开关"
+hint = "none=只检测是否可注；其余在确认可注后拉信息/数据"
 
 [[form.fields]]
 id = "batch"
@@ -105,6 +205,16 @@ label = "非交互 --batch"
 default = "yes"
 options = ["yes", "no"]
 required = true
+hint = "yes=自动选默认答案，适合无人值守；no=可能卡在提问（桌面不推荐）"
+
+[[form.fields]]
+id = "force_ssl"
+type = "select"
+label = "强制 HTTPS --force-ssl"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=强制按 SSL 访问（目标只接受 HTTPS 时）"
 
 [argv]
 template = [
@@ -129,17 +239,71 @@ field = "param"
 args = ["-p", "{param}"]
 
 [[argv.optional]]
+field = "headers"
+args = ["--headers", "{headers}"]
+
+[[argv.optional]]
+field = "user_agent"
+args = ["--user-agent", "{user_agent}"]
+
+[[argv.optional]]
+field = "random_agent"
+equals = "yes"
+args = ["--random-agent"]
+
+[[argv.optional]]
 field = "technique"
 args = ["--technique", "{technique}"]
+
+[[argv.optional]]
+field = "dbms"
+args = ["--dbms", "{dbms}"]
+
+[[argv.optional]]
+field = "threads"
+args = ["--threads", "{threads}"]
+
+[[argv.optional]]
+field = "timeout"
+args = ["--timeout", "{timeout}"]
+
+[[argv.optional]]
+field = "delay"
+args = ["--delay", "{delay}"]
 
 [[argv.optional]]
 field = "proxy"
 args = ["--proxy", "{proxy}"]
 
 [[argv.optional]]
+field = "tamper"
+args = ["--tamper", "{tamper}"]
+
+[[argv.optional]]
+field = "prefix"
+args = ["--prefix", "{prefix}"]
+
+[[argv.optional]]
+field = "suffix"
+args = ["--suffix", "{suffix}"]
+
+[[argv.optional]]
+field = "db"
+args = ["-D", "{db}"]
+
+[[argv.optional]]
+field = "table"
+args = ["-T", "{table}"]
+
+[[argv.optional]]
 field = "batch"
 equals = "yes"
 args = ["--batch"]
+
+[[argv.optional]]
+field = "force_ssl"
+equals = "yes"
+args = ["--force-ssl"]
 
 [[argv.optional]]
 field = "enum"
@@ -158,6 +322,11 @@ args = ["--current-user"]
 
 [[argv.optional]]
 field = "enum"
+equals = "is-dba"
+args = ["--is-dba"]
+
+[[argv.optional]]
+field = "enum"
 equals = "dbs"
 args = ["--dbs"]
 
@@ -168,8 +337,18 @@ args = ["--tables"]
 
 [[argv.optional]]
 field = "enum"
+equals = "columns"
+args = ["--columns"]
+
+[[argv.optional]]
+field = "enum"
 equals = "dump"
 args = ["--dump"]
+
+[[argv.optional]]
+field = "enum"
+equals = "dump-all"
+args = ["--dump-all"]
 
 [parser]
 kind = "none"

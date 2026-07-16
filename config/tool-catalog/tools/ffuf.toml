@@ -5,15 +5,11 @@ summary = "目录/路径模糊测试（FUZZ）"
 
 usage = """
 【FlagDeck 表单】
-• URL：默认在末尾加 /FUZZ；若已含 FUZZ 关键字则不改
-• 字典 / 线程 / 匹配与过滤状态码 / 扩展名
-• 方法、POST 体、请求头、代理、自动校准、递归、速率
+• 必填：URL（自动补 /FUZZ）、字典、线程、匹配码、方法
+• 可选：过滤码、大小/词数过滤、扩展名、头、代理、递归、速率等
+• 输出：任务目录 ffuf-output.json
 
-【实际调用】
-ffuf -u ... -w dict -t N -mc ... [可选开关]
-  -o out.json -of json -noninteractive -s
-
-完整帮助：ffuf -h
+完整帮助：ffuf -h（需本机安装 ffuf 或 mise go 工具链）
 """
 mode = "embedded_cli"
 featured = true
@@ -33,7 +29,7 @@ type = "url"
 label = "目标 URL -u"
 required = true
 from = "target_url"
-hint = "默认追加 /FUZZ；URL 中已有 FUZZ 则保持原样"
+hint = "默认在末尾追加 /FUZZ；URL 里已有 FUZZ 关键字则不改"
 
 [[form.fields]]
 id = "wordlist"
@@ -41,6 +37,7 @@ type = "wordlist"
 label = "字典 -w"
 required = true
 default = "seclists-common"
+hint = "路径字典；大字典更全更慢，先用 common 试水"
 
 [[form.fields]]
 id = "threads"
@@ -48,6 +45,7 @@ type = "number"
 label = "线程 -t"
 default = "40"
 required = true
+hint = "并发 worker 数；过高易被封或拖垮靶机"
 
 [[form.fields]]
 id = "mc"
@@ -55,6 +53,7 @@ type = "text"
 label = "匹配状态码 -mc"
 default = "200,204,301,302,307,401,403"
 required = true
+hint = "只保留这些 HTTP 状态的结果；all 表示全部"
 
 [[form.fields]]
 id = "fc"
@@ -62,7 +61,31 @@ type = "text"
 label = "过滤状态码 -fc（可选）"
 default = ""
 required = false
-hint = "例 404"
+hint = "丢弃这些状态，例 404 或 404,400"
+
+[[form.fields]]
+id = "fs"
+type = "text"
+label = "过滤响应大小 -fs（可选）"
+default = ""
+required = false
+hint = "按字节大小过滤噪声页，例 42 或 42,100-200"
+
+[[form.fields]]
+id = "fw"
+type = "text"
+label = "过滤词数 -fw（可选）"
+default = ""
+required = false
+hint = "按响应 body 单词数过滤假阳性"
+
+[[form.fields]]
+id = "fl"
+type = "text"
+label = "过滤行数 -fl（可选）"
+default = ""
+required = false
+hint = "按响应行数过滤"
 
 [[form.fields]]
 id = "extensions"
@@ -70,7 +93,7 @@ type = "text"
 label = "扩展名 -e（可选）"
 default = ""
 required = false
-hint = "例 php,asp,aspx,jsp,txt"
+hint = "追加扩展名 fuzz，例 php,asp,aspx,jsp,txt,bak"
 
 [[form.fields]]
 id = "method"
@@ -79,6 +102,7 @@ label = "方法 -X"
 default = "GET"
 options = ["GET", "POST", "PUT", "HEAD"]
 required = true
+hint = "HTTP 方法；POST 时常配合 -d 体"
 
 [[form.fields]]
 id = "post_data"
@@ -86,6 +110,7 @@ type = "text"
 label = "POST 体 -d（可选）"
 default = ""
 required = false
+hint = "请求体；可在体中放 FUZZ 做参数 fuzz"
 
 [[form.fields]]
 id = "headers"
@@ -93,7 +118,7 @@ type = "text"
 label = "请求头 -H（可选）"
 default = ""
 required = false
-hint = "单条 Header: Value"
+hint = "单条 Header: Value；Cookie/Authorization 可写在此"
 
 [[form.fields]]
 id = "proxy"
@@ -101,6 +126,15 @@ type = "text"
 label = "代理 -x（可选）"
 default = ""
 required = false
+hint = "例 http://127.0.0.1:8080 走 Burp"
+
+[[form.fields]]
+id = "vhost"
+type = "text"
+label = "Host 头虚拟主机（可选）"
+default = ""
+required = false
+hint = "填后追加 -H Host: 值，用于虚拟主机发现（URL 仍指向 IP）"
 
 [[form.fields]]
 id = "auto_calibrate"
@@ -109,6 +143,7 @@ label = "自动校准 -ac"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=自动过滤「统一伪 404」响应，减少假阳性"
 
 [[form.fields]]
 id = "recursion"
@@ -117,6 +152,15 @@ label = "递归 -recursion"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=对发现的目录继续深入 fuzz（更慢更全）"
+
+[[form.fields]]
+id = "recursion_depth"
+type = "number"
+label = "递归深度 -recursion-depth（可选）"
+default = ""
+required = false
+hint = "仅递归开启时有效；限制最大层级"
 
 [[form.fields]]
 id = "rate"
@@ -124,6 +168,31 @@ type = "number"
 label = "速率 -rate（0=不限）"
 default = "0"
 required = true
+hint = "每秒请求上限；0 表示不限制（内部会省略该参数）"
+
+[[form.fields]]
+id = "timeout"
+type = "number"
+label = "超时 -timeout 秒（可选）"
+default = ""
+required = false
+hint = "单请求超时秒数"
+
+[[form.fields]]
+id = "match_regex"
+type = "text"
+label = "匹配正则 -mr（可选）"
+default = ""
+required = false
+hint = "响应体匹配该正则才保留"
+
+[[form.fields]]
+id = "filter_regex"
+type = "text"
+label = "过滤正则 -fr（可选）"
+default = ""
+required = false
+hint = "响应体命中则丢弃"
 
 [argv]
 template = [
@@ -150,6 +219,18 @@ field = "fc"
 args = ["-fc", "{fc}"]
 
 [[argv.optional]]
+field = "fs"
+args = ["-fs", "{fs}"]
+
+[[argv.optional]]
+field = "fw"
+args = ["-fw", "{fw}"]
+
+[[argv.optional]]
+field = "fl"
+args = ["-fl", "{fl}"]
+
+[[argv.optional]]
 field = "extensions"
 args = ["-e", "{extensions}"]
 
@@ -160,6 +241,10 @@ args = ["-d", "{post_data}"]
 [[argv.optional]]
 field = "headers"
 args = ["-H", "{headers}"]
+
+[[argv.optional]]
+field = "vhost"
+args = ["-H", "Host: {vhost}"]
 
 [[argv.optional]]
 field = "proxy"
@@ -176,8 +261,24 @@ equals = "yes"
 args = ["-recursion"]
 
 [[argv.optional]]
+field = "recursion_depth"
+args = ["-recursion-depth", "{recursion_depth}"]
+
+[[argv.optional]]
 field = "rate"
 args = ["-rate", "{rate}"]
+
+[[argv.optional]]
+field = "timeout"
+args = ["-timeout", "{timeout}"]
+
+[[argv.optional]]
+field = "match_regex"
+args = ["-mr", "{match_regex}"]
+
+[[argv.optional]]
+field = "filter_regex"
+args = ["-fr", "{filter_regex}"]
 
 [parser]
 kind = "none"

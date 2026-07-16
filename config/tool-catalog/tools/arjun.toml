@@ -5,11 +5,12 @@ summary = "HTTP 参数发现（隐藏参数爆破）"
 
 usage = """
 【FlagDeck 表单】
-• 目标 URL、线程、方法
-• 结果写入任务目录 arjun-output.json
+• 必填：URL、线程、方法
+• 可选：延迟、超时、块大小、字典、头、被动源、稳定模式等
+• 结果默认写任务目录 arjun-output.json
 
 【实际调用】
-arjun -u URL -t N -m METHOD -o JSON -q
+arjun -u URL -t N -m METHOD -o JSON [选项]
 
 完整帮助：arjun -h
 """
@@ -31,6 +32,7 @@ type = "url"
 label = "目标 URL -u"
 required = true
 from = "target_url"
+hint = "要挖隐藏参数的页面，例 http://target/search"
 
 [[form.fields]]
 id = "threads"
@@ -38,6 +40,7 @@ type = "number"
 label = "线程 -t"
 default = "5"
 required = true
+hint = "并发线程；过大易触发 WAF，靶场可 5–20"
 
 [[form.fields]]
 id = "method"
@@ -46,6 +49,63 @@ label = "方法 -m"
 default = "GET"
 options = ["GET", "POST", "JSON", "XML"]
 required = true
+hint = "参数放置位置：GET 查询串 / POST 表单 / JSON 体 / XML 体"
+
+[[form.fields]]
+id = "delay"
+type = "number"
+label = "延迟 -d 秒（可选）"
+default = ""
+required = false
+hint = "请求间隔秒数，默认 0；防限流时设 0.5–2"
+
+[[form.fields]]
+id = "timeout"
+type = "number"
+label = "超时 -T 秒（可选）"
+default = ""
+required = false
+hint = "单请求超时，默认约 15；慢站可调大"
+
+[[form.fields]]
+id = "chunks"
+type = "number"
+label = "块大小 -c（可选）"
+default = ""
+required = false
+hint = "一次塞入多少候选参数名；过大易被拒，过小更慢"
+
+[[form.fields]]
+id = "wordlist"
+type = "text"
+label = "参数字典 -w（可选）"
+default = ""
+required = false
+hint = "绝对路径；留空用 arjun 内置 large 字典"
+
+[[form.fields]]
+id = "headers"
+type = "text"
+label = "请求头 --headers（可选）"
+default = ""
+required = false
+hint = "多行头用换行分隔；可带 Cookie/Authorization"
+
+[[form.fields]]
+id = "include"
+type = "text"
+label = "固定携带 --include（可选）"
+default = ""
+required = false
+hint = "每次请求都带上的数据（如已有合法参数 csrf=xxx）"
+
+[[form.fields]]
+id = "rate_limit"
+type = "number"
+label = "速率 --rate-limit（可选）"
+default = ""
+required = false
+hint = "每秒最大请求数；默认很高，可调低保护目标"
 
 [[form.fields]]
 id = "stable"
@@ -54,6 +114,33 @@ label = "稳定模式 --stable"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=更稳更慢，减少误报（网络抖动/WAF 时建议开）"
+
+[[form.fields]]
+id = "passive"
+type = "select"
+label = "被动源 --passive"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=从 Wayback/CommonCrawl/OTX 收集历史参数名（需出网）"
+
+[[form.fields]]
+id = "disable_redirects"
+type = "select"
+label = "禁用重定向 --disable-redirects"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=不跟随 3xx，避免跳到登录页导致误判"
+
+[[form.fields]]
+id = "casing"
+type = "text"
+label = "参数命名 --casing（可选）"
+default = ""
+required = false
+hint = "生成风格：like_this / likeThis / likethis 等"
 
 [argv]
 template = [
@@ -69,9 +156,51 @@ template = [
 ]
 
 [[argv.optional]]
+field = "delay"
+args = ["-d", "{delay}"]
+
+[[argv.optional]]
+field = "timeout"
+args = ["-T", "{timeout}"]
+
+[[argv.optional]]
+field = "chunks"
+args = ["-c", "{chunks}"]
+
+[[argv.optional]]
+field = "wordlist"
+args = ["-w", "{wordlist}"]
+
+[[argv.optional]]
+field = "headers"
+args = ["--headers", "{headers}"]
+
+[[argv.optional]]
+field = "include"
+args = ["--include", "{include}"]
+
+[[argv.optional]]
+field = "rate_limit"
+args = ["--rate-limit", "{rate_limit}"]
+
+[[argv.optional]]
 field = "stable"
 equals = "yes"
 args = ["--stable"]
+
+[[argv.optional]]
+field = "passive"
+equals = "yes"
+args = ["--passive"]
+
+[[argv.optional]]
+field = "disable_redirects"
+equals = "yes"
+args = ["--disable-redirects"]
+
+[[argv.optional]]
+field = "casing"
+args = ["--casing", "{casing}"]
 
 [parser]
 kind = "none"

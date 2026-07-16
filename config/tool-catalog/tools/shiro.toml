@@ -21,6 +21,7 @@ usage = """
 """
 mode = "external_launch"
 featured = true
+detach = true
 cwd = "Active/ShiroExploit.V2.51"
 
 [binary]

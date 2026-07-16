@@ -5,13 +5,13 @@ summary = "PyInstaller 可执行文件解包（Binary/Reverse）"
 
 usage = """
 【FlagDeck 表单】
-• 目标 .exe / ELF 绝对路径
+• 目标 PyInstaller 打包文件绝对路径
 
 【实际调用】
 python3 pyinstxtractor.py <filename>
 
-解包结果默认写在文件同目录的 *_extracted/。
-建议用与打包时相近的 Python 大版本。
+解包结果默认写在**文件同目录** *_extracted/（非任务目录）。
+建议使用与打包时相近的 Python 大版本。
 """
 mode = "embedded_cli"
 featured = true
@@ -31,7 +31,7 @@ id = "file"
 type = "text"
 label = "PyInstaller 文件路径"
 required = true
-hint = "绝对路径，例 /tmp/app.exe 或 /tmp/app"
+hint = "被 pyinstaller 打包的 .exe / ELF 绝对路径；输出在旁侧 *_extracted/"
 
 [argv]
 template = [

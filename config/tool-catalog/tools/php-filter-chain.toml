@@ -5,13 +5,11 @@ summary = "LFI → RCE 用 PHP filter 链生成（Scripts）"
 
 usage = """
 【FlagDeck 表单】
-• --chain 要生成的 PHP 代码字符串（注意末尾可补空格）
-• 可选 --rawbase64 调试
+• --chain：要生成的 PHP 代码（末尾常需补空格）
+• 可选 --rawbase64 调试 base64 中间态
 
-【实际调用】
-python3 php_filter_chain_generator.py --chain '<?php phpinfo(); ?>  '
-
-上游：synacktiv/php_filter_chain_generator。仅限 CTF / 授权靶场。
+输出为超长 php://filter 链，粘贴到 LFI 参数即可。
+上游：synacktiv/php_filter_chain_generator。仅限 CTF/授权。
 """
 mode = "embedded_cli"
 featured = true
@@ -32,7 +30,7 @@ type = "text"
 label = "PHP 内容 --chain"
 required = true
 default = "<?php phpinfo(); ?>  "
-hint = "生成 filter 链对应的 PHP 代码；末尾空格可能必要"
+hint = "希望 include 后执行的代码；末尾补空格/分号常能提高成功率。例 <?php system($_GET[c]);?>"
 
 [[form.fields]]
 id = "rawbase64"
@@ -40,7 +38,7 @@ type = "text"
 label = "--rawbase64（可选调试）"
 default = ""
 required = false
-hint = "一般留空"
+hint = "调试：指定期望的 base64 中间值；一般留空"
 
 [argv]
 template = [

@@ -5,14 +5,11 @@ summary = "主机/端口/服务扫描（Active/fscan）"
 
 usage = """
 【FlagDeck 表单】
-• 主机 -h、端口 -p、模式 -m
-• 可开关：禁用 ping / POC / 爆破、全量 POC、输出格式与超时
-
-【实际调用】
-fscan -h <主机> -p <端口> -m <模式> [ -np ] [ -nopoc ] [ -nobr ] [ -full ]
-  -f <格式> -o 输出 -gt <超时>
+• 必填：主机 -h、端口 -p、模式 -m
+• 可选：禁 ping/POC/爆破、Cookie、排除主机/端口、代理、线程、超时
 
 完整帮助：fscan -help
+仅限授权内网/靶场。
 """
 mode = "embedded_cli"
 featured = true
@@ -32,7 +29,7 @@ type = "host"
 label = "目标主机 -h"
 required = true
 from = "target_url"
-hint = "IP、IP 段、域名（不要带路径）"
+hint = "IP、IP 段、域名；也可填主机列表文件路径（见 -hf）"
 
 [[form.fields]]
 id = "ports"
@@ -40,7 +37,7 @@ type = "text"
 label = "端口 -p"
 default = "80,443,8080,8000,8443,22,3389,3306,6379"
 required = true
-hint = "逗号分隔；留空不可（本界面要求填写）"
+hint = "逗号分隔端口/范围；决定扫哪些服务"
 
 [[form.fields]]
 id = "mode"
@@ -49,7 +46,7 @@ label = "扫描模式 -m"
 default = "all"
 options = ["all", "icmp"]
 required = true
-hint = "all=完整流程；icmp=仅存活"
+hint = "all=完整流程；icmp=仅存活探测"
 
 [[form.fields]]
 id = "no_ping"
@@ -58,6 +55,16 @@ label = "禁用 ping -np"
 default = "yes"
 options = ["yes", "no"]
 required = true
+hint = "yes=不先 ICMP，直接端口扫（禁 ping 环境/loopback 建议 yes）"
+
+[[form.fields]]
+id = "alive_only"
+type = "select"
+label = "仅存活探测 -ao"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=只判断主机是否存活，不继续端口/服务"
 
 [[form.fields]]
 id = "no_poc"
@@ -66,6 +73,7 @@ label = "禁用 POC -nopoc"
 default = "yes"
 options = ["yes", "no"]
 required = true
+hint = "yes=不做漏洞 POC（更安全、更安静）"
 
 [[form.fields]]
 id = "no_brute"
@@ -74,6 +82,7 @@ label = "禁用爆破 -nobr"
 default = "yes"
 options = ["yes", "no"]
 required = true
+hint = "yes=关闭弱口令爆破模块"
 
 [[form.fields]]
 id = "full_poc"
@@ -82,7 +91,39 @@ label = "全量 POC -full"
 default = "no"
 options = ["no", "yes"]
 required = true
-hint = "更慢、更吵；默认关闭"
+hint = "yes=跑全量 POC，更慢更吵；默认关"
+
+[[form.fields]]
+id = "cookie"
+type = "text"
+label = "HTTP Cookie（可选）"
+default = ""
+required = false
+hint = "Web 探测时带上的 Cookie（已登录后台）"
+
+[[form.fields]]
+id = "exclude_hosts"
+type = "text"
+label = "排除主机 -eh（可选）"
+default = ""
+required = false
+hint = "不扫这些主机，逗号分隔"
+
+[[form.fields]]
+id = "exclude_ports"
+type = "text"
+label = "排除端口 -ep（可选）"
+default = ""
+required = false
+hint = "从端口集中排除，例 1-1000"
+
+[[form.fields]]
+id = "module_threads"
+type = "number"
+label = "模块线程 -mt（可选）"
+default = ""
+required = false
+hint = "各模块并发线程，默认约 20"
 
 [[form.fields]]
 id = "output_format"
@@ -91,6 +132,7 @@ label = "输出格式 -f"
 default = "json"
 options = ["json", "txt", "csv"]
 required = true
+hint = "结果文件格式；json 便于后续解析"
 
 [[form.fields]]
 id = "global_timeout"
@@ -98,6 +140,7 @@ type = "number"
 label = "全局超时秒 -gt"
 default = "120"
 required = true
+hint = "整次任务超时上限"
 
 [[form.fields]]
 id = "proxy"
@@ -105,6 +148,23 @@ type = "text"
 label = "HTTP 代理 -proxy（可选）"
 default = ""
 required = false
+hint = "部分 HTTP 模块可走代理"
+
+[[form.fields]]
+id = "iface"
+type = "text"
+label = "本地网卡 IP -iface（可选）"
+default = ""
+required = false
+hint = "VPN 场景绑定源地址，例 10.8.0.5"
+
+[[form.fields]]
+id = "domain"
+type = "text"
+label = "域名 -domain（可选）"
+default = ""
+required = false
+hint = "部分插件需要的域名上下文"
 
 [argv]
 template = [
@@ -130,6 +190,11 @@ equals = "yes"
 args = ["-np"]
 
 [[argv.optional]]
+field = "alive_only"
+equals = "yes"
+args = ["-ao"]
+
+[[argv.optional]]
 field = "no_poc"
 equals = "yes"
 args = ["-nopoc"]
@@ -145,8 +210,32 @@ equals = "yes"
 args = ["-full"]
 
 [[argv.optional]]
+field = "cookie"
+args = ["-cookie", "{cookie}"]
+
+[[argv.optional]]
+field = "exclude_hosts"
+args = ["-eh", "{exclude_hosts}"]
+
+[[argv.optional]]
+field = "exclude_ports"
+args = ["-ep", "{exclude_ports}"]
+
+[[argv.optional]]
+field = "module_threads"
+args = ["-mt", "{module_threads}"]
+
+[[argv.optional]]
 field = "proxy"
 args = ["-proxy", "{proxy}"]
+
+[[argv.optional]]
+field = "iface"
+args = ["-iface", "{iface}"]
+
+[[argv.optional]]
+field = "domain"
+args = ["-domain", "{domain}"]
 
 [parser]
 kind = "none"

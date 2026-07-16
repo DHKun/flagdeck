@@ -4,16 +4,12 @@ category = "fingerprint"
 summary = "批量信息收集与指纹探测（Active/dddd）"
 
 usage = """
-【FlagDeck 表单】对应 dddd 常用开关
-• 目标 -t：IP / CIDR / 域名 / host:port / URL
-• 端口 -p：空=Top1000
-• 扫描方式 -st、禁用主机发现 -Pn、关闭 POC / 目录探测等
-
-【实际调用】
-dddd -t <目标> [ -p 端口 ] [-Pn] [-st tcp|syn] [-npoc] [-nd] ...
-  -o 输出.jsonl -ot json
+【FlagDeck 表单】
+• 必填：目标 -t
+• 可选：端口、扫描方式、主机发现、POC/目录、子域、代理、线程超时
 
 完整帮助：dddd -h
+仅限授权目标。
 """
 mode = "embedded_cli"
 featured = true
@@ -33,7 +29,7 @@ type = "host"
 label = "目标 -t"
 required = true
 from = "target_url"
-hint = "IP、网段、域名、host:port 或 URL；也支持资产文件路径"
+hint = "IP、CIDR、域名、host:port、URL，或一行一个的资产文件路径"
 
 [[form.fields]]
 id = "ports"
@@ -41,7 +37,15 @@ type = "text"
 label = "端口 -p（可选）"
 default = ""
 required = false
-hint = "空=Top1000；例 80,443,8000-8010"
+hint = "空=Top1000；例 80,443,8000-8010 或 1-65535"
+
+[[form.fields]]
+id = "no_port"
+type = "text"
+label = "排除端口 -np（可选）"
+default = ""
+required = false
+hint = "不扫这些端口，例 1-1000 或 445,3389"
 
 [[form.fields]]
 id = "scan_type"
@@ -50,6 +54,7 @@ label = "端口扫描 -st"
 default = "tcp"
 options = ["tcp", "syn"]
 required = true
+hint = "tcp=全连接更稳；syn=更快但依赖 masscan 与权限"
 
 [[form.fields]]
 id = "skip_host_discovery"
@@ -58,7 +63,25 @@ label = "禁用主机发现 -Pn"
 default = "yes"
 options = ["yes", "no"]
 required = true
-hint = "对 loopback/已知存活目标建议 yes"
+hint = "yes=假定主机存活直接扫端口（loopback/已知存活建议 yes）"
+
+[[form.fields]]
+id = "no_icmp"
+type = "select"
+label = "禁用 ICMP -nip"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "仅在开启主机发现时生效；禁 ICMP 可走 TCP 发现"
+
+[[form.fields]]
+id = "tcp_ping"
+type = "select"
+label = "启用 TCP 发现 -tp"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "主机发现阶段用 TCP 探活（ICMP 不通时）"
 
 [[form.fields]]
 id = "no_poc"
@@ -67,7 +90,7 @@ label = "关闭漏洞探测 -npoc"
 default = "no"
 options = ["no", "yes"]
 required = true
-hint = "yes=只做信息收集，更快更安全"
+hint = "yes=只做信息收集/指纹，更快更克制"
 
 [[form.fields]]
 id = "no_dir"
@@ -76,6 +99,34 @@ label = "关闭主动目录指纹 -nd"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=不做 Web 目录主动探测，降低噪音"
+
+[[form.fields]]
+id = "no_golang_poc"
+type = "select"
+label = "关闭 GoPoc -ngp"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=关闭内置 Golang POC，只保留其它探测"
+
+[[form.fields]]
+id = "subdomain"
+type = "select"
+label = "子域名枚举 -sd"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=开启被动+爆破子域（更慢，需出网）"
+
+[[form.fields]]
+id = "allow_cdn"
+type = "select"
+label = "允许扫 CDN -ac"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "默认跳过 CDN 资产；yes=仍扫描（可能打到边缘节点）"
 
 [[form.fields]]
 id = "proxy"
@@ -83,7 +134,7 @@ type = "text"
 label = "HTTP 代理 -proxy（可选）"
 default = ""
 required = false
-hint = "例 http://127.0.0.1:8080"
+hint = "例 http://127.0.0.1:8080；Web 探测会走代理"
 
 [[form.fields]]
 id = "web_threads"
@@ -91,6 +142,7 @@ type = "number"
 label = "Web 线程 -wt"
 default = "50"
 required = true
+hint = "Web 探针并发；网络差时调低"
 
 [[form.fields]]
 id = "web_timeout"
@@ -98,6 +150,32 @@ type = "number"
 label = "Web 超时秒 -wto"
 default = "10"
 required = true
+hint = "单个 Web 请求超时"
+
+[[form.fields]]
+id = "port_timeout"
+type = "number"
+label = "端口超时秒 -pst（可选）"
+default = ""
+required = false
+hint = "TCP 端口扫描超时，默认约 6 秒"
+
+[[form.fields]]
+id = "poc_name"
+type = "text"
+label = "POC 名称过滤 -poc（可选）"
+default = ""
+required = false
+hint = "模糊匹配 POC 名，只跑相关模板"
+
+[[form.fields]]
+id = "html_report"
+type = "select"
+label = "HTML 报告"
+default = "yes"
+options = ["yes", "no"]
+required = true
+hint = "yes=额外写任务目录 dddd-report.html"
 
 [argv]
 template = [
@@ -120,9 +198,23 @@ field = "ports"
 args = ["-p", "{ports}"]
 
 [[argv.optional]]
+field = "no_port"
+args = ["-np", "{no_port}"]
+
+[[argv.optional]]
 field = "skip_host_discovery"
 equals = "yes"
 args = ["-Pn"]
+
+[[argv.optional]]
+field = "no_icmp"
+equals = "yes"
+args = ["-nip"]
+
+[[argv.optional]]
+field = "tcp_ping"
+equals = "yes"
+args = ["-tp"]
 
 [[argv.optional]]
 field = "no_poc"
@@ -135,8 +227,36 @@ equals = "yes"
 args = ["-nd"]
 
 [[argv.optional]]
+field = "no_golang_poc"
+equals = "yes"
+args = ["-ngp"]
+
+[[argv.optional]]
+field = "subdomain"
+equals = "yes"
+args = ["-sd"]
+
+[[argv.optional]]
+field = "allow_cdn"
+equals = "yes"
+args = ["-ac"]
+
+[[argv.optional]]
 field = "proxy"
 args = ["-proxy", "{proxy}"]
+
+[[argv.optional]]
+field = "port_timeout"
+args = ["-pst", "{port_timeout}"]
+
+[[argv.optional]]
+field = "poc_name"
+args = ["-poc", "{poc_name}"]
+
+[[argv.optional]]
+field = "html_report"
+equals = "yes"
+args = ["-ho", "{job_dir}/dddd-report.html"]
 
 [parser]
 kind = "none"

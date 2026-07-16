@@ -5,10 +5,8 @@ summary = "计算文件摘要（MD5/SHA 等）"
 
 usage = """
 【FlagDeck 表单】
-• 文件路径与摘要算法
-
-【实际调用】
-openssl dgst -ALGORITHM FILE
+• 必填：文件与算法
+• 可选：二进制输出、核心工具格式、调试
 
 完整帮助：openssl dgst -help
 """
@@ -29,18 +27,61 @@ id = "file"
 type = "text"
 label = "文件路径"
 required = true
-hint = "绝对路径"
+hint = "要计算摘要的文件绝对路径"
 
 [[form.fields]]
 id = "algo"
 type = "select"
 label = "算法"
 default = "sha256"
-options = ["md5", "sha1", "sha256", "sha384", "sha512", "blake2b512"]
+options = ["md5", "sha1", "sha256", "sha384", "sha512", "blake2b512", "sha3-256", "sha3-512"]
 required = true
+hint = "常用 sha256；md5/sha1 仅兼容旧题，不建议安全用途"
+
+[[form.fields]]
+id = "coreutils"
+type = "select"
+label = "coreutils 格式 -r"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=输出类似 md5sum 的「哈希  文件名」格式"
+
+[[form.fields]]
+id = "binary_out"
+type = "select"
+label = "二进制输出 -binary"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=原始字节写 stdout（日志里会是乱码）；一般用十六进制"
+
+[[form.fields]]
+id = "hex_colons"
+type = "select"
+label = "冒号分隔 -c"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=十六进制按字节加冒号，便于阅读"
 
 [argv]
 template = ["dgst", "-{algo}", "{file}"]
+
+[[argv.optional]]
+field = "coreutils"
+equals = "yes"
+args = ["-r"]
+
+[[argv.optional]]
+field = "binary_out"
+equals = "yes"
+args = ["-binary"]
+
+[[argv.optional]]
+field = "hex_colons"
+equals = "yes"
+args = ["-c"]
 
 [parser]
 kind = "none"

@@ -5,11 +5,11 @@ summary = "发送 HTTP 请求，把响应头和正文写入任务目录"
 
 usage = """
 【FlagDeck 表单】
-• URL：目标地址
-• 方法 / 超时 / 请求头 / POST 体 / 代理 / 忽略证书
+• 必填：URL、方法、超时
+• 可选：头、Cookie、UA、Referer、POST 体、代理、证书、压缩、HTTP 版本
 
-【实际调用要点】
-curl -X METHOD --max-time N [-H ...] [-d body] [-x proxy] [-k]
+【实际调用】
+curl -X METHOD --max-time N [选项]
   --dump-header headers.txt --output body.bin URL
 
 完整帮助：curl --help all
@@ -32,22 +32,32 @@ type = "url"
 label = "目标 URL"
 required = true
 from = "target_url"
-hint = "完整 http(s) 地址"
+hint = "完整 http(s) 地址，例 http://127.0.0.1:8080/path"
 
 [[form.fields]]
 id = "method"
 type = "select"
-label = "HTTP 方法"
+label = "HTTP 方法 -X"
 default = "GET"
 options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 required = true
+hint = "请求方法；POST/PUT 时常配合请求体 -d"
 
 [[form.fields]]
 id = "max_time"
 type = "number"
-label = "超时秒数 --max-time"
+label = "总超时秒 --max-time"
 default = "30"
 required = true
+hint = "整次传输最长等待秒数，超时则失败退出"
+
+[[form.fields]]
+id = "connect_timeout"
+type = "number"
+label = "连接超时 --connect-timeout（可选）"
+default = ""
+required = false
+hint = "仅限制 TCP/TLS 建连时间（秒）；留空则用 curl 默认"
 
 [[form.fields]]
 id = "headers"
@@ -55,7 +65,31 @@ type = "text"
 label = "请求头 -H（可选）"
 default = ""
 required = false
-hint = "单条，例如 Authorization: Bearer xxx"
+hint = "单条自定义头，例 Authorization: Bearer xxx 或 Content-Type: application/json"
+
+[[form.fields]]
+id = "cookie"
+type = "text"
+label = "Cookie -b（可选）"
+default = ""
+required = false
+hint = "直接发送 Cookie 字符串，例 PHPSESSID=abc; role=admin"
+
+[[form.fields]]
+id = "user_agent"
+type = "text"
+label = "User-Agent -A（可选）"
+default = ""
+required = false
+hint = "自定义浏览器标识；留空则用 curl 默认 UA"
+
+[[form.fields]]
+id = "referer"
+type = "text"
+label = "Referer -e（可选）"
+default = ""
+required = false
+hint = "来源页 URL，部分站点校验 Referer 时使用"
 
 [[form.fields]]
 id = "data"
@@ -63,7 +97,7 @@ type = "text"
 label = "请求体 -d（可选）"
 default = ""
 required = false
-hint = "POST/PUT 等时填写，如表单或 JSON"
+hint = "POST/PUT 体：表单 a=1&b=2 或 JSON 字符串（JSON 时请配合 Content-Type 头）"
 
 [[form.fields]]
 id = "proxy"
@@ -71,7 +105,7 @@ type = "text"
 label = "代理 -x（可选）"
 default = ""
 required = false
-hint = "例如 http://127.0.0.1:8080"
+hint = "经 Burp/mitm 时填 http://127.0.0.1:8080"
 
 [[form.fields]]
 id = "insecure"
@@ -80,12 +114,39 @@ label = "忽略证书错误 -k"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=跳过 TLS 证书校验（自签/靶场常用）"
+
+[[form.fields]]
+id = "follow"
+type = "select"
+label = "跟随重定向 -L"
+default = "yes"
+options = ["yes", "no"]
+required = true
+hint = "yes=自动跟随 3xx；no=只看首次响应"
+
+[[form.fields]]
+id = "compressed"
+type = "select"
+label = "请求压缩 --compressed"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=声明接受 gzip/br 等压缩并自动解压响应体"
+
+[[form.fields]]
+id = "http_version"
+type = "select"
+label = "HTTP 版本（可选）"
+default = "auto"
+options = ["auto", "1.0", "1.1", "2"]
+required = true
+hint = "auto=默认协商；强制 1.1/2 用于兼容性排查"
 
 [argv]
 template = [
   "--silent",
   "--show-error",
-  "--location",
   "--max-time",
   "{max_time}",
   "-X",
@@ -98,8 +159,29 @@ template = [
 suffix = ["{url}"]
 
 [[argv.optional]]
+field = "follow"
+equals = "yes"
+args = ["--location"]
+
+[[argv.optional]]
+field = "connect_timeout"
+args = ["--connect-timeout", "{connect_timeout}"]
+
+[[argv.optional]]
 field = "headers"
 args = ["-H", "{headers}"]
+
+[[argv.optional]]
+field = "cookie"
+args = ["-b", "{cookie}"]
+
+[[argv.optional]]
+field = "user_agent"
+args = ["-A", "{user_agent}"]
+
+[[argv.optional]]
+field = "referer"
+args = ["-e", "{referer}"]
 
 [[argv.optional]]
 field = "data"
@@ -113,6 +195,26 @@ args = ["-x", "{proxy}"]
 field = "insecure"
 equals = "yes"
 args = ["-k"]
+
+[[argv.optional]]
+field = "compressed"
+equals = "yes"
+args = ["--compressed"]
+
+[[argv.optional]]
+field = "http_version"
+equals = "1.0"
+args = ["--http1.0"]
+
+[[argv.optional]]
+field = "http_version"
+equals = "1.1"
+args = ["--http1.1"]
+
+[[argv.optional]]
+field = "http_version"
+equals = "2"
+args = ["--http2"]
 
 [parser]
 kind = "none"

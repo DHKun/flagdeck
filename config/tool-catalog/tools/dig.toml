@@ -5,12 +5,8 @@ summary = "DNS 查询（A/AAAA/MX/TXT 等）"
 
 usage = """
 【FlagDeck 表单】
-• 域名、记录类型、可选 @服务器、+short
-• 反向查询对 IP 使用 -x
-
-【实际调用】
-dig [@server] name TYPE [+short]
-dig [@server] -x IP [+short]
+• 必填：域名或 IP
+• 可选：记录类型、@服务器、+short、+trace、TCP 等
 
 完整帮助：dig -h
 """
@@ -31,15 +27,16 @@ id = "name"
 type = "text"
 label = "域名 / 主机 / IP"
 required = true
-hint = "例 example.com；反向时填 IP"
+hint = "正向：example.com；反向：填 IP 并打开「反向查询」"
 
 [[form.fields]]
 id = "qtype"
 type = "select"
 label = "记录类型（正向）"
 default = "A"
-options = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "ANY"]
+options = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "CAA", "ANY"]
 required = true
+hint = "A=IPv4，AAAA=IPv6，MX=邮件，NS=权威，TXT=文本/SPF，SOA=区权威"
 
 [[form.fields]]
 id = "server"
@@ -47,7 +44,7 @@ type = "text"
 label = "@DNS 服务器（可选）"
 default = ""
 required = false
-hint = "例 8.8.8.8（不要写 @）"
+hint = "指定解析器 IP/主机，例 8.8.8.8 或 1.1.1.1（不要写 @）"
 
 [[form.fields]]
 id = "short"
@@ -56,6 +53,7 @@ label = "+short 精简输出"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=只打印答案字段，便于脚本处理"
 
 [[form.fields]]
 id = "reverse"
@@ -64,6 +62,43 @@ label = "反向查询 -x"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=对 IP 做 PTR 反查主机名；此时「记录类型」忽略"
+
+[[form.fields]]
+id = "trace"
+type = "select"
+label = "+trace 从根追踪"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=从根服务器逐步委托，排查污染/劫持时有用（更慢）"
+
+[[form.fields]]
+id = "tcp"
+type = "select"
+label = "+tcp 强制 TCP"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=用 TCP 查（UDP 被拦或应答过大时）"
+
+[[form.fields]]
+id = "dnssec"
+type = "select"
+label = "+dnssec"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=请求 DNSSEC 相关记录，验证签名链时用"
+
+[[form.fields]]
+id = "no_recurse"
+type = "select"
+label = "+norecurse 不递归"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=只问权威/缓存中的直接答案，不让服务器递归"
 
 [argv]
 template = []
@@ -86,6 +121,26 @@ args = ["{name}", "{qtype}"]
 field = "short"
 equals = "yes"
 args = ["+short"]
+
+[[argv.optional]]
+field = "trace"
+equals = "yes"
+args = ["+trace"]
+
+[[argv.optional]]
+field = "tcp"
+equals = "yes"
+args = ["+tcp"]
+
+[[argv.optional]]
+field = "dnssec"
+equals = "yes"
+args = ["+dnssec"]
+
+[[argv.optional]]
+field = "no_recurse"
+equals = "yes"
+args = ["+norecurse"]
 
 [parser]
 kind = "none"

@@ -5,17 +5,16 @@ summary = "冰蝎流量解密（pcap → 明文请求/响应）"
 
 usage = """
 【FlagDeck 表单】
-• pcap 文件、URL 路径、脚本类型、密文 key
-• 可选预览服务 -p
+• 必填：pcap、URL 路径、脚本类型、key
+• 可选：预览服务 -p、自定义解密脚本
 
 【实际调用】
-python Behinder-Decrypt.py -f pcap -u path -t type -k key [-p]
+python Behinder-Decrypt.py -f pcap -u path -t type -k key [-p] [-c code]
 
-依赖：pyshark 等（见工具目录 requirement.txt）
+依赖 pyshark 等（见 requirement.txt）。授权取证场景。
 """
 mode = "embedded_cli"
 featured = false
-
 cwd = "Active/behinder-decryptor"
 
 [binary]
@@ -32,7 +31,7 @@ id = "pcap"
 type = "text"
 label = "pcap 文件 -f"
 required = true
-hint = "绝对路径，如 /tmp/capture.pcap"
+hint = "含冰蝎流量的抓包绝对路径，例 /tmp/capture.pcap"
 
 [[form.fields]]
 id = "url_path"
@@ -40,7 +39,7 @@ type = "text"
 label = "URL 路径 -u"
 required = true
 default = "/shell.php"
-hint = "例如 /uploads/shell.php"
+hint = "webshell 在站点上的路径，例 /uploads/shell.php（不含域名）"
 
 [[form.fields]]
 id = "script_type"
@@ -49,13 +48,14 @@ label = "脚本类型 -t"
 default = "php"
 options = ["php", "asp", "aspx", "jsp"]
 required = true
+hint = "webshell 语言类型，决定解密算法路径"
 
 [[form.fields]]
 id = "key"
 type = "text"
 label = "密文 key -k"
 required = true
-hint = "webshell 中的 key，如 e45e329feb5d925b"
+hint = "冰蝎连接密钥（16 进制/约定格式，见 shell 配置），例 e45e329feb5d925b"
 
 [[form.fields]]
 id = "preview"
@@ -64,6 +64,15 @@ label = "启动预览 -p"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=解密后起本地 Web 预览（浏览器查看请求/响应）"
+
+[[form.fields]]
+id = "custom_code"
+type = "text"
+label = "自定义解密 -c（可选）"
+default = ""
+required = false
+hint = "自定义解密 Python 文件绝对路径（asmx/非标准协议时）"
 
 [argv]
 template = [
@@ -82,6 +91,10 @@ template = [
 field = "preview"
 equals = "yes"
 args = ["-p"]
+
+[[argv.optional]]
+field = "custom_code"
+args = ["-c", "{custom_code}"]
 
 [parser]
 kind = "none"

@@ -5,14 +5,11 @@ summary = "RSA CTF 公钥攻击 / 私钥恢复（Scripts）"
 
 usage = """
 【FlagDeck 表单】
-• 公钥文件 或 n/e；可选攻击名、超时、是否输出私钥
-• 可选密文 --decrypt
+• 输入：公钥文件 或 n/e（或 p/q/d）
+• 可选：攻击名、超时、解密密文、私钥输出
 
-【实际调用】
-python3 RsaCtfTool.py --publickey key.pub --private
-python3 RsaCtfTool.py -n N -e E --private --attack all
-
-上游：RsaCtfTool。仅限 CTF / 靶场。
+完整帮助：python3 RsaCtfTool.py -h
+仅限 CTF / 靶场。
 """
 mode = "embedded_cli"
 featured = true
@@ -33,7 +30,7 @@ type = "text"
 label = "公钥文件 --publickey（可选）"
 default = ""
 required = false
-hint = "绝对路径 .pub / PEM；与 n/e 二选一"
+hint = "PEM/DER/.pub 绝对路径；与 n/e 二选一为主输入"
 
 [[form.fields]]
 id = "n"
@@ -41,7 +38,7 @@ type = "text"
 label = "模数 -n（可选）"
 default = ""
 required = false
-hint = "十进制或 0x 十六进制"
+hint = "RSA 模数 N，十进制或 0x 十六进制"
 
 [[form.fields]]
 id = "e"
@@ -49,6 +46,31 @@ type = "text"
 label = "指数 -e（可选）"
 default = "65537"
 required = false
+hint = "公钥指数，常见 65537 或 3；多个用逗号分隔"
+
+[[form.fields]]
+id = "p"
+type = "text"
+label = "素数 -p（可选）"
+default = ""
+required = false
+hint = "已知 p 时填入，用于构造私钥"
+
+[[form.fields]]
+id = "q"
+type = "text"
+label = "素数 -q（可选）"
+default = ""
+required = false
+hint = "已知 q 时填入"
+
+[[form.fields]]
+id = "d"
+type = "text"
+label = "私钥指数 -d（可选）"
+default = ""
+required = false
+hint = "已知 d 时填入"
 
 [[form.fields]]
 id = "attack"
@@ -56,7 +78,7 @@ type = "text"
 label = "攻击 --attack（可选）"
 default = "all"
 required = false
-hint = "all 或 wiener,fermat,factordb 等"
+hint = "all=自动尝试多种；或 wiener,fermat,factordb,hastads 等（见 -h 列表）"
 
 [[form.fields]]
 id = "timeout"
@@ -64,6 +86,7 @@ type = "number"
 label = "超时秒 --timeout"
 default = "60"
 required = true
+hint = "单类长攻击超时；复杂分解可调到 300+"
 
 [[form.fields]]
 id = "private"
@@ -72,6 +95,7 @@ label = "输出私钥 --private"
 default = "yes"
 options = ["yes", "no"]
 required = true
+hint = "成功时打印私钥 PEM"
 
 [[form.fields]]
 id = "decrypt"
@@ -79,7 +103,33 @@ type = "text"
 label = "解密密文 --decrypt（可选）"
 default = ""
 required = false
-hint = "密文整数；多个用逗号分隔"
+hint = "密文整数；多个逗号分隔；恢复私钥后解密"
+
+[[form.fields]]
+id = "decryptfile"
+type = "text"
+label = "解密文件 --decryptfile（可选）"
+default = ""
+required = false
+hint = "密文文件绝对路径"
+
+[[form.fields]]
+id = "verbosity"
+type = "select"
+label = "日志级别 --verbosity"
+default = "INFO"
+options = ["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"]
+required = true
+hint = "DEBUG 可看攻击过程细节"
+
+[[form.fields]]
+id = "sendtofdb"
+type = "select"
+label = "上传 factordb --sendtofdb"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=分解结果提交 FactorDB（需出网，CTF 慎用）"
 
 [[form.fields]]
 id = "output"
@@ -88,12 +138,15 @@ label = "结果写入任务目录"
 default = "yes"
 options = ["yes", "no"]
 required = true
+hint = "yes=--output 写到任务目录 rsa-result.txt"
 
 [argv]
 template = [
   "{tools_root}/Scripts/sec-import/Crypto/RsaCtfTool/RsaCtfTool.py",
   "--timeout",
   "{timeout}",
+  "--verbosity",
+  "{verbosity}",
 ]
 
 [[argv.optional]]
@@ -109,6 +162,18 @@ field = "e"
 args = ["-e", "{e}"]
 
 [[argv.optional]]
+field = "p"
+args = ["-p", "{p}"]
+
+[[argv.optional]]
+field = "q"
+args = ["-q", "{q}"]
+
+[[argv.optional]]
+field = "d"
+args = ["-d", "{d}"]
+
+[[argv.optional]]
 field = "attack"
 args = ["--attack", "{attack}"]
 
@@ -120,6 +185,15 @@ args = ["--private"]
 [[argv.optional]]
 field = "decrypt"
 args = ["--decrypt", "{decrypt}"]
+
+[[argv.optional]]
+field = "decryptfile"
+args = ["--decryptfile", "{decryptfile}"]
+
+[[argv.optional]]
+field = "sendtofdb"
+equals = "yes"
+args = ["--sendtofdb"]
 
 [[argv.optional]]
 field = "output"

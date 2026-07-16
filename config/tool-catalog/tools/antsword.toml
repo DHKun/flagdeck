@@ -17,6 +17,7 @@ Shell 连接、编码、插件均在蚁剑窗口内操作。
 """
 mode = "external_launch"
 featured = true
+detach = true
 # 直接启动 Loader 可执行文件，cwd 为其目录
 cwd = "Active/webshell-tools/AntSword/loader/AntSword-Loader-v4.0.3-linux-x64"
 

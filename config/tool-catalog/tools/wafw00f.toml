@@ -5,10 +5,11 @@ summary = "识别目标站前 WAF / CDN（PATH）"
 
 usage = """
 【FlagDeck 表单】
-• 目标 URL；可选找全部匹配、不跟随重定向、代理、超时
+• 必填：目标 URL
+• 可选：找全匹配、不重定向、代理、超时、指定 WAF、输出文件
 
 【实际调用】
-wafw00f URL [-a] [-r] [-p PROXY] [-T TIMEOUT] [-o 输出]
+wafw00f URL [-a] [-r] [-p PROXY] [-T TIMEOUT] [-t NAME] [-o FILE]
 
 完整帮助：wafw00f -h
 """
@@ -30,6 +31,7 @@ type = "url"
 label = "目标 URL"
 required = true
 from = "target_url"
+hint = "站点首页或任意可访问页面，例 https://example.com/"
 
 [[form.fields]]
 id = "findall"
@@ -38,6 +40,7 @@ label = "找全部匹配 -a"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=不在第一个匹配处停止，尽量枚举所有命中的 WAF 签名（更慢）"
 
 [[form.fields]]
 id = "noredirect"
@@ -46,6 +49,7 @@ label = "不跟随重定向 -r"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=忽略 3xx 跳转，只测当前 URL（避免跳到 CDN 首页干扰）"
 
 [[form.fields]]
 id = "proxy"
@@ -53,7 +57,7 @@ type = "text"
 label = "代理 -p（可选）"
 default = ""
 required = false
-hint = "http://host:8080 或 socks5://host:1080"
+hint = "HTTP/SOCKS 代理，例 http://127.0.0.1:8080 或 socks5://127.0.0.1:1080"
 
 [[form.fields]]
 id = "timeout"
@@ -61,6 +65,23 @@ type = "number"
 label = "超时 -T 秒（可选）"
 default = ""
 required = false
+hint = "单次请求超时；目标慢或跨国时可加大"
+
+[[form.fields]]
+id = "test_waf"
+type = "text"
+label = "只测指定 WAF -t（可选）"
+default = ""
+required = false
+hint = "限定一种产品名（见 wafw00f -l 列表）；带空格时需与官方名称一致"
+
+[[form.fields]]
+id = "headers_file"
+type = "text"
+label = "自定义头文件 -H（可选）"
+default = ""
+required = false
+hint = "文本文件绝对路径，覆盖默认请求头集合"
 
 [[form.fields]]
 id = "verbose"
@@ -69,6 +90,16 @@ label = "详细输出 -v"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=打印更多探测细节，便于判断误报"
+
+[[form.fields]]
+id = "save_json"
+type = "select"
+label = "结果写任务目录 JSON"
+default = "yes"
+options = ["yes", "no"]
+required = true
+hint = "yes= -o 任务目录/wafw00f.json，便于留存"
 
 [argv]
 template = ["{url}"]
@@ -92,9 +123,22 @@ field = "timeout"
 args = ["-T", "{timeout}"]
 
 [[argv.optional]]
+field = "test_waf"
+args = ["-t", "{test_waf}"]
+
+[[argv.optional]]
+field = "headers_file"
+args = ["-H", "{headers_file}"]
+
+[[argv.optional]]
 field = "verbose"
 equals = "yes"
 args = ["-v"]
+
+[[argv.optional]]
+field = "save_json"
+equals = "yes"
+args = ["-o", "{job_dir}/wafw00f.json", "-f", "json"]
 
 [parser]
 kind = "none"

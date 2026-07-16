@@ -5,22 +5,21 @@ summary = "整数分解（Crypto Toolkit/yafu，Linux ELF）"
 
 usage = """
 【FlagDeck 表单】
-• 表达式，如 fact(1234567890123456789)
+• 表达式 fact(N) / siqs(N)
 
 【实际调用】
-yafu 'fact(N)'
+在 yafu 目录下：./yafu "fact(N)"
 
-本机二进制可能无 +x，通过 bash 执行。
-cwd 为 yafu 目录以便读写 siqs.dat 等。
+若提示权限不够：chmod +x Crypto/sec-import/Toolkit/yafu/yafu
 """
 mode = "embedded_cli"
 featured = true
 cwd = "Crypto/sec-import/Toolkit/yafu"
 
 [binary]
-command = "bash"
-path = ""
-resolve = ["system"]
+command = "yafu"
+path = "Crypto/sec-import/Toolkit/yafu/yafu"
+resolve = ["tools_root", "path"]
 
 [ui]
 icon = "calc"
@@ -32,13 +31,18 @@ type = "text"
 label = "yafu 表达式"
 required = true
 default = "fact(1234567891)"
-hint = "例 fact(N) 或 siqs(N)"
+hint = "fact(N)=分解整数。例 fact(1234567891)。过大整数会很慢。"
+
+[[form.fields]]
+id = "note"
+type = "text"
+label = "备注（不传给程序）"
+default = ""
+required = false
+hint = "仅本地备忘，不参与命令行；可写题目编号"
 
 [argv]
-template = [
-  "-lc",
-  "exec \"{tools_root}/Crypto/sec-import/Toolkit/yafu/yafu\" '{expression}'",
-]
+template = ["{expression}"]
 
 [parser]
 kind = "none"

@@ -5,11 +5,8 @@ summary = "查询域名 / IP 注册信息"
 
 usage = """
 【FlagDeck 表单】
-• 查询对象（域名或 IP）
-• 可选指定 whois 服务器 -h
-
-【实际调用】
-whois [-h HOST] [--verbose] OBJECT
+• 必填：域名或 IP
+• 可选：指定 whois 服务器、端口、隐藏法律声明、详细模式
 
 完整帮助：whois --help
 """
@@ -30,7 +27,7 @@ id = "object"
 type = "text"
 label = "查询对象"
 required = true
-hint = "域名或 IP，例 example.com"
+hint = "域名（example.com）或 IP；得到注册人/ASN/网段等公开信息"
 
 [[form.fields]]
 id = "host"
@@ -38,7 +35,24 @@ type = "text"
 label = "Whois 服务器 -h（可选）"
 default = ""
 required = false
-hint = "例 whois.verisign-grs.com"
+hint = "强制查询某服务器，例 whois.verisign-grs.com、whois.arin.net"
+
+[[form.fields]]
+id = "port"
+type = "number"
+label = "端口 -p（可选）"
+default = ""
+required = false
+hint = "非默认 whois 端口时指定（少见）"
+
+[[form.fields]]
+id = "hide_legal"
+type = "select"
+label = "隐藏法律声明 -H"
+default = "yes"
+options = ["yes", "no"]
+required = true
+hint = "yes=少打印冗长免责声明，输出更干净"
 
 [[form.fields]]
 id = "verbose"
@@ -47,6 +61,16 @@ label = "详细 --verbose"
 default = "no"
 options = ["no", "yes"]
 required = true
+hint = "yes=解释查询过程（跟转、服务器选择）"
+
+[[form.fields]]
+id = "no_recursion"
+type = "select"
+label = "--no-recursion"
+default = "no"
+options = ["no", "yes"]
+required = true
+hint = "yes=不从注册局跟转到注册商，只看第一跳响应"
 
 [argv]
 template = []
@@ -57,9 +81,23 @@ field = "host"
 args = ["-h", "{host}"]
 
 [[argv.optional]]
+field = "port"
+args = ["-p", "{port}"]
+
+[[argv.optional]]
+field = "hide_legal"
+equals = "yes"
+args = ["-H"]
+
+[[argv.optional]]
 field = "verbose"
 equals = "yes"
 args = ["--verbose"]
+
+[[argv.optional]]
+field = "no_recursion"
+equals = "yes"
+args = ["--no-recursion"]
 
 [parser]
 kind = "none"

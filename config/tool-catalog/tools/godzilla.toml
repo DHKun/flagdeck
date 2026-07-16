@@ -17,6 +17,7 @@ Payload / 加密器 / 插件在哥斯拉窗口内管理。
 """
 mode = "external_launch"
 featured = true
+detach = true
 cwd = "Active/webshell-tools/Godzilla"
 
 [binary]
