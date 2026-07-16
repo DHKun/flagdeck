@@ -30,24 +30,22 @@ export function loadWorkbenchPrefs(): WorkbenchPrefs {
           ? parsed.targetUrl
           : defaults.targetUrl,
       selectedToolId:
-        typeof parsed.selectedToolId === "string"
-          ? parsed.selectedToolId
-          : "",
+        typeof parsed.selectedToolId === "string" ? parsed.selectedToolId : "",
       formByTool:
         parsed.formByTool && typeof parsed.formByTool === "object"
           ? parsed.formByTool
           : {},
       recentToolIds: Array.isArray(parsed.recentToolIds)
-        ? parsed.recentToolIds.filter((id): id is string => typeof id === "string")
+        ? parsed.recentToolIds.filter(
+            (id): id is string => typeof id === "string",
+          )
         : [],
       jobFilterToolId:
         typeof parsed.jobFilterToolId === "string"
           ? parsed.jobFilterToolId
           : "",
       autoScrollLog:
-        typeof parsed.autoScrollLog === "boolean"
-          ? parsed.autoScrollLog
-          : true,
+        typeof parsed.autoScrollLog === "boolean" ? parsed.autoScrollLog : true,
     };
   } catch {
     return { ...defaults, formByTool: {} };

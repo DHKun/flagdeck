@@ -64,8 +64,8 @@ tags = ["web", "dirs"]
 
 [[wordlist]]
 id = "fuzzdicts-php"
-name = "fuzzDicts php dirs"
-path = "fuzzDicts/directoryDicts/php"
+name = "fuzzDicts php filenames"
+path = "fuzzDicts/directoryDicts/php/phpFileName.txt"
 tags = ["web", "php"]
 
 [[wordlist]]
@@ -75,7 +75,13 @@ path = "rockyou.txt"
 tags = ["password"]
 
 [[wordlist]]
-id = "password-dic-readme"
-name = "PasswordDic（目录说明）"
-path = "PasswordDic/README.md"
-tags = ["password", "meta"]
+id = "password-dic-php-dirs"
+name = "PasswordDic php 目录"
+path = "PasswordDic/目录扫描字典/php.txt"
+tags = ["web", "php", "dirs"]
+
+[[wordlist]]
+id = "password-dic-usernames"
+name = "PasswordDic 用户名 top500"
+path = "PasswordDic/用户名字典/username-CN-top500.txt"
+tags = ["password", "username"]

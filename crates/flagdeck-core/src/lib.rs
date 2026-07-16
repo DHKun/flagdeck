@@ -4275,6 +4275,99 @@ mod tests {
     }
 
     #[test]
+    fn preview_job_file_reads_sidecar_and_rejects_path_escape() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Job file preview".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let job_id = JobId::new();
+        let directory = create_job_directory(&store.layout().scans, &job_id).unwrap();
+        fs::write(
+            directory.join("ffuf-output.json"),
+            br#"{"results":[{"url":"http://x/a","status":200}]}"#,
+        )
+        .unwrap();
+        let wordlist = directory.join("wordlist.txt");
+        write_wordlist(ToolId::Ffuf, &["admin".to_owned()], &wordlist).unwrap();
+        let mut prepared = prepare_command(
+            ToolId::Ffuf,
+            &ScopeId::new(),
+            &Url::parse("http://127.0.0.1:38001/").unwrap(),
+            &directory,
+            Some(&wordlist),
+        )
+        .unwrap();
+        if prepared.spec.program.is_empty() {
+            prepared.spec.program = "/opt/flagdeck-test/bin/ffuf".to_owned();
+        }
+        store.save_command_spec(&prepared.spec).unwrap();
+        let now = Timestamp::now();
+        let job = Job {
+            job_id: job_id.clone(),
+            parent_job_id: None,
+            command_spec_id: prepared.spec.command_spec_id.clone(),
+            execution_status: ExecutionStatus::Succeeded,
+            import_status: ImportStatus::Pending,
+            created_at: now.clone(),
+            started_at: Some(now.clone()),
+            stopped_at: Some(now),
+            pid: None,
+            process_group_id: None,
+            process_start_ticks: None,
+            exit_code: Some(0),
+            exit_reason: Some("exit_code:0".to_owned()),
+            systemd_unit: None,
+            cgroup_path: None,
+            invocation_id: None,
+            supervisor_backend: None,
+            ownership_verified: true,
+            cleanup_verified: true,
+            residual_processes: 0,
+            cancel_duration_millis: None,
+            stdout_artifact_id: None,
+            stderr_artifact_id: None,
+            retry_count: 0,
+            source_job_id: None,
+        };
+        store.save_job(&job).unwrap();
+
+        let preview = core
+            .preview_job_file(&PreviewJobFileRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                filename: "ffuf-output.json".to_owned(),
+                limit: 4096,
+            })
+            .unwrap();
+        assert!(preview.found);
+        assert!(preview.content.contains("http://x/a"));
+
+        let missing = core
+            .preview_job_file(&PreviewJobFileRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                filename: "nope.json".to_owned(),
+                limit: 4096,
+            })
+            .unwrap();
+        assert!(!missing.found);
+
+        assert!(matches!(
+            core.preview_job_file(&PreviewJobFileRequest {
+                project_id: project.project_id,
+                job_id,
+                filename: "../escape.json".to_owned(),
+                limit: 4096,
+            }),
+            Err(CoreError::InvalidRequest)
+        ));
+    }
+
+    #[test]
     fn exit_zero_with_corrupted_output_persists_parser_failed_independently() {
         let temporary = tempfile::tempdir().unwrap();
         let (store, project) =

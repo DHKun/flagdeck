@@ -1049,7 +1049,8 @@
                               }
                             }
                           }
-                          if (selectedToolId) rememberFormForTool(selectedToolId);
+                          if (selectedToolId)
+                            rememberFormForTool(selectedToolId);
                         }}
                       />
                     {/if}
@@ -1221,10 +1222,8 @@
                   </button>
                 {/if}
               </div>
-              <pre class="log-pane" bind:this={logPaneEl}
-                >{jobLogContent ||
-                  "运行后日志会显示在这里。用上方标签切换不同任务的输出。"}</pre
-              >
+              <pre class="log-pane" bind:this={logPaneEl}>{jobLogContent ||
+                  "运行后日志会显示在这里。用上方标签切换不同任务的输出。"}</pre>
             {:else}
               <div class="actions" style="margin: 10px 0">
                 <span class="pill muted"
@@ -1250,8 +1249,9 @@
               </div>
               {#if !parsedResult}
                 <div class="empty">
-                  当前任务没有可解析的结果文件（如 ffuf JSON）。请查看日志，或换用
-                  ffuf / dddd / fscan / gobuster / arjun。
+                  当前任务没有可解析的结果文件（如 ffuf
+                  JSON）。请查看日志，或换用 ffuf / dddd / fscan / gobuster /
+                  arjun。
                 </div>
               {:else if resultRows.length === 0}
                 <div class="empty">没有匹配过滤条件的行。</div>
@@ -1292,10 +1292,10 @@
             <div class="card-head">
               <div>
                 <h2>任务列表</h2>
-                <p class="sub"
-                  >共 {filteredJobs.length}
-                  {jobFilterToolId ? ` / ${jobs.length}` : ""} 条</p
-                >
+                <p class="sub">
+                  共 {filteredJobs.length}
+                  {jobFilterToolId ? ` / ${jobs.length}` : ""} 条
+                </p>
               </div>
               <div class="actions" style="margin: 0">
                 {#if jobToolOptions.length > 0}
@@ -1382,9 +1382,8 @@
                 onclick={() => void copyJobLog()}>复制</button
               >
             </div>
-            <pre class="log-pane" bind:this={logPaneEl}
-              >{jobLogContent || "选择任务后显示日志。"}</pre
-            >
+            <pre class="log-pane" bind:this={logPaneEl}>{jobLogContent ||
+                "选择任务后显示日志。"}</pre>
           </section>
         </div>
       {:else}
