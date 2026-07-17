@@ -26,6 +26,7 @@ accent = "red"
 [[form.fields]]
 id = "hash"
 type = "text"
+sensitive = true
 label = "哈希或哈希文件"
 required = true
 hint = "单行哈希字符串，或哈希列表文件的绝对路径"

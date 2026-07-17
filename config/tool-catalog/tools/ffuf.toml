@@ -107,6 +107,7 @@ hint = "HTTP 方法；POST 时常配合 -d 体"
 [[form.fields]]
 id = "post_data"
 type = "text"
+sensitive = true
 label = "POST 体 -d（可选）"
 default = ""
 required = false
@@ -115,6 +116,7 @@ hint = "请求体；可在体中放 FUZZ 做参数 fuzz"
 [[form.fields]]
 id = "headers"
 type = "text"
+sensitive = true
 label = "请求头 -H（可选）"
 default = ""
 required = false
@@ -123,6 +125,7 @@ hint = "单条 Header: Value；Cookie/Authorization 可写在此"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 -x（可选）"
 default = ""
 required = false

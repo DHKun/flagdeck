@@ -91,6 +91,7 @@ hint = "yes=跟随 3xx；可能把结果算到跳转后的页面"
 [[form.fields]]
 id = "cookies"
 type = "text"
+sensitive = true
 label = "Cookie -c（可选）"
 default = ""
 required = false
@@ -99,6 +100,7 @@ hint = "已登录会话 Cookie，扫后台目录时常用"
 [[form.fields]]
 id = "headers"
 type = "text"
+sensitive = true
 label = "请求头 -H（可选）"
 default = ""
 required = false
@@ -123,6 +125,7 @@ hint = "HTTP Basic Auth 用户名"
 [[form.fields]]
 id = "password"
 type = "text"
+sensitive = true
 label = "基本认证密码 -P（可选）"
 default = ""
 required = false
@@ -131,6 +134,7 @@ hint = "HTTP Basic Auth 密码（与 -U 成对）"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 --proxy（可选）"
 default = ""
 required = false

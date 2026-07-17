@@ -4,7 +4,6 @@
   "description": "The trusted built-in FlagDeck window can call the narrow Stable Core API.",
   "windows": ["main"],
   "webviews": ["main"],
-  "platforms": ["linux"],
   "permissions": [
     "allow-app-status",
     "allow-create-project",

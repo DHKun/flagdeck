@@ -37,6 +37,7 @@ hint = "含注入点的地址，例 http://target/vuln.php?id=1"
 [[form.fields]]
 id = "data"
 type = "text"
+sensitive = true
 label = "POST 体 --data（可选）"
 default = ""
 required = false
@@ -45,6 +46,7 @@ hint = "POST 注入时填，例 id=1&user=a；会改为请求体传参"
 [[form.fields]]
 id = "cookie"
 type = "text"
+sensitive = true
 label = "Cookie --cookie（可选）"
 default = ""
 required = false
@@ -61,6 +63,7 @@ hint = "只测指定参数，例 id 或 id,user；留空=自动发现"
 [[form.fields]]
 id = "headers"
 type = "text"
+sensitive = true
 label = "额外头 --headers（可选）"
 default = ""
 required = false
@@ -144,6 +147,7 @@ hint = "两次请求间隔秒数，用于降速防 WAF/限流"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 --proxy（可选）"
 default = ""
 required = false

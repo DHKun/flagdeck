@@ -969,7 +969,8 @@ pub fn run() {
         configured_workspaces_root().expect("FlagDeck workspace root configuration failed");
     let application = tauri::Builder::default()
         .setup(move |app| {
-            let bundled_worker = app.path().resource_dir()?.join("workers/mitmproxy");
+            let resource_directory = app.path().resource_dir()?;
+            let bundled_worker = resource_directory.join("workers/mitmproxy");
             let worker_source = bundled_worker
                 .join("pyproject.toml")
                 .is_file()
@@ -997,12 +998,17 @@ pub fn run() {
                 .as_ref()
                 .map(|root| root.join("uv"))
                 .filter(|path| path.is_file());
+            let catalog_root = resource_directory
+                .join("config/tool-catalog")
+                .is_dir()
+                .then(|| resource_directory.join("config/tool-catalog"));
             app.manage(Arc::new(CoreService::with_bundled_resources(
                 workspaces_root,
                 worker_source,
                 uv_program,
                 metasploit_adapter,
                 metasploit_launcher,
+                catalog_root,
             )));
             create_windows(app)?;
             Ok(())

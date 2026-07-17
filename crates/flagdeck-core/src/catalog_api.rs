@@ -25,6 +25,7 @@ pub struct CatalogFormFieldDto {
     pub from: String,
     pub options: Vec<String>,
     pub hint: String,
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -70,6 +71,8 @@ pub struct RunCatalogToolRequest {
     pub tool_id: String,
     pub target_url: String,
     pub form: BTreeMap<String, String>,
+    #[serde(default)]
+    pub confirm_sensitive_argv: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

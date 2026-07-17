@@ -54,7 +54,7 @@ describe("jobResults", () => {
 });
 
 describe("workbenchPrefs", () => {
-  it("round-trips target and recent tools in localStorage", () => {
+  it("keeps targets and form values session-only", () => {
     const store = new Map<string, string>();
     const storage = {
       getItem: (key: string) => store.get(key) ?? null,
@@ -87,9 +87,10 @@ describe("workbenchPrefs", () => {
     );
     saveWorkbenchPrefs(base);
     const loaded = loadWorkbenchPrefs();
-    expect(loaded.targetUrl).toBe("http://example.test/");
+    expect(loaded.targetUrl).toBe("http://127.0.0.1/");
+    expect([...store.values()].join("\n")).not.toContain("example.test");
     expect(loaded.selectedToolId).toBe("ffuf");
-    expect(loaded.formByTool.ffuf.wordlist).toBe("seclists-common");
+    expect(loaded.formByTool).toEqual({});
     expect(loaded.recentToolIds[0]).toBe("dddd");
     expect(loaded.recentToolIds[1]).toBe("ffuf");
   });

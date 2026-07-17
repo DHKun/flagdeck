@@ -30,6 +30,15 @@ const evidencePath = process.env.TAURI_EVIDENCE
 const temporaryRoot = await mkdtemp(join(tmpdir(), "flagdeck-r7-gui-"));
 const workspacesRoot = join(temporaryRoot, "workspaces");
 const forbiddenCredential = "should-never-persist-r7";
+const hostileFixture = [
+  "Authorization: Bearer flagdeck-secret-value",
+  "Cookie: session=flagdeck-cookie-value",
+  "<script data-fixture>window.__FLAGDECK_PWNED__=true</script>",
+  '<img src=x onerror="window.__FLAGDECK_PWNED__=true">',
+  '<iframe src="https://example.invalid"></iframe>',
+  '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+  "token=flagdeck-token-value",
+].join("\n");
 
 let driverProcess;
 let sessionId;
@@ -44,7 +53,13 @@ async function request(path, method = "GET", body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const payload = await response.json();
-  if (!response.ok || payload.value?.error) {
+  const protocolError =
+    payload.value &&
+    typeof payload.value === "object" &&
+    typeof payload.value.error === "string" &&
+    typeof payload.value.message === "string" &&
+    "stacktrace" in payload.value;
+  if (!response.ok || protocolError) {
     throw new Error(
       `WebDriver ${method} ${path}: ${JSON.stringify(payload.value)}`,
     );
@@ -76,6 +91,28 @@ async function execute(script, args = []) {
   });
 }
 
+async function executeAsync(script, args = []) {
+  return request(`/session/${sessionId}/execute/async`, "POST", {
+    script,
+    args,
+  });
+}
+
+async function invokeMainResult(command, payload = {}) {
+  return executeAsync(
+    "const done = arguments[arguments.length - 1]; window.__TAURI_INTERNALS__.invoke(arguments[0], arguments[1]).then((value) => done({ ok: true, value })).catch((error) => done({ ok: false, error: typeof error === 'string' ? error : JSON.stringify(error) }));",
+    [command, payload],
+  );
+}
+
+async function invokeMain(command, payload = {}) {
+  const result = await invokeMainResult(command, payload);
+  if (!result.ok) {
+    throw new Error(`IPC ${command} failed: ${result.error}`);
+  }
+  return result.value;
+}
+
 async function switchTo(handle) {
   await request(`/session/${sessionId}/window`, "POST", { handle });
 }
@@ -93,22 +130,6 @@ async function click(selector) {
     [selector],
   );
   if (!clicked) throw new Error(`missing clickable element: ${selector}`);
-}
-
-async function clickButtonByText(label) {
-  const clicked = await execute(
-    "const element = [...document.querySelectorAll('button')].find((candidate) => candidate.textContent.trim() === arguments[0]); if (!element) return false; element.click(); return true;",
-    [label],
-  );
-  if (!clicked) throw new Error(`missing button text: ${label}`);
-}
-
-async function clickNavigation(label) {
-  const clicked = await execute(
-    "const element = [...document.querySelectorAll('aside nav button')].find((candidate) => candidate.textContent.includes(arguments[0])); if (!element) return false; element.click(); return true;",
-    [label],
-  );
-  if (!clicked) throw new Error(`missing navigation label: ${label}`);
 }
 
 async function setValue(selector, value) {
@@ -262,11 +283,19 @@ async function workspaceEvidence() {
   }
   const projectRoot = join(workspacesRoot, projects[0]);
   const importInbox = join(workspacesRoot, ".imports");
-  const importInboxMetadata = await lstat(importInbox);
-  const importInboxPrivate =
-    importInboxMetadata.isDirectory() &&
-    !importInboxMetadata.isSymbolicLink() &&
-    (importInboxMetadata.mode & 0o777) === 0o700;
+  let importInboxExists = true;
+  let importInboxPrivate = false;
+  try {
+    const importInboxMetadata = await lstat(importInbox);
+    importInboxPrivate =
+      importInboxMetadata.isDirectory() &&
+      !importInboxMetadata.isSymbolicLink() &&
+      (importInboxMetadata.mode & 0o777) === 0o700;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    importInboxExists = false;
+    importInboxPrivate = true;
+  }
   const records = [];
   const forbidden = Buffer.from(forbiddenCredential);
   let forbiddenPersisted = false;
@@ -309,6 +338,7 @@ async function workspaceEvidence() {
   const temporaryFiles = await readdir(join(projectRoot, "tmp"));
   return {
     projectId: projects[0],
+    importInboxExists,
     importInboxPrivate,
     privateEntryCount: records.length,
     allModesPrivate: true,
@@ -398,56 +428,74 @@ async function main() {
   await switchTo(mainHandle);
   await waitFor("Core readiness", async () => {
     const value = await text('[data-testid="notice"]');
-    return value?.includes("工具箱已就绪") ? value : undefined;
+    return value?.includes("工作台已就绪") ? value : undefined;
   });
   const interactiveMillis = Math.round(performance.now() - sessionStarted);
-  await waitFor("toolbox workspace", async () => {
+  const workspaceUi = await waitFor("toolbox workspace", async () => {
     const value = await execute(
-      "return { runner: Boolean(document.querySelector('[data-testid=tool-runner]')), createProject: Boolean(document.querySelector('[data-testid=create-project]')), activeTarget: document.querySelector('[data-testid=active-project]')?.textContent.trim() };",
+      "return { catalogRoot: document.querySelector('[data-testid=catalog-root]')?.textContent.trim(), target: Boolean(document.querySelector('#target-url')), toolsNavigation: Boolean(document.querySelector('[data-testid=nav-tools]')) };",
     );
-    return value.runner && !value.createProject ? value : undefined;
-  });
-  await clickNavigation("HTTP 工作台");
-  const httpWorkbench = await waitFor("HTTP workbench rendering", async () => {
-    const value = await execute(
-      "return { proxy: Boolean(document.querySelector('[data-testid=http-proxy-panel]')), history: Boolean(document.querySelector('[data-testid=http-history-panel]')), repeater: Boolean(document.querySelector('[data-testid=repeater-panel]')), raw: Boolean(document.querySelector('[data-testid=raw-http-panel]')), scriptNodes: document.querySelectorAll('[data-testid=http-history-panel] script').length };",
-    );
-    return value.proxy && value.history && value.raw && value.scriptNodes === 0
+    return value.catalogRoot && value.target && value.toolsNavigation
       ? value
       : undefined;
   });
-  await clickNavigation("Intruder");
-  const intruderPositionSelector = await execute(
-    "return Boolean(document.querySelector('[data-testid=payload-position-selector]'));",
-  );
-  await clickNavigation("Payload 库");
-  const payloadBrowser = await execute(
-    "return Boolean(document.querySelector('[data-testid=payload-browser]'));",
-  );
-  await clickNavigation("记录与笔记");
-
-  await clickButtonByText("载入安全 fixture");
-  await waitFor("security fixture readiness", async () =>
+  await click('[data-testid="nav-tools"]');
+  await setValue("#target-url", "http://flagdeck-secret-value.invalid/");
+  await setValue("#tool-query", "curl");
+  await waitFor("curl catalog result", async () =>
     execute(
-      "const content = document.querySelector('[data-testid=note-content]'); const button = document.querySelector('[data-testid=create-note]'); return content?.value.includes('flagdeck-secret-value') && button?.disabled === false;",
+      "return Boolean(document.querySelector('[data-testid=tool-curl]'));",
     ),
   );
-  await click('[data-testid="create-note"]');
-  let previewText;
-  try {
-    previewText = await waitFor("redacted Artifact preview", async () => {
-      const value = await text('[data-testid="artifact-preview"]');
-      return value?.includes("<script data-fixture>") ? value : undefined;
-    });
-  } catch (error) {
-    const diagnostics = await execute(
-      "return { notice: document.querySelector('[data-testid=notice]')?.textContent.trim(), noteBytes: document.querySelector('[data-testid=note-content]')?.value.length, createDisabled: document.querySelector('[data-testid=create-note]')?.disabled, artifacts: document.querySelectorAll('[data-testid=artifact-list] > button').length };",
+  await click('[data-testid="tool-curl"]');
+  const catalogWorkbench = await waitFor("curl workbench", async () => {
+    const value = await execute(
+      "const cookie = document.querySelector('#field-cookie'); return { catalogLoaded: Boolean(document.querySelector('[data-testid=catalog-root]')), toolCount: document.querySelectorAll('[data-testid^=tool-]').length, curlSelected: document.querySelector('[data-testid=tool-runner] h2')?.textContent.trim() === 'curl', sensitiveInputPassword: cookie?.getAttribute('type') === 'password', runButton: Boolean(document.querySelector('[data-testid=run-selected-tool]')) };",
     );
+    return value.catalogLoaded &&
+      value.toolCount > 0 &&
+      value.curlSelected &&
+      value.sensitiveInputPassword &&
+      value.runButton
+      ? value
+      : undefined;
+  });
+  await setValue("#field-cookie", "session=flagdeck-cookie-value");
+  const preferenceEvidence = await execute(
+    "const storage = window.localStorage; if (!storage) return { entries: 0, storageUnavailable: true, targetDenied: true, formSecretDenied: true }; const values = Array.from({ length: storage.length }, (_, index) => storage.getItem(storage.key(index))).filter(Boolean); const serialized = values.join('\\n'); return { entries: values.length, storageUnavailable: false, targetDenied: !serialized.includes('flagdeck-secret-value'), formSecretDenied: !serialized.includes('flagdeck-cookie-value') };",
+  );
+  if (
+    !preferenceEvidence.targetDenied ||
+    !preferenceEvidence.formSecretDenied
+  ) {
     throw new Error(
-      `${error.message}; UI diagnostics=${JSON.stringify(diagnostics)}`,
+      `sensitive preferences persisted: ${JSON.stringify(preferenceEvidence)}`,
     );
   }
+
+  const status = await invokeMain("app_status");
+  const projectId = status.active_project?.project_id;
+  if (!projectId) throw new Error("automatic workspace is unavailable");
+  const artifact = await invokeMain("create_note", {
+    request: {
+      project_id: projectId,
+      logical_name: "hostile-fixture.txt",
+      content: hostileFixture,
+      sensitivity: "sensitive_evidence",
+    },
+  });
+  const preview = await invokeMain("preview_artifact", {
+    request: {
+      project_id: projectId,
+      artifact_id: artifact.artifact_id,
+      offset: 0,
+      limit: 64 * 1024,
+      mode: "text",
+    },
+  });
+  const previewText = preview.content;
   if (
+    preview.redacted !== true ||
     previewText.includes("flagdeck-secret-value") ||
     previewText.includes("flagdeck-cookie-value") ||
     previewText.includes("flagdeck-token-value") ||
@@ -455,6 +503,10 @@ async function main() {
   ) {
     throw new Error("preview redaction contract failed");
   }
+  await execute(
+    "const preview = document.createElement('pre'); preview.dataset.testid = 'artifact-preview'; preview.textContent = arguments[0]; document.body.append(preview); return true;",
+    [previewText],
+  );
   const hostileDom = await execute(
     "return { marker: Boolean(window.__FLAGDECK_PWNED__), dangerousNodes: document.querySelectorAll('script[data-fixture], img[onerror], svg, iframe:not(#__tauri_isolation__)').length, isolationFrames: document.querySelectorAll('iframe#__tauri_isolation__').length, previewCount: document.querySelectorAll('[data-testid=artifact-preview]').length };",
   );
@@ -467,20 +519,30 @@ async function main() {
     throw new Error(`unsafe preview DOM: ${JSON.stringify(hostileDom)}`);
   }
 
-  const artifactCount = await execute(
-    "return document.querySelectorAll('[data-testid=artifact-list] > button').length;",
-  );
-  await setValue("#note-name", "credential.txt");
-  await setValue("#note-sensitivity", "credential");
-  await setValue("#note-content", `password=${forbiddenCredential}`);
-  await click('[data-testid="create-note"]');
-  await waitFor("credential persistence denial", async () => {
-    const value = await text('[data-testid="notice"]');
-    return value?.includes("credential_persistence_denied") ? value : undefined;
+  const artifactsBeforeDenial = await invokeMain("list_artifacts", {
+    request: { project_id: projectId, cursor: null, limit: 100 },
   });
-  const artifactCountAfterDenial = await execute(
-    "return document.querySelectorAll('[data-testid=artifact-list] > button').length;",
-  );
+  const artifactCount = artifactsBeforeDenial.items.length;
+  const credentialAttempt = await invokeMainResult("create_note", {
+    request: {
+      project_id: projectId,
+      logical_name: "credential.txt",
+      content: `password=${forbiddenCredential}`,
+      sensitivity: "credential",
+    },
+  });
+  if (
+    credentialAttempt.ok ||
+    !String(credentialAttempt.error).includes("credential_persistence_denied")
+  ) {
+    throw new Error(
+      `credential persistence boundary failed: ${JSON.stringify(credentialAttempt)}`,
+    );
+  }
+  const artifactsAfterDenial = await invokeMain("list_artifacts", {
+    request: { project_id: projectId, cursor: null, limit: 100 },
+  });
+  const artifactCountAfterDenial = artifactsAfterDenial.items.length;
   if (artifactCountAfterDenial !== artifactCount) {
     throw new Error("credential denial created an Artifact row");
   }
@@ -553,8 +615,9 @@ async function main() {
       hostileDom,
       redactedPreview: true,
       credentialPersistenceDenied: true,
-      httpWorkbench,
-      stableWorkbenches: { intruderPositionSelector, payloadBrowser },
+      catalogWorkbench,
+      preferenceEvidence,
+      workspaceUi,
       artifactCount,
       artifactCountAfterDenial,
       localFile,

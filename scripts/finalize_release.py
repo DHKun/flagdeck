@@ -35,9 +35,20 @@ ARTIFACTS = [
     "mise.lock",
     "LICENSE",
     "THIRD_PARTY.md",
-    "PROJECT_PLAN.md",
-    "docs/R7_REPORT.md",
     "docs/adr/0013-r7-stable-release-boundaries.md",
+]
+
+APPROVED_SIGNING_FINGERPRINT = "5DEDB3781215AC2CB323FE2B3742F9C007201D22"
+GUI_ASSERTIONS = [
+    "allCustomCommandsDeniedFromProbe",
+    "allHostilePreviewsDataOnly",
+    "allCatalogWorkbenchesReady",
+    "allSensitivePreferencesDenied",
+    "allCredentialsRejectedWithoutPersistence",
+    "allWorkspaceEntriesPrivate",
+    "allImportInboxesPrivate",
+    "allArtifactHashesVerified",
+    "allCoreLimitsZero",
 ]
 
 
@@ -79,6 +90,45 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temporary_name)
 
 
+def public_key_fingerprint(public_key: Path) -> str:
+    listing = subprocess.run(
+        ["gpg", "--batch", "--with-colons", "--show-keys", str(public_key)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout
+    fingerprints = [
+        line.split(":")[9].upper()
+        for line in listing.splitlines()
+        if line.startswith("fpr:")
+    ]
+    if not fingerprints:
+        raise RuntimeError("release public key has no primary fingerprint")
+    return fingerprints[0]
+
+
+def verify_rpm_signature(rpm: Path, public_key: Path) -> str:
+    with tempfile.TemporaryDirectory(prefix="flagdeck-finalize-rpmdb-") as rpm_db:
+        subprocess.run(
+            ["rpmkeys", "--dbpath", rpm_db, "--import", str(public_key)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        verification = subprocess.run(
+            ["rpmkeys", "--dbpath", rpm_db, "--checksig", "--verbose", str(rpm)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+    if "OpenPGP" not in verification or ": OK" not in verification:
+        raise RuntimeError("independent RPM signature verification failed")
+    return verification
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -92,8 +142,10 @@ def main() -> None:
 
     rpm_path = paths[ARTIFACTS[0]]
     binary_path = paths[ARTIFACTS[1]]
+    public_key_path = paths[ARTIFACTS[2]]
     rpm_hash = sha256(rpm_path)
     binary_hash = sha256(binary_path)
+    public_key_hash = sha256(public_key_path)
     audits = read_json(root, "release/evidence/dependency-audits.json")
     signature = read_json(root, "release/evidence/rpm-signature.json")
     lifecycle = read_json(root, "release/evidence/fedora-lifecycle.json")
@@ -106,15 +158,34 @@ def main() -> None:
         raise RuntimeError("dependency audit evidence failed")
     if signature.get("passed") is not True or signature.get("rpmSha256") != rpm_hash:
         raise RuntimeError("RPM signature evidence is stale")
+    if (
+        signature.get("fingerprint") != APPROVED_SIGNING_FINGERPRINT
+        or signature.get("publicKeySha256") != public_key_hash
+        or public_key_fingerprint(public_key_path) != APPROVED_SIGNING_FINGERPRINT
+    ):
+        raise RuntimeError("RPM signing identity is not approved")
+    signature_verification = verify_rpm_signature(rpm_path, public_key_path)
     if lifecycle.get("passed") is not True or (
         lifecycle.get("artifacts", {}).get("stableRpmSha256") != rpm_hash
     ):
         raise RuntimeError("Fedora lifecycle evidence is stale")
+    if lifecycle.get("artifacts", {}).get("publicKeySha256") != public_key_hash:
+        raise RuntimeError("Fedora lifecycle public-key evidence is stale")
     require_all_true("R7 performance", performance.get("assertions", {}))
     if gui.get("status") != "PASS" or gui.get("packageSha256") != rpm_hash:
         raise RuntimeError("GUI release evidence is stale")
     if gui.get("applicationSha256") != binary_hash:
         raise RuntimeError("GUI binary evidence is stale")
+    if (
+        gui.get("runs", 0) < 10
+        or gui.get("passes") != gui.get("runs")
+        or gui.get("failures") != 0
+    ):
+        raise RuntimeError("GUI release run count is incomplete")
+    require_all_true(
+        "GUI release",
+        {name: gui.get(name) for name in GUI_ASSERTIONS},
+    )
     if memory.get("status") != "PASS" or memory.get("applicationSha256") != binary_hash:
         raise RuntimeError("desktop memory evidence is stale")
     require_all_true("desktop memory", memory.get("assertions", {}))
@@ -170,6 +241,7 @@ def main() -> None:
             "installedBytes": int(installed_bytes),
             "sha256": rpm_hash,
             "signingFingerprint": signature["fingerprint"],
+            "signatureVerification": signature_verification,
         },
         "sbom": {
             "format": "CycloneDX 1.6",

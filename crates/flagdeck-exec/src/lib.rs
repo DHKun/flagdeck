@@ -585,7 +585,8 @@ async fn start_systemd(
         format!("TimeoutStopSec={}ms", spec.stop_grace_millis),
         "UMask=0077".to_owned(),
         "RemainAfterExit=yes".to_owned(),
-        "CollectMode=inactive-or-failed".to_owned(),
+        // Keep failed transient units available until exit evidence is captured.
+        "CollectMode=inactive".to_owned(),
         format!("WorkingDirectory={}", validated.cwd.display()),
         format!("StandardOutput=append:{}", stdout_path.display()),
         format!("StandardError=append:{}", stderr_path.display()),
