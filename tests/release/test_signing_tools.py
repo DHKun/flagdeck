@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from scripts.finalize_release import (
     APPROVED_SIGNING_FINGERPRINT,
     ARTIFACTS,
     GUI_ASSERTIONS,
     public_key_fingerprint,
+)
+from scripts.run_release_audits import (
+    LOCKED_CARGO_TOOLS,
+    ensure_locked_cargo_tool,
 )
 from scripts.sign_rpm import normalize_fingerprint, primary_fingerprints
 
@@ -54,6 +59,25 @@ class SigningToolsTests(unittest.TestCase):
         self.assertNotIn("PROJECT_PLAN.md", ARTIFACTS)
         self.assertNotIn("docs/R7_REPORT.md", ARTIFACTS)
         self.assertGreaterEqual(len(GUI_ASSERTIONS), 9)
+
+    def test_release_audit_tools_are_version_pinned_and_reused(self) -> None:
+        self.assertEqual(
+            LOCKED_CARGO_TOOLS,
+            {"cargo-audit": "0.22.2", "cargo-deny": "0.20.2"},
+        )
+        with TemporaryDirectory() as directory:
+            tool_root = Path(directory)
+            binary = tool_root / "bin/cargo-audit"
+            binary.parent.mkdir()
+            binary.write_text(
+                "#!/bin/sh\necho 'cargo-audit 0.22.2'\n",
+                encoding="utf-8",
+            )
+            binary.chmod(0o700)
+            self.assertEqual(
+                ensure_locked_cargo_tool(tool_root, "cargo-audit", ROOT),
+                binary,
+            )
 
 
 if __name__ == "__main__":

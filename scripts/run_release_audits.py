@@ -31,6 +31,11 @@ ACCEPTED_UNMAINTAINED_ADVISORIES = [
     "RUSTSEC-2025-0100",
 ]
 
+LOCKED_CARGO_TOOLS = {
+    "cargo-audit": "0.22.2",
+    "cargo-deny": "0.20.2",
+}
+
 
 def run(
     arguments: list[str],
@@ -68,6 +73,42 @@ def parse_json_output(record: dict[str, Any]) -> Any:
         return None
 
 
+def ensure_locked_cargo_tool(
+    tool_root: Path,
+    package: str,
+    root: Path,
+) -> Path:
+    version = LOCKED_CARGO_TOOLS[package]
+    binary = tool_root / "bin" / package
+    if binary.is_file() and os.access(binary, os.X_OK):
+        installed = run([str(binary), "--version"], root)
+        if installed["passed"] and installed["stdout"].strip() == (
+            f"{package} {version}"
+        ):
+            return binary
+    tool_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    installation = run(
+        [
+            "cargo",
+            "install",
+            package,
+            "--locked",
+            "--version",
+            version,
+            "--force",
+            "--root",
+            str(tool_root),
+        ],
+        root,
+    )
+    if not installation["passed"] or not binary.is_file():
+        detail = installation["stderr"].strip() or installation["stdout"].strip()
+        raise RuntimeError(
+            f"failed to install locked {package} {version}: {detail or 'binary missing'}"
+        )
+    return binary
+
+
 def write_private_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
@@ -94,8 +135,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
-    cargo_audit = arguments.tool_root / "bin/cargo-audit"
-    cargo_deny = arguments.tool_root / "bin/cargo-deny"
+    tool_root = (root / arguments.tool_root).resolve()
+    cargo_audit = ensure_locked_cargo_tool(tool_root, "cargo-audit", root)
+    cargo_deny = ensure_locked_cargo_tool(tool_root, "cargo-deny", root)
     records: dict[str, dict[str, Any]] = {}
     cargo_audit_arguments = [
         str(cargo_audit),

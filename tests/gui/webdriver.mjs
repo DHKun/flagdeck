@@ -27,6 +27,18 @@ const driverBinary =
 const evidencePath = process.env.TAURI_EVIDENCE
   ? resolve(process.env.TAURI_EVIDENCE)
   : resolve(import.meta.dirname, "evidence/webdriver.json");
+const requestTimeoutMs = Number(
+  process.env.FLAGDECK_WEBDRIVER_REQUEST_TIMEOUT_MS ?? "60000",
+);
+if (
+  !Number.isInteger(requestTimeoutMs) ||
+  requestTimeoutMs < 5_000 ||
+  requestTimeoutMs > 120_000
+) {
+  throw new Error(
+    "FLAGDECK_WEBDRIVER_REQUEST_TIMEOUT_MS must be an integer in 5000..=120000",
+  );
+}
 const temporaryRoot = await mkdtemp(join(tmpdir(), "flagdeck-r7-gui-"));
 const workspacesRoot = join(temporaryRoot, "workspaces");
 const forbiddenCredential = "should-never-persist-r7";
@@ -48,6 +60,7 @@ let driverExitCode;
 async function request(path, method = "GET", body) {
   const response = await fetch(`${webdriverUrl}${path}`, {
     method,
+    signal: AbortSignal.timeout(requestTimeoutMs),
     headers:
       body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -373,6 +386,7 @@ async function main() {
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
       WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
       DISPLAY: process.env.DISPLAY,
+      XAUTHORITY: process.env.XAUTHORITY,
       DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
       FLAGDECK_SECURITY_PROBE: "1",
       FLAGDECK_WORKSPACES_ROOT: workspacesRoot,
@@ -391,9 +405,9 @@ async function main() {
   });
 
   await waitFor("tauri-driver readiness", async () => {
-    const response = await fetch(`${webdriverUrl}/status`).catch(
-      () => undefined,
-    );
+    const response = await fetch(`${webdriverUrl}/status`, {
+      signal: AbortSignal.timeout(2_000),
+    }).catch(() => undefined);
     return response?.ok;
   });
 
