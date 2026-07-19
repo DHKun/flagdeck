@@ -1362,7 +1362,14 @@ mod tests {
     #[test]
     fn gui_tools_have_no_required_url() {
         let catalog = ToolCatalog::load_default().unwrap();
-        for id in ["antsword", "behinder", "godzilla", "shiro"] {
+        for id in [
+            "antsword",
+            "behinder",
+            "godzilla",
+            "godzilla-super",
+            "godzilla-super-mcp",
+            "shiro",
+        ] {
             let tool = catalog.tool(id).unwrap_or_else(|| panic!("missing {id}"));
             assert!(!tool_needs_target(tool), "{id} should not require target");
         }

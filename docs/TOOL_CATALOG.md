@@ -115,6 +115,8 @@ config/tool-catalog/
 | payloader | external managed | Payload 参考站 `npm run dev` |
 | uploadranger | external | 上传漏洞 GUI |
 | shiro / antsword / behinder / godzilla | external | GUI 客户端 |
+| godzilla-super | external | 哥斯拉二开 GSL5 GUI（MCP/团队/RASP 扩展） |
+| godzilla-super-mcp | external managed | GSL5 无头 MCP（默认 127.0.0.1:9123） |
 
 ### 防守 / 分析
 
