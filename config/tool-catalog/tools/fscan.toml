@@ -13,6 +13,7 @@ usage = """
 """
 mode = "embedded_cli"
 featured = true
+platforms = ["linux"]
 
 [binary]
 command = "fscan"
@@ -96,6 +97,7 @@ hint = "yes=跑全量 POC，更慢更吵；默认关"
 [[form.fields]]
 id = "cookie"
 type = "text"
+sensitive = true
 label = "HTTP Cookie（可选）"
 default = ""
 required = false
@@ -145,6 +147,7 @@ hint = "整次任务超时上限"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "HTTP 代理 -proxy（可选）"
 default = ""
 required = false

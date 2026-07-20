@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use flagdeck_cli_adapters::{
-    AdapterError, CatalogError, ExpectedOutput, OutputRole, ParsedHttpResponse,
+    AdapterError, CatalogError, CatalogPaths, ExpectedOutput, OutputRole, ParsedHttpResponse,
     PreparedToolCommand, ToolCatalog, ToolId, ToolManifest, manifest, materialize_discoveries,
     parse_output, prepare_catalog_command, prepare_command, registry, write_wordlist,
 };
@@ -47,13 +47,12 @@ use flagdeck_domain::{
     DictionaryIndex, Discovery, DnsResolutionSnapshot, ExecutionStatus, ExportPolicy, HttpMessage,
     HttpSource, ImportStatus, IntruderCampaign, Job, JobId, MessageDirection, MessageId,
     MultipartDocument, NetworkClass, OrderedValue, PortRange, ProjectId, ProjectSummary,
-    ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, SupervisorBackend,
-    TargetScope, Timestamp, Validate,
+    ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, TargetScope, Timestamp,
+    Validate,
 };
 use flagdeck_exec::{
     CancellationResult, ExecPolicyError, ManagedExecutionResult, ManagedProcessIdentity,
-    SecretPolicy, SupervisorPolicy, cancel_managed, process_start_ticks, start_managed,
-    validate_program,
+    SecretPolicy, SupervisorPolicy, cancel_managed, start_managed, validate_program,
 };
 use flagdeck_storage::{
     ArtifactWriteRequest, JobImportRecord, MAX_DICTIONARY_TERM_BYTES, MAX_DICTIONARY_TERMS,
@@ -807,6 +806,7 @@ pub struct CoreEvent {
 
 pub struct CoreService {
     workspaces_root: PathBuf,
+    catalog_paths: CatalogPaths,
     active: Mutex<Option<Arc<ProjectStore>>>,
     active_runs: Arc<AtomicUsize>,
     active_executions: Mutex<HashMap<JobId, Arc<ActiveExecution>>>,
@@ -843,6 +843,7 @@ impl CoreService {
             None,
             metasploit_adapter,
             metasploit_launcher,
+            None,
         )
     }
 
@@ -853,9 +854,15 @@ impl CoreService {
         uv_program: Option<PathBuf>,
         metasploit_adapter: Option<PathBuf>,
         metasploit_launcher: Option<PathBuf>,
+        catalog_root: Option<PathBuf>,
     ) -> Self {
+        let mut catalog_paths = CatalogPaths::from_env();
+        if let Some(root) = catalog_root {
+            catalog_paths.catalog_root = root;
+        }
         Self {
             workspaces_root: workspaces_root.into(),
+            catalog_paths,
             active: Mutex::new(None),
             active_runs: Arc::new(AtomicUsize::new(0)),
             active_executions: Mutex::new(HashMap::new()),
@@ -2005,7 +2012,8 @@ impl CoreService {
     }
 
     pub fn list_catalog(&self) -> Result<CatalogSnapshot, CoreError> {
-        let catalog = ToolCatalog::load_default().map_err(|e| map_catalog_error(&e))?;
+        let catalog =
+            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
         Ok(CatalogSnapshot {
             tools_root: catalog.paths.tools_root.display().to_string(),
             wordlists_root: catalog.paths.wordlists_root.display().to_string(),
@@ -2049,6 +2057,7 @@ impl CoreService {
                             from: field.from,
                             options: field.options,
                             hint: field.hint,
+                            sensitive: field.sensitive,
                         })
                         .collect(),
                 })
@@ -2097,10 +2106,22 @@ impl CoreService {
         if request.tool_id.is_empty() || request.tool_id.len() > 128 {
             return Err(CoreError::InvalidRequest);
         }
-        let catalog = ToolCatalog::load_default().map_err(|e| map_catalog_error(&e))?;
+        let catalog =
+            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
         let tool = catalog
             .tool(&request.tool_id)
             .ok_or(CoreError::ToolUnavailable)?;
+
+        let has_sensitive_argv = tool.form.fields.iter().any(|field| {
+            field.sensitive
+                && request
+                    .form
+                    .get(&field.id)
+                    .is_some_and(|value| !value.is_empty())
+        });
+        if has_sensitive_argv && !request.confirm_sensitive_argv {
+            return Err(CoreError::InvalidRequest);
+        }
 
         let mut form = request.form.clone();
         for field in &tool.form.fields {
@@ -2766,7 +2787,7 @@ fn write_launch_banner(
     command: &CommandSpec,
     detach_gui: bool,
 ) -> Result<(), CoreError> {
-    let argv = command.argv_exec.join(" ");
+    let argv = command.argv_redacted.join(" ");
     let banner = format!(
         "=== FlagDeck launch ===\n\
          tool_id: {}\n\
@@ -2829,17 +2850,18 @@ fn spawn_catalog_process(
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
+    let validated = flagdeck_exec::validate_command(command)?;
     let stdout = open_job_log_file(stdout_path)?;
     let stderr = open_job_log_file(stderr_path)?;
-    let mut process = Command::new(&command.program);
+    let mut process = Command::new(&validated.canonical_program);
     process
-        .args(&command.argv_exec)
-        .current_dir(&command.cwd)
+        .args(&validated.argv)
+        .current_dir(&validated.cwd)
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    for (key, value) in &command.env_exec {
+    for (key, value) in &validated.environment {
         process.env(key, value);
     }
     process.process_group(0);
@@ -2847,151 +2869,48 @@ fn spawn_catalog_process(
 }
 
 async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreError> {
+    let execution =
+        match start_managed(&queued.command, &queued.stdout_path, &queued.stderr_path).await {
+            Ok(execution) => execution,
+            Err(error) => {
+                let detail = format!("[flagdeck] managed CLI launch rejected: {error}\n");
+                append_job_log(&queued.stderr_path, &detail)?;
+                append_job_log(&queued.stdout_path, &detail)?;
+                queued.job.exit_reason = Some("managed_execution_policy_error".to_owned());
+                queued.job.stopped_at = Some(Timestamp::now());
+                queued
+                    .job
+                    .transition(ExecutionStatus::Failed)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+                queued.store.save_job(&queued.job)?;
+                return Ok(());
+            }
+        };
+
+    let identity = execution.identity().clone();
+    set_active_identity(&queued.control, &identity)?;
+    apply_process_identity(&mut queued.job, &identity);
     queued
         .job
         .transition(ExecutionStatus::Running)
         .map_err(|_| CoreError::InvalidRequest)?;
     queued.store.save_job(&queued.job)?;
 
-    let mut child =
-        match spawn_catalog_process(&queued.command, &queued.stdout_path, &queued.stderr_path) {
-            Ok(child) => child,
-            Err(error) => {
-                let detail = format!("[flagdeck] cli spawn failed: {error}\n");
-                append_job_log(&queued.stderr_path, &detail)?;
-                append_job_log(&queued.stdout_path, &detail)?;
-                queued.job.exit_reason = Some(format!("cli_spawn_failed:{error}"));
-                queued.job.stopped_at = Some(Timestamp::now());
-                queued
-                    .job
-                    .transition(ExecutionStatus::Failed)
-                    .map_err(|_| CoreError::InvalidRequest)?;
-                return Ok(());
-            }
-        };
-
-    let pid = i32::try_from(child.id()).unwrap_or_default();
-    // Required by cancel_pgid ownership checks on Linux.
-    let start_ticks = process_start_ticks(pid);
-    queued.job.pid = Some(pid);
-    queued.job.process_group_id = Some(pid);
-    queued.job.process_start_ticks = start_ticks;
-    queued.job.ownership_verified = true;
-    queued.job.supervisor_backend = Some(SupervisorBackend::PgidFallback);
-    let identity = ManagedProcessIdentity {
-        supervisor_backend: SupervisorBackend::PgidFallback,
-        wrapper_pid: pid,
-        pid: Some(pid),
-        process_group_id: Some(pid),
-        process_start_ticks: start_ticks,
-        systemd_unit: None,
-        cgroup_path: None,
-        invocation_id: None,
-        target_program: queued.command.program.clone(),
-        ownership_verified: true,
-    };
-    set_active_identity(&queued.control, &identity)?;
-    queued.store.save_job(&queued.job)?;
+    let result = execution.wait().await?;
+    let cancelled = queued.control.cancel_requested.load(Ordering::SeqCst);
+    apply_execution_result(
+        &mut queued.job,
+        &result,
+        cancelled,
+        result.cancellation.as_ref(),
+    )?;
     append_job_log(
         &queued.stdout_path,
-        &format!("[flagdeck] process started pid={pid} start_ticks={start_ticks:?}\n"),
+        &format!(
+            "\n[flagdeck] managed execution finished backend={:?} exit={:?}\n",
+            result.supervisor_backend, result.exit_code
+        ),
     )?;
-
-    let timeout = Duration::from_millis(queued.command.timeout_millis.max(1_000));
-    let wait_result =
-        tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || child.wait())).await;
-    let cancelled = queued.control.cancel_requested.load(Ordering::SeqCst);
-
-    match wait_result {
-        Ok(Ok(Ok(status))) => {
-            let code = status.code();
-            append_job_log(
-                &queued.stdout_path,
-                &format!("\n[flagdeck] finished exit={code:?} status={status}\n"),
-            )?;
-            queued.job.exit_code = code;
-            queued.job.exit_reason = Some(if cancelled {
-                format!("cancelled:exit:{status}")
-            } else {
-                format!("exit:{status}")
-            });
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued.job.cleanup_verified = true;
-            let terminal = if cancelled {
-                ExecutionStatus::Cancelled
-            } else if status.success() {
-                ExecutionStatus::Succeeded
-            } else {
-                ExecutionStatus::Failed
-            };
-            queued
-                .job
-                .transition(terminal)
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-        Ok(Ok(Err(error))) => {
-            append_job_log(
-                &queued.stderr_path,
-                &format!("[flagdeck] wait failed: {error}\n"),
-            )?;
-            queued.job.exit_reason = Some(if cancelled {
-                format!("cancelled:wait_failed:{error}")
-            } else {
-                format!("wait_failed:{error}")
-            });
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued
-                .job
-                .transition(if cancelled {
-                    ExecutionStatus::Cancelled
-                } else {
-                    ExecutionStatus::Failed
-                })
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-        Ok(Err(_)) => {
-            append_job_log(
-                &queued.stderr_path,
-                "[flagdeck] internal join error while waiting for process\n",
-            )?;
-            queued.job.exit_reason = Some(if cancelled {
-                "cancelled:wait_join_error".to_owned()
-            } else {
-                "wait_join_error".to_owned()
-            });
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued
-                .job
-                .transition(if cancelled {
-                    ExecutionStatus::Cancelled
-                } else {
-                    ExecutionStatus::Failed
-                })
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-        Err(_) => {
-            append_job_log(
-                &queued.stdout_path,
-                &format!(
-                    "\n[flagdeck] timed out after {} ms; sending SIGKILL to process group\n",
-                    timeout.as_millis()
-                ),
-            )?;
-            if pid > 1 {
-                let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
-            }
-            queued.job.exit_reason = Some(format!("timeout_ms:{}", timeout.as_millis()));
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued.job.cleanup_verified = true;
-            queued
-                .job
-                .transition(ExecutionStatus::TimedOut)
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-    }
     queued.store.save_job(&queued.job)?;
     Ok(())
 }
@@ -3094,7 +3013,8 @@ async fn run_detached_gui(queued: &mut PreparedExternalRun) -> Result<(), CoreEr
     Ok(())
 }
 
-/// Accept full http(s) URL or bare host/IP/CIDR-ish target for scope registration.
+/// Accept a full HTTP(S) URL or one bare host/IP for scope registration.
+/// Multi-target CIDRs and target files require a dedicated typed scope contract.
 fn normalize_scope_base_url(value: &str) -> Result<String, CoreError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -3104,13 +3024,10 @@ fn normalize_scope_base_url(value: &str) -> Result<String, CoreError> {
         let _ = parse_http_url(trimmed)?;
         return Ok(trimmed.to_owned());
     }
-    // Strip path-like noise: "1.2.3.4/24" is ok for display scope host side;
-    // create_scope expects a URL — wrap as http://host/
-    let host = trimmed.split('/').next().unwrap_or(trimmed);
-    if host.is_empty() || host.contains(' ') {
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(char::is_whitespace) {
         return Err(CoreError::InvalidRequest);
     }
-    let synthesized = format!("http://{host}/");
+    let synthesized = format!("http://{trimmed}/");
     let _ = parse_http_url(&synthesized)?;
     Ok(synthesized)
 }
@@ -3907,6 +3824,17 @@ mod tests {
             .unwrap();
         assert!(opened.read_only);
         assert!(core.status().unwrap().storage.unwrap().query_only);
+    }
+
+    #[test]
+    fn catalog_scope_requires_one_explicit_target() {
+        assert_eq!(
+            normalize_scope_base_url("example.test:8080").unwrap(),
+            "http://example.test:8080/"
+        );
+        assert!(normalize_scope_base_url("192.0.2.0/24").is_err());
+        assert!(normalize_scope_base_url("/tmp/targets.txt").is_err());
+        assert!(normalize_scope_base_url("host-a host-b").is_err());
     }
 
     #[test]

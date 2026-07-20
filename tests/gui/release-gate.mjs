@@ -15,9 +15,32 @@ const application = process.env.TAURI_BINARY
 const packagePath = process.env.TAURI_PACKAGE
   ? resolve(process.env.TAURI_PACKAGE)
   : undefined;
-const tauriDriver = resolve(homedir(), ".cargo/bin/tauri-driver");
+const tauriDriver = process.env.TAURI_DRIVER
+  ? resolve(process.env.TAURI_DRIVER)
+  : resolve(homedir(), ".cargo/bin/tauri-driver");
 const runCount = Number(process.env.FLAGDECK_R7_GUI_RUNS ?? "10");
-const expectedCommandCount = 57;
+const capability = JSON.parse(
+  await readFile(
+    resolve(
+      workspace,
+      "apps/desktop/src-tauri/capabilities/main-capability.json",
+    ),
+    "utf8",
+  ),
+);
+const expectedCommands = capability.permissions
+  .filter((permission) => permission.startsWith("allow-"))
+  .map((permission) => permission.slice("allow-".length).replaceAll("-", "_"))
+  .sort();
+
+function allExpectedCommandsDenied(result) {
+  const deniedCommands = result.unprivilegedProbe?.deniedCommands;
+  return (
+    Array.isArray(deniedCommands) &&
+    JSON.stringify([...deniedCommands].sort()) ===
+      JSON.stringify(expectedCommands)
+  );
+}
 
 async function sha256(path) {
   return createHash("sha256")
@@ -87,13 +110,13 @@ function validate(result) {
     result.main?.windowCountBefore === result.main?.windowCountAfter &&
     result.main?.automaticWorkspace === true &&
     result.unprivilegedProbe?.allIpcDenied === true &&
-    result.unprivilegedProbe?.deniedCommands?.length === expectedCommandCount &&
-    result.main?.httpWorkbench?.proxy === true &&
-    result.main?.httpWorkbench?.history === true &&
-    result.main?.httpWorkbench?.raw === true &&
-    result.main?.httpWorkbench?.scriptNodes === 0 &&
-    result.main?.stableWorkbenches?.intruderPositionSelector === true &&
-    result.main?.stableWorkbenches?.payloadBrowser === true &&
+    allExpectedCommandsDenied(result) &&
+    result.main?.catalogWorkbench?.catalogLoaded === true &&
+    result.main?.catalogWorkbench?.toolCount > 0 &&
+    result.main?.catalogWorkbench?.curlSelected === true &&
+    result.main?.catalogWorkbench?.sensitiveInputPassword === true &&
+    result.main?.preferenceEvidence?.targetDenied === true &&
+    result.main?.preferenceEvidence?.formSecretDenied === true &&
     result.unprivilegedProbe?.localFile === "blocked" &&
     result.process?.coreLimitZero === true &&
     result.process?.argvContainsFixtureSecret === false &&
@@ -193,12 +216,20 @@ const summary = {
     measurement:
       "two-window security-probe process tree; Stable single-window budget is measured separately",
   },
-  allCustomCommandsDeniedFromProbe: results.every(
-    (result) =>
-      result.unprivilegedProbe.deniedCommands.length === expectedCommandCount,
-  ),
+  allCustomCommandsDeniedFromProbe: results.every(allExpectedCommandsDenied),
   allHostilePreviewsDataOnly: results.every(
     (result) => result.main.hostileDom.dangerousNodes === 0,
+  ),
+  allCatalogWorkbenchesReady: results.every(
+    (result) =>
+      result.main.catalogWorkbench.catalogLoaded &&
+      result.main.catalogWorkbench.curlSelected &&
+      result.main.catalogWorkbench.sensitiveInputPassword,
+  ),
+  allSensitivePreferencesDenied: results.every(
+    (result) =>
+      result.main.preferenceEvidence.targetDenied &&
+      result.main.preferenceEvidence.formSecretDenied,
   ),
   allCredentialsRejectedWithoutPersistence: results.every(
     (result) =>

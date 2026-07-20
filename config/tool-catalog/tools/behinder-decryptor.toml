@@ -53,6 +53,7 @@ hint = "webshell 语言类型，决定解密算法路径"
 [[form.fields]]
 id = "key"
 type = "text"
+sensitive = true
 label = "密文 key -k"
 required = true
 hint = "冰蝎连接密钥（16 进制/约定格式，见 shell 配置），例 e45e329feb5d925b"

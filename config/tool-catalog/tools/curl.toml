@@ -62,6 +62,7 @@ hint = "仅限制 TCP/TLS 建连时间（秒）；留空则用 curl 默认"
 [[form.fields]]
 id = "headers"
 type = "text"
+sensitive = true
 label = "请求头 -H（可选）"
 default = ""
 required = false
@@ -70,6 +71,7 @@ hint = "单条自定义头，例 Authorization: Bearer xxx 或 Content-Type: app
 [[form.fields]]
 id = "cookie"
 type = "text"
+sensitive = true
 label = "Cookie -b（可选）"
 default = ""
 required = false
@@ -94,6 +96,7 @@ hint = "来源页 URL，部分站点校验 Referer 时使用"
 [[form.fields]]
 id = "data"
 type = "text"
+sensitive = true
 label = "请求体 -d（可选）"
 default = ""
 required = false
@@ -102,6 +105,7 @@ hint = "POST/PUT 体：表单 a=1&b=2 或 JSON 字符串（JSON 时请配合 Con
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 -x（可选）"
 default = ""
 required = false

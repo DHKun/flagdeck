@@ -1,0 +1,49 @@
+id = "godzilla-super-mcp"
+name = "GodzillaSuper MCP"
+category = "gui"
+summary = "GSL5 无头 MCP（SSE，默认 127.0.0.1:9123）"
+
+usage = """
+【类型】本机长驻 MCP 服务（GodzillaSuper / GSL5）
+
+【FlagDeck】
+启动 gsl5 的 mcp 模式，供 Claude / Codex 等经 SSE 调用 Shell 管理。
+默认绑定 127.0.0.1:9123（比上游默认 0.0.0.0 更安全）。
+
+【客户端配置示例】
+Claude mcp.json:
+  "gsl5": { "type": "sse", "url": "http://127.0.0.1:9123/sse" }
+
+【注意】
+• 需要 Java；运行目录需 license.lic 与 data.db
+• 仅在授权环境暴露；跨机绑网卡前先开认证与防火墙
+• GUI 完整客户端请用工具 godzilla-super
+"""
+mode = "external_launch"
+featured = false
+# 长驻服务：不 detach，便于在工具箱中停止
+detach = false
+cwd = "Active/webshell-tools/GodzillaSuper"
+
+[binary]
+command = "start-godzillasuper-mcp.sh"
+path = "Active/webshell-tools/GodzillaSuper/start-godzillasuper-mcp.sh"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "app"
+accent = "gray"
+
+[form]
+fields = []
+
+[argv]
+template = []
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 2147483648
+tasks_max = 256

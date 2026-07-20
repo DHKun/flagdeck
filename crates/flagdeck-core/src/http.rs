@@ -5,6 +5,7 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -230,10 +231,7 @@ impl Default for HttpWorkbench {
 impl HttpWorkbench {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_worker_source_and_uv(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workers/mitmproxy"),
-            None,
-        )
+        Self::with_worker_source_and_uv(default_worker_source_root(), None)
     }
 
     #[must_use]
@@ -504,6 +502,30 @@ impl HttpWorkbench {
             .try_lock()
             .map_or(true, |active| active.is_some())
     }
+}
+
+fn default_worker_source_root() -> PathBuf {
+    let mut candidates = Vec::new();
+    if let Ok(current) = env::current_dir() {
+        candidates.extend(
+            current
+                .ancestors()
+                .take(8)
+                .map(|ancestor| ancestor.join("workers/mitmproxy")),
+        );
+    }
+    if let Ok(executable) = env::current_exe() {
+        candidates.extend(
+            executable
+                .ancestors()
+                .take(8)
+                .map(|ancestor| ancestor.join("workers/mitmproxy")),
+        );
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.join("pyproject.toml").is_file())
+        .unwrap_or_else(|| PathBuf::from("workers/mitmproxy"))
 }
 
 fn prepare_proxy_worker(

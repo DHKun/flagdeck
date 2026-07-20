@@ -152,7 +152,7 @@ export type RunToolRequest = { project_id: ProjectId, scope_id: ScopeId, tool: A
 
 export type CatalogCategoryDto = { id: string, name: string, summary: string, order: number, };
 
-export type CatalogFormFieldDto = { id: string, field_type: string, label: string, required: boolean, default_value: string, from: string, options: Array<string>, hint: string, };
+export type CatalogFormFieldDto = { id: string, field_type: string, label: string, required: boolean, default_value: string, from: string, options: Array<string>, hint: string, sensitive: boolean, };
 
 export type CatalogToolDto = { id: string, name: string, category: string, category_name: string, summary: string, usage: string, mode: string, featured: boolean, available: boolean, binary_path: string, detail: string, icon: string, accent: string, fields: Array<CatalogFormFieldDto>, needs_target: boolean, };
 
@@ -160,7 +160,7 @@ export type WordlistDto = { id: string, name: string, path: string, available: b
 
 export type CatalogSnapshot = { tools_root: string, wordlists_root: string, categories: Array<CatalogCategoryDto>, tools: Array<CatalogToolDto>, wordlists: Array<WordlistDto>, };
 
-export type RunCatalogToolRequest = { project_id: ProjectId, tool_id: string, target_url: string, form: { [key in string]: string }, };
+export type RunCatalogToolRequest = { project_id: ProjectId, tool_id: string, target_url: string, form: { [key in string]: string }, confirm_sensitive_argv: boolean, };
 
 export type EnsureTargetRequest = { project_id: ProjectId, base_url: string, };
 

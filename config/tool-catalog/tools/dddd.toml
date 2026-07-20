@@ -131,6 +131,7 @@ hint = "默认跳过 CDN 资产；yes=仍扫描（可能打到边缘节点）"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "HTTP 代理 -proxy（可选）"
 default = ""
 required = false

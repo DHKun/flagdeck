@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import string
 import shutil
 import subprocess
 import tempfile
@@ -54,6 +55,30 @@ def atomic_write(path: Path, content: bytes, mode: int) -> None:
             os.unlink(temporary_name)
 
 
+def primary_fingerprints(listing: str, record_type: str) -> list[str]:
+    fingerprints: list[str] = []
+    awaiting_fingerprint = False
+    for line in listing.splitlines():
+        fields = line.split(":")
+        if fields[0] == record_type:
+            awaiting_fingerprint = True
+        elif awaiting_fingerprint and fields[0] == "fpr":
+            fingerprints.append(normalize_fingerprint(fields[9]))
+            awaiting_fingerprint = False
+    return fingerprints
+
+
+def normalize_fingerprint(value: str) -> str:
+    normalized = "".join(value.split()).upper()
+    if len(normalized) != 40 or any(
+        character not in string.hexdigits for character in normalized
+    ):
+        raise ValueError(
+            "OpenPGP fingerprint must contain exactly 40 hexadecimal digits"
+        )
+    return normalized
+
+
 def secret_fingerprints(gpg_home: Path) -> list[str]:
     result = run(
         [
@@ -62,14 +87,24 @@ def secret_fingerprints(gpg_home: Path) -> list[str]:
             "--homedir",
             str(gpg_home),
             "--with-colons",
+            "--fingerprint",
             "--list-secret-keys",
         ]
     )
-    return [
-        line.split(":")[9]
-        for line in result.stdout.splitlines()
-        if line.startswith("fpr:")
-    ]
+    return primary_fingerprints(result.stdout, "sec")
+
+
+def public_key_fingerprints(public_key: Path) -> list[str]:
+    result = run(
+        [
+            "gpg",
+            "--batch",
+            "--with-colons",
+            "--show-keys",
+            str(public_key),
+        ]
+    )
+    return primary_fingerprints(result.stdout, "pub")
 
 
 def locate_rpmsign(root: Path) -> Path:
@@ -97,6 +132,20 @@ def main() -> None:
     parser.add_argument("--public-key", type=Path, required=True)
     parser.add_argument("--rpm-db", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument(
+        "--expected-fingerprint",
+        help="require this approved 40-digit primary-key fingerprint",
+    )
+    parser.add_argument(
+        "--allow-generate",
+        action="store_true",
+        help="generate a new signing identity for local development only",
+    )
+    parser.add_argument(
+        "--replace-public-key",
+        action="store_true",
+        help="replace an existing public key; requires --allow-generate",
+    )
     arguments = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     rpm = (root / arguments.rpm).resolve()
@@ -106,11 +155,17 @@ def main() -> None:
     evidence = (root / arguments.evidence).resolve()
     if not rpm.is_file():
         raise FileNotFoundError(rpm)
+    if arguments.replace_public_key and not arguments.allow_generate:
+        raise RuntimeError("--replace-public-key requires --allow-generate")
 
     gpg_home.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(gpg_home, 0o700)
     fingerprints = secret_fingerprints(gpg_home)
     if not fingerprints:
+        if not arguments.allow_generate:
+            raise RuntimeError(
+                "release signing key is unavailable; import the approved key first"
+            )
         run(
             [
                 "gpg",
@@ -127,7 +182,27 @@ def main() -> None:
             ]
         )
         fingerprints = secret_fingerprints(gpg_home)
-    fingerprint = fingerprints[0]
+    expected_fingerprint = (
+        normalize_fingerprint(arguments.expected_fingerprint)
+        if arguments.expected_fingerprint
+        else None
+    )
+    trusted_fingerprints = (
+        []
+        if arguments.replace_public_key or not public_key.is_file()
+        else public_key_fingerprints(public_key)
+    )
+    candidates = set(fingerprints)
+    if expected_fingerprint is not None:
+        candidates &= {expected_fingerprint}
+    if trusted_fingerprints:
+        candidates &= set(trusted_fingerprints)
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "signing identity selection failed; import exactly one approved private key "
+            "matching --expected-fingerprint and the existing public key"
+        )
+    fingerprint = candidates.pop()
     exported = subprocess.run(
         [
             "gpg",

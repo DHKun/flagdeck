@@ -1,0 +1,48 @@
+id = "godzilla-super"
+name = "GodzillaSuper (GSL5)"
+category = "gui"
+summary = "哥斯拉二开 WebShell 管理端 GSL5（独立窗口）"
+
+usage = """
+【类型】独立 GUI（GodzillaSuper / GSL5）
+
+【FlagDeck】
+通过 start-godzillasuper.sh 启动 gsl5.jar，无需目标 URL。
+Payload / 加密器 / 插件 / 团队数据源在 GSL5 窗口内管理。
+
+【相对原版 Godzilla】
+• MCP AI 操控、PostgreSQL 团队协作、RASP 绕过与内存马等扩展
+• 需要运行目录 license.lic（本机 Tools 树已生成）
+
+【注意】
+• 依赖 Java 与图形环境（推荐 Temurin 17）
+• 仅在授权靶场 / CTF 环境使用
+• 需要 MCP 无头模式时用工具 godzilla-super-mcp
+"""
+mode = "external_launch"
+featured = true
+detach = true
+cwd = "Active/webshell-tools/GodzillaSuper"
+
+[binary]
+command = "start-godzillasuper.sh"
+path = "Active/webshell-tools/GodzillaSuper/start-godzillasuper.sh"
+resolve = ["tools_root", "path"]
+
+[ui]
+icon = "app"
+accent = "gray"
+
+[form]
+fields = []
+
+[argv]
+template = []
+
+[parser]
+kind = "none"
+
+[limits]
+timeout_millis = 86400000
+memory_max_bytes = 2147483648
+tasks_max = 256

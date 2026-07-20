@@ -1,4 +1,4 @@
-name: Packages
+name: Preview Packages
 
 on:
   workflow_dispatch:
@@ -44,6 +44,10 @@ jobs:
 
           tag_version="${BASH_REMATCH[1]}"
           suffix="${BASH_REMATCH[2]:-}"
+          if [[ -z "$suffix" ]]; then
+            echo "stable tags require the signed R7 evidence workflow; use a SemVer prerelease tag here" >&2
+            exit 1
+          fi
           app_version="$(jq -r '.version' apps/desktop/src-tauri/tauri.conf.json)"
           if [[ "$tag_version" != "$app_version" ]]; then
             echo "tag version $tag_version does not match app version $app_version" >&2
@@ -56,9 +60,7 @@ jobs:
             exit 1
           fi
 
-          prerelease=false
-          [[ -n "$suffix" ]] && prerelease=true
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "prerelease=true" >> "$GITHUB_OUTPUT"
 
   linux:
     name: Linux x86-64
@@ -83,7 +85,9 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            rpm
+            rpm \
+            webkit2gtk-driver \
+            xvfb
 
       - uses: jdx/mise-action@v3
         with:
@@ -91,7 +95,10 @@ jobs:
           cache: true
 
       - name: Sync dependencies
-        run: mise run sync
+        run: mise run sync-all
+
+      - name: Install Tauri WebDriver
+        run: cargo install tauri-driver --locked --version 2.0.6
 
       - name: Prepare generated resources and bundled runtimes
         run: |
@@ -103,7 +110,19 @@ jobs:
         run: cargo check --workspace --all-targets --locked
 
       - name: Build Linux packages
-        run: pnpm --dir apps/desktop tauri build --bundles appimage,deb,rpm
+        run: NO_STRIP=1 pnpm --dir apps/desktop tauri build --bundles appimage,deb,rpm
+
+      - name: Run Linux GUI release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpm_package="$(find target/release/bundle/rpm -maxdepth 1 -name '*.rpm' -print -quit)"
+          test -f "$rpm_package"
+          xvfb-run -a env \
+            FLAGDECK_R7_GUI_RUNS=10 \
+            TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
+            TAURI_PACKAGE="$PWD/$rpm_package" \
+            node tests/gui/release-gate.mjs
 
       - name: Verify Linux packages
         shell: bash
@@ -126,6 +145,8 @@ jobs:
             test -x "squashfs-root/usr/bin/$binary"
             file "squashfs-root/usr/bin/$binary" | grep -Eq 'x86-64|x86_64'
           done
+          test -f squashfs-root/usr/lib/FlagDeck/config/tool-catalog/categories.toml
+          test -f squashfs-root/usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml
 
           dpkg-deb --info "$deb" >/dev/null
           dpkg-deb --contents "$deb" > "$RUNNER_TEMP/deb-contents.txt"
@@ -138,13 +159,19 @@ jobs:
             grep -q "usr/bin/$binary" "$RUNNER_TEMP/deb-contents.txt"
             grep -q "/usr/bin/$binary" "$RUNNER_TEMP/rpm-contents.txt"
           done
+          grep -q 'usr/lib/FlagDeck/config/tool-catalog/categories.toml' "$RUNNER_TEMP/deb-contents.txt"
+          grep -q '/usr/lib/FlagDeck/config/tool-catalog/categories.toml' "$RUNNER_TEMP/rpm-contents.txt"
+          grep -q 'usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml' "$RUNNER_TEMP/deb-contents.txt"
+          grep -q '/usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml' "$RUNNER_TEMP/rpm-contents.txt"
 
           mkdir -p dist/linux
           install -m 755 "$appimage" dist/linux/
           install -m 644 "$deb" "$rpm_package" dist/linux/
+          install -m 644 release/evidence/flagdeck-1.0.0.cdx.json dist/linux/
+          install -m 644 tests/gui/evidence/summary.json dist/linux/FlagDeck-Linux-x86_64-GUI-EVIDENCE.json
           (
             cd dist/linux
-            sha256sum ./*.AppImage ./*.deb ./*.rpm > FlagDeck-Linux-x86_64-SHA256SUMS.txt
+            sha256sum ./*.AppImage ./*.deb ./*.rpm ./*.json > FlagDeck-Linux-x86_64-SHA256SUMS.txt
           )
 
       - uses: actions/upload-artifact@v4
@@ -171,7 +198,7 @@ jobs:
           cache: true
 
       - name: Sync dependencies
-        run: mise run sync
+        run: mise run sync-all
 
       - name: Prepare generated resources and bundled runtimes
         run: |
@@ -180,7 +207,13 @@ jobs:
           mise run stage-host-runtime
 
       - name: Check macOS workspace
-        run: cargo check --workspace --all-targets --locked
+        run: |
+          cargo check --workspace --all-targets --locked
+          jq -e '
+            (.platforms == null) and
+            (.permissions | index("allow-app-status") != null) and
+            (.permissions | index("allow-list-catalog") != null)
+          ' apps/desktop/src-tauri/capabilities/main-capability.json
 
       - name: Build ad-hoc signed DMG
         run: pnpm --dir apps/desktop tauri build --target aarch64-apple-darwin --bundles dmg
@@ -207,6 +240,8 @@ jobs:
             lipo -archs "$app/Contents/MacOS/$binary" | grep -qw arm64
           done
           codesign --verify --deep --strict --verbose=2 "$app"
+          test -f "$app/Contents/Resources/config/tool-catalog/categories.toml"
+          test -f "$app/Contents/Resources/config/tool-catalog/tools/curl.toml"
           hdiutil detach "$mount"
           trap - EXIT
 
@@ -259,11 +294,9 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t assets < <(find dist -type f -print | sort)
-          test "${#assets[@]}" -eq 6
+          test "${#assets[@]}" -eq 8
 
-          flags=(--verify-tag --generate-notes)
-          if [[ "$PRERELEASE" == "true" ]]; then
-            flags+=(--prerelease --latest=false)
-          fi
+          test "$PRERELEASE" = "true"
+          flags=(--verify-tag --generate-notes --prerelease --latest=false)
 
           gh release create "$GITHUB_REF_NAME" "${assets[@]}" "${flags[@]}"

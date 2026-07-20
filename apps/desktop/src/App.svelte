@@ -232,11 +232,18 @@
   }
 
   function rememberFormForTool(toolId: string): void {
+    const tool = catalog?.tools.find((item) => item.id === toolId);
+    const persistedValues = Object.fromEntries(
+      Object.entries(formValues).filter(
+        ([fieldId]) =>
+          !tool?.fields.find((field) => field.id === fieldId)?.sensitive,
+      ),
+    );
     prefs = {
       ...prefs,
       formByTool: {
         ...prefs.formByTool,
-        [toolId]: { ...formValues },
+        [toolId]: persistedValues,
       },
       recentToolIds: rememberTool(prefs, toolId),
     };
@@ -494,6 +501,17 @@
       noticeKind = "error";
       return;
     }
+    const hasSensitiveArgv = selectedTool.fields.some(
+      (field) => field.sensitive && Boolean(formValues[field.id]),
+    );
+    if (
+      hasSensitiveArgv &&
+      !window.confirm(
+        "该工具只能通过进程参数接收此敏感值。运行期间，同一用户的进程列表可能看到该值。确认继续？",
+      )
+    ) {
+      return;
+    }
     await guarded(async () => {
       if (contextTarget) {
         if (contextTarget.startsWith("http")) {
@@ -532,6 +550,7 @@
         tool_id: selectedTool!.id,
         target_url: contextTarget,
         form: { ...formValues },
+        confirm_sensitive_argv: hasSensitiveArgv,
       });
       selectedLogJobId = job.job.job_id;
       selectedLogStream = "stdout";
@@ -654,6 +673,7 @@
     <nav class="nav">
       {#each navItems as item}
         <button
+          data-testid={`nav-${item.id}`}
           class:active={activeNav === item.id}
           type="button"
           onclick={() => (activeNav = item.id)}
@@ -667,8 +687,9 @@
     <div class="sidebar-foot">
       {#if catalog}
         工具根目录<br />
-        <code style="font-size: 11px; word-break: break-all"
-          >{catalog.tools_root}</code
+        <code
+          style="font-size: 11px; word-break: break-all"
+          data-testid="catalog-root">{catalog.tools_root}</code
         >
       {:else}
         正在加载工具目录…
@@ -708,6 +729,7 @@
 
     <div class="content">
       <div
+        data-testid="notice"
         class:show={notice.length > 0}
         class:success={noticeKind === "success"}
         class:error={noticeKind === "error"}
@@ -822,6 +844,7 @@
                 class:disabled={!tool.available}
               >
                 <button
+                  data-testid={`tool-${tool.id}`}
                   class="tool-card-main"
                   type="button"
                   disabled={!tool.available}
@@ -846,6 +869,7 @@
               class:disabled={!tool.available}
             >
               <button
+                data-testid={`tool-${tool.id}`}
                 class="tool-card-main"
                 type="button"
                 disabled={!tool.available}
@@ -914,6 +938,7 @@
                         class:disabled={!tool.available}
                       >
                         <button
+                          data-testid={`tool-${tool.id}`}
                           class="tool-card-main"
                           type="button"
                           disabled={!tool.available}
@@ -944,7 +969,7 @@
             {/each}
           </section>
 
-          <section class="card">
+          <section class="card" data-testid="tool-runner">
             {#if selectedTool}
               <div class="card-head">
                 <div>
@@ -1023,6 +1048,7 @@
                     {:else}
                       <input
                         id={`field-${field.id}`}
+                        type={field.sensitive ? "password" : "text"}
                         bind:value={formValues[field.id]}
                         oninput={() => {
                           if (
@@ -1071,6 +1097,7 @@
 
               <div class="actions">
                 <button
+                  data-testid="run-selected-tool"
                   class="btn btn-primary"
                   type="button"
                   disabled={busy || !selectedTool.available}

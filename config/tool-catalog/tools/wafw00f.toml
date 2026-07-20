@@ -54,6 +54,7 @@ hint = "yes=忽略 3xx 跳转，只测当前 URL（避免跳到 CDN 首页干扰
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 -p（可选）"
 default = ""
 required = false

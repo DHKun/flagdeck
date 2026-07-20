@@ -36,6 +36,7 @@ async fn shiro_detaches_with_visible_logs() {
             tool_id: "shiro".to_owned(),
             target_url: String::new(),
             form: BTreeMap::new(),
+            confirm_sensitive_argv: false,
         })
         .unwrap();
 

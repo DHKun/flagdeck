@@ -76,6 +76,7 @@ async fn catalog_curl_writes_visible_logs() {
             tool_id: "curl".to_owned(),
             target_url: "http://127.0.0.1:9/".to_owned(),
             form,
+            confirm_sensitive_argv: false,
         })
         .unwrap();
 
@@ -139,6 +140,7 @@ async fn catalog_gui_godzilla_detaches_or_logs_error() {
             tool_id: "godzilla".to_owned(),
             target_url: String::new(),
             form: BTreeMap::new(),
+            confirm_sensitive_argv: false,
         })
         .unwrap();
 
@@ -176,7 +178,7 @@ async fn catalog_gui_godzilla_detaches_or_logs_error() {
 async fn catalog_lists_without_local_tools_root() {
     // Catalog metadata must load from the repo config even when /data/CTF/Tools is absent.
     let temporary = tempdir().unwrap();
-    let core = CoreService::new(temporary.path().join("workspaces"));
+    let core = Arc::new(CoreService::new(temporary.path().join("workspaces")));
     let snapshot = core
         .list_catalog()
         .expect("catalog should load from repo config");
@@ -185,4 +187,33 @@ async fn catalog_lists_without_local_tools_root() {
         "expected curl in catalog"
     );
     let _ = tools_root_available();
+}
+
+#[test]
+fn catalog_sensitive_argv_requires_explicit_confirmation() {
+    if !Path::new("/usr/bin/curl").is_file() {
+        return;
+    }
+    let temporary = tempdir().unwrap();
+    let core = Arc::new(CoreService::new(temporary.path().join("workspaces")));
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "catalog-sensitive-confirmation".to_owned(),
+        })
+        .unwrap();
+    let form = BTreeMap::from([
+        ("url".to_owned(), "http://127.0.0.1:9/".to_owned()),
+        ("method".to_owned(), "GET".to_owned()),
+        ("cookie".to_owned(), "session=secret".to_owned()),
+    ]);
+    assert!(
+        core.start_catalog_tool(RunCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "curl".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form,
+            confirm_sensitive_argv: false,
+        })
+        .is_err()
+    );
 }
