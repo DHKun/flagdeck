@@ -112,7 +112,7 @@ config/tool-catalog/
 | php-filter-chain | embedded | LFI filter 链生成 |
 | githacker | embedded | `.git` 泄露综合还原（GitHacker，Active/git-leak） |
 | revshell-gen | external managed | 反弹 shell 生成器本地 HTTP |
-| payloader | external managed | Payload 参考站 `npm run dev` |
+| payloader | external | Payload 构造工作台（AppImage 客户端） |
 | uploadranger | external | 上传漏洞 GUI |
 | shiro / antsword / behinder / godzilla | external | GUI 客户端 |
 | godzilla-super | external | 哥斯拉二开 GSL5 GUI（MCP/团队/RASP 扩展） |

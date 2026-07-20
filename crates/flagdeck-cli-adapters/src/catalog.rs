@@ -1365,10 +1365,13 @@ mod tests {
         for id in [
             "antsword",
             "behinder",
+            "cyberchef",
             "godzilla",
             "godzilla-super",
             "godzilla-super-mcp",
+            "payloader",
             "shiro",
+            "uploadranger",
         ] {
             let tool = catalog.tool(id).unwrap_or_else(|| panic!("missing {id}"));
             assert!(!tool_needs_target(tool), "{id} should not require target");
