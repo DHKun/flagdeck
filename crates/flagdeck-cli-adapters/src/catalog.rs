@@ -554,7 +554,8 @@ fn default_tier() -> String {
 }
 
 fn default_catalog_risk_level() -> String {
-    "l1".to_owned()
+    // Embedded CLI tools default to L2 (requires confirmation); L3 tools set risk_level explicitly.
+    "l2".to_owned()
 }
 
 fn tool_needs_target(tool: &CatalogToolManifest) -> bool {
@@ -1057,6 +1058,7 @@ fn prepare_catalog_command_with_sources_impl(
     let risk_level = match tool.risk_level.to_ascii_lowercase().as_str() {
         "l0" => RiskLevel::L0,
         "l1" => RiskLevel::L1,
+        "l2" => RiskLevel::L2,
         "l3" => RiskLevel::L3,
         _ => match tool.mode {
             ToolMode::ExternalLaunch => RiskLevel::L3,
