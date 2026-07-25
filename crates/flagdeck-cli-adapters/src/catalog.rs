@@ -1469,9 +1469,13 @@ mod tests {
         assert!(catalog.tools.iter().any(|tool| tool.id == "behinder"));
         assert!(!catalog.wordlists.is_empty());
         let curl = catalog.tool("curl").expect("curl manifest");
-        assert_eq!(curl.io.schema_version, 0);
-        assert!(curl.io.inputs.is_empty());
-        assert!(curl.io.outputs.is_empty());
+        assert_eq!(curl.io.schema_version, 1);
+        assert!(curl.io.inputs.iter().any(|input| {
+            input.kind == flagdeck_domain::ToolIoKind::Url && input.field == "url"
+        }));
+        assert!(!curl.io.outputs.is_empty());
+        assert_eq!(curl.tier, "tier_1");
+        assert!(curl.presets.len() >= 3);
     }
 
     #[test]

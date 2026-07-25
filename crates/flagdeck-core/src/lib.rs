@@ -1596,6 +1596,8 @@ impl CoreService {
             );
             let columns = match adapter {
                 HttpDiscoveryAdapter::ArjunJson => arjun_result_columns(),
+                HttpDiscoveryAdapter::Wafw00fJson => wafw00f_result_columns(),
+                HttpDiscoveryAdapter::CurlHeaders => curl_result_columns(),
                 _ => http_discovery_columns(),
             };
             let parsed_rows = match adapter {
@@ -1604,6 +1606,8 @@ impl CoreService {
                 }
                 HttpDiscoveryAdapter::GobusterText => parse_gobuster_structured_rows(&bytes),
                 HttpDiscoveryAdapter::ArjunJson => parse_arjun_structured_rows(&bytes),
+                HttpDiscoveryAdapter::CurlHeaders => parse_curl_headers_structured_rows(&bytes),
+                HttpDiscoveryAdapter::Wafw00fJson => parse_wafw00f_structured_rows(&bytes),
             };
             let Ok(mut all_rows) = parsed_rows else {
                 return Ok(StructuredResultPage {
@@ -3917,6 +3921,8 @@ enum HttpDiscoveryAdapter {
     FfufJson,
     GobusterText,
     ArjunJson,
+    CurlHeaders,
+    Wafw00fJson,
     GenericJson,
 }
 
@@ -3930,6 +3936,8 @@ fn structured_result_kind(
         HttpDiscoveryAdapter::FfufJson
             | HttpDiscoveryAdapter::GobusterText
             | HttpDiscoveryAdapter::ArjunJson
+            | HttpDiscoveryAdapter::CurlHeaders
+            | HttpDiscoveryAdapter::Wafw00fJson
     ) || io
         .outputs
         .iter()
@@ -3965,12 +3973,27 @@ fn select_http_discovery_adapter(
         if id == "flagdeck.arjun-json" || id.ends_with(".arjun-json") || id.contains("arjun") {
             return HttpDiscoveryAdapter::ArjunJson;
         }
+        if id == "flagdeck.curl-headers" || id.ends_with(".curl-headers") || id.contains("curl") {
+            return HttpDiscoveryAdapter::CurlHeaders;
+        }
+        if id == "flagdeck.wafw00f-json" || id.ends_with(".wafw00f-json") || id.contains("wafw00f")
+        {
+            return HttpDiscoveryAdapter::Wafw00fJson;
+        }
     }
     if tool_id == "gobuster" || logical_name.is_some_and(|name| name.contains("gobuster")) {
         return HttpDiscoveryAdapter::GobusterText;
     }
     if tool_id == "arjun" || logical_name.is_some_and(|name| name.contains("arjun")) {
         return HttpDiscoveryAdapter::ArjunJson;
+    }
+    if tool_id == "curl"
+        || logical_name.is_some_and(|name| name.contains("headers") || name.contains("curl"))
+    {
+        return HttpDiscoveryAdapter::CurlHeaders;
+    }
+    if tool_id == "wafw00f" || logical_name.is_some_and(|name| name.contains("wafw00f")) {
+        return HttpDiscoveryAdapter::Wafw00fJson;
     }
     if tool_id == "ffuf" || logical_name.is_some_and(|name| name.contains("ffuf")) {
         return HttpDiscoveryAdapter::FfufJson;
@@ -4139,6 +4162,172 @@ fn regex_lite_gobuster_line(line: &str) -> Option<(String, String, String)> {
         })
         .unwrap_or_default();
     Some((path, status, length))
+}
+
+fn curl_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "status".to_owned(),
+            label: "状态".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "content_type".to_owned(),
+            label: "类型".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "length".to_owned(),
+            label: "长度".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn wafw00f_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "detected".to_owned(),
+            label: "检出".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "firewall".to_owned(),
+            label: "WAF".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "manufacturer".to_owned(),
+            label: "厂商".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_curl_headers_structured_rows(
+    bytes: &[u8],
+) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let mut status = String::new();
+    let mut content_type = String::new();
+    let mut length = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.to_ascii_uppercase().starts_with("HTTP/") {
+            // HTTP/1.1 200 OK
+            let parts: Vec<_> = trimmed.split_whitespace().collect();
+            if parts.len() >= 2 {
+                parts[1].clone_into(&mut status);
+            }
+            continue;
+        }
+        if let Some(value) = trimmed
+            .split_once(':')
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.trim().to_owned())
+        {
+            content_type = value;
+        }
+        if let Some(value) = trimmed
+            .split_once(':')
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map(|(_, value)| value.trim().to_owned())
+        {
+            length = value;
+        }
+    }
+    if status.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    let mut cells = BTreeMap::new();
+    cells.insert("status".to_owned(), status);
+    cells.insert("url".to_owned(), String::new());
+    cells.insert("content_type".to_owned(), content_type);
+    cells.insert("length".to_owned(), length);
+    cells.insert("source_job".to_owned(), String::new());
+    cells.insert("source_artifact".to_owned(), String::new());
+    Ok(vec![StructuredResultRowDto {
+        result_id: "row:0".to_owned(),
+        cells,
+        source_job_id: JobId::new(),
+        source_artifact_id: None,
+    }])
+}
+
+fn parse_wafw00f_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let records = if let Some(array) = value.as_array() {
+        array.clone()
+    } else if value.is_object() {
+        vec![value]
+    } else {
+        return Err(CoreError::InvalidRequest);
+    };
+    let mut rows = Vec::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let url = record
+            .get("url")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let detected = record
+            .get("detected")
+            .map(|item| match item {
+                serde_json::Value::Bool(flag) => flag.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let firewall = record
+            .get("firewall")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let manufacturer = record
+            .get("manufacturer")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let mut cells = BTreeMap::new();
+        cells.insert("url".to_owned(), url);
+        cells.insert("detected".to_owned(), detected);
+        cells.insert("firewall".to_owned(), firewall);
+        cells.insert("manufacturer".to_owned(), manufacturer);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
 }
 
 fn parse_arjun_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
@@ -7174,6 +7363,161 @@ mod tests {
         assert_eq!(
             arjun_page.rows[0].source_artifact_id.as_ref(),
             Some(&arjun_job.1.artifact_id)
+        );
+    }
+
+    #[test]
+    fn curl_and_wafw00f_structured_results_expose_rows() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Curl waf results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+
+        let curl_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "headers.txt",
+                    b"HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: 12\n\n",
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "curl".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "http_message".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "headers.txt".to_owned(),
+                        mime: "text/plain; charset=utf-8".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(store.layout().scans.join(&job_id.0).join("headers.txt")).unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let curl_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: curl_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(curl_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            curl_page.rows[0].cells.get("status").map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            curl_page.rows[0]
+                .cells
+                .get("content_type")
+                .map(String::as_str),
+            Some("text/html")
+        );
+
+        let waf_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "wafw00f.json",
+                    br#"[{"detected":false,"firewall":"None","manufacturer":"None","url":"http://x/"}]"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "wafw00f".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "waf".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "wafw00f.json".to_owned(),
+                        mime: "application/json".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(store.layout().scans.join(&job_id.0).join("wafw00f.json")).unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let waf_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id,
+                job_id: waf_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(waf_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            waf_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://x/")
+        );
+        assert_eq!(
+            waf_page.rows[0].cells.get("detected").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            waf_page.rows[0].source_artifact_id.as_ref(),
+            Some(&waf_job.1.artifact_id)
         );
     }
 

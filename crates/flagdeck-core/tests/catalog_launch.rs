@@ -1585,3 +1585,155 @@ fn gobuster_and_arjun_preview_and_diagnostic_are_available() {
     assert_eq!(arjun_diag.tool_id, "arjun");
     assert!(!arjun_diag.checks.is_empty());
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn workspace_catalog_exposes_curl_and_wafw00f_v2_contracts() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let snapshot = core.list_catalog().expect("workspace catalog loads");
+
+    let curl = snapshot
+        .tools
+        .iter()
+        .find(|tool| tool.id == "curl")
+        .expect("curl present");
+    assert_eq!(curl.tier, "tier_1");
+    assert!(curl.capabilities.iter().any(|c| c == "http_request"));
+    assert!(
+        curl.aliases
+            .iter()
+            .any(|a| a.contains("HTTP") || a.contains("请求"))
+    );
+    assert_eq!(curl.risk_level, "l1");
+    assert!(curl.presets.len() >= 3);
+    assert!(curl.fields.iter().any(|f| f.id == "headers" && f.sensitive));
+    assert!(curl.fields.iter().any(|f| f.id == "cookie" && f.sensitive));
+    assert!(curl.fields.iter().any(|f| f.id == "data" && f.sensitive));
+    assert_eq!(curl.installation.homepage, "https://curl.se/");
+    assert!(
+        curl.io
+            .inputs
+            .iter()
+            .any(|i| i.kind == ToolIoKind::Url && i.field == "url")
+    );
+    assert!(
+        curl.io
+            .outputs
+            .iter()
+            .any(|o| o.kind == ToolIoKind::HttpDiscovery || o.kind == ToolIoKind::RawArtifact)
+    );
+
+    let waf = snapshot
+        .tools
+        .iter()
+        .find(|tool| tool.id == "wafw00f")
+        .expect("wafw00f present");
+    assert_eq!(waf.tier, "tier_1");
+    assert!(waf.capabilities.iter().any(|c| c == "waf_fingerprint"));
+    assert!(waf.aliases.iter().any(|a| a.contains("WAF")));
+    assert_eq!(waf.risk_level, "l2");
+    assert!(waf.presets.len() >= 3);
+    assert!(waf.fields.iter().any(|f| f.id == "proxy" && f.sensitive));
+    assert_eq!(
+        waf.installation.homepage,
+        "https://github.com/EnableSecurity/wafw00f"
+    );
+    assert!(
+        waf.io
+            .inputs
+            .iter()
+            .any(|i| i.kind == ToolIoKind::Url && i.field == "url")
+    );
+}
+
+#[test]
+fn curl_and_wafw00f_preview_redacts_sensitive_and_diagnoses() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "curl-waf-preview".to_owned(),
+        })
+        .unwrap();
+
+    let curl_preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id.clone(),
+            tool_id: "curl".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/".to_owned()),
+                ("method".to_owned(), "GET".to_owned()),
+                ("max_time".to_owned(), "10".to_owned()),
+                (
+                    "headers".to_owned(),
+                    "Authorization: Bearer top-secret-token".to_owned(),
+                ),
+                ("cookie".to_owned(), "session=secret-cookie".to_owned()),
+            ]),
+        })
+        .expect("curl preview");
+    assert!(curl_preview.command_preview.contains("curl"));
+    assert!(!curl_preview.command_preview.contains("top-secret-token"));
+    assert!(!curl_preview.command_preview.contains("secret-cookie"));
+    assert!(
+        curl_preview.command_preview.contains("<redacted>")
+            || curl_preview.command_preview.contains("***")
+            || !curl_preview
+                .command_preview
+                .contains("Authorization: Bearer top-secret")
+    );
+
+    let waf_preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "wafw00f".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/".to_owned()),
+                (
+                    "proxy".to_owned(),
+                    "http://user:pass@127.0.0.1:8080".to_owned(),
+                ),
+                ("save_json".to_owned(), "yes".to_owned()),
+            ]),
+        })
+        .expect("wafw00f preview");
+    assert!(waf_preview.command_preview.contains("wafw00f"));
+    assert!(!waf_preview.command_preview.contains("user:pass"));
+
+    let curl_diag = core
+        .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "curl".to_owned(),
+        })
+        .expect("curl diagnostic");
+    assert_eq!(curl_diag.tool_id, "curl");
+    assert!(!curl_diag.checks.is_empty());
+
+    let waf_diag = core
+        .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "wafw00f".to_owned(),
+        })
+        .expect("wafw00f diagnostic");
+    assert_eq!(waf_diag.tool_id, "wafw00f");
+    assert!(!waf_diag.checks.is_empty());
+}

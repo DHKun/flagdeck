@@ -1,20 +1,101 @@
 id = "wafw00f"
 name = "wafw00f"
 category = "http"
+tier = "tier_1"
+capabilities = ["waf_fingerprint"]
+aliases = ["WAF 识别", "防火墙指纹", "wafw00f", "CDN 识别"]
+risk_level = "l2"
 summary = "识别目标站前 WAF / CDN（PATH）"
 
 usage = """
 【FlagDeck 表单】
 • 必填：目标 URL
 • 可选：找全匹配、不重定向、代理、超时、指定 WAF、输出文件
-
-【实际调用】
-wafw00f URL [-a] [-r] [-p PROXY] [-T TIMEOUT] [-t NAME] [-o FILE]
+• 输出：任务目录 wafw00f.json
 
 完整帮助：wafw00f -h
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "quick_fingerprint"
+name = "快速指纹"
+core_fields = ["url"]
+
+[presets.defaults]
+findall = "no"
+noredirect = "yes"
+verbose = "no"
+save_json = "yes"
+
+[[presets]]
+id = "full_match"
+name = "找全匹配"
+core_fields = ["url", "findall"]
+
+[presets.defaults]
+findall = "yes"
+noredirect = "yes"
+verbose = "no"
+save_json = "yes"
+
+[[presets]]
+id = "via_proxy"
+name = "经代理识别"
+core_fields = ["url", "proxy", "timeout"]
+
+[presets.defaults]
+findall = "no"
+noredirect = "yes"
+proxy = "http://127.0.0.1:8080"
+timeout = "20"
+verbose = "no"
+save_json = "yes"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url", "test_waf"]
+
+[[field_groups]]
+id = "request"
+name = "请求"
+fields = ["proxy", "headers_file", "timeout"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["findall", "noredirect", "verbose", "save_json"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.outputs]]
+id = "waf_detection"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "BSD-3-Clause"
+homepage = "https://github.com/EnableSecurity/wafw00f"
+version = "2.4.2"
+health_strategy = "safe-version-command"
+runtime = "Python (pipx)"
+version_args = ["-v"]
+install_command = "pipx install wafw00f"
+path_fix = "export PATH=\"$PATH:$HOME/.local/bin\""
+wordlist_source = ""
+wordlist_install_command = ""
 
 [binary]
 command = "wafw00f"
@@ -142,7 +223,9 @@ equals = "yes"
 args = ["-o", "{job_dir}/wafw00f.json", "-f", "json"]
 
 [parser]
-kind = "none"
+kind = "wafw00f-json"
+id = "flagdeck.wafw00f-json"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 300000

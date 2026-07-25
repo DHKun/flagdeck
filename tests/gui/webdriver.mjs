@@ -462,6 +462,12 @@ async function main() {
     ),
   );
   await click('[data-testid="tool-curl"]');
+  await waitFor("curl advanced toggle", async () =>
+    execute(
+      "return Boolean(document.querySelector('[data-testid=toggle-advanced-fields]'));",
+    ),
+  );
+  await click('[data-testid="toggle-advanced-fields"]');
   const catalogWorkbench = await waitFor("curl workbench", async () => {
     const value = await execute(
       "const cookie = document.querySelector('#field-cookie'); return { catalogLoaded: Boolean(document.querySelector('[data-testid=catalog-root]')), toolCount: document.querySelectorAll('[data-testid^=tool-]').length, curlSelected: document.querySelector('[data-testid=tool-runner] h2')?.textContent.trim() === 'curl', sensitiveInputPassword: cookie?.getAttribute('type') === 'password', runButton: Boolean(document.querySelector('[data-testid=run-selected-tool]')) };",
