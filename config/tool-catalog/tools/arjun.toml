@@ -1,6 +1,10 @@
 id = "arjun"
 name = "arjun"
 category = "http"
+tier = "tier_1"
+capabilities = ["parameter_discovery"]
+aliases = ["参数发现", "隐藏参数", "参数爆破", "arjun"]
+risk_level = "l2"
 summary = "HTTP 参数发现（隐藏参数爆破）"
 
 usage = """
@@ -16,6 +20,86 @@ arjun -u URL -t N -m METHOD -o JSON [选项]
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "quick_get_params"
+name = "快速 GET 参数发现"
+core_fields = ["url", "threads", "method"]
+
+[presets.defaults]
+threads = "5"
+method = "GET"
+stable = "no"
+passive = "no"
+disable_redirects = "no"
+
+[[presets]]
+id = "post_params"
+name = "POST 参数发现"
+core_fields = ["url", "threads", "method"]
+
+[presets.defaults]
+threads = "5"
+method = "POST"
+stable = "no"
+passive = "no"
+disable_redirects = "no"
+
+[[presets]]
+id = "stable_params"
+name = "稳定参数发现"
+core_fields = ["url", "threads", "method", "stable"]
+
+[presets.defaults]
+threads = "3"
+method = "GET"
+stable = "yes"
+passive = "no"
+disable_redirects = "yes"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url", "method", "wordlist"]
+
+[[field_groups]]
+id = "request"
+name = "请求"
+fields = ["headers", "include"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["threads", "delay", "timeout", "chunks", "rate_limit", "stable", "passive", "disable_redirects", "casing"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.outputs]]
+id = "discoveries"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "GPL-3.0"
+homepage = "https://github.com/s0md3v/Arjun"
+version = "2.2.7"
+health_strategy = "safe-version-command"
+runtime = "Python (pipx)"
+version_args = ["--version"]
+install_command = "pipx install arjun"
+path_fix = "export PATH=\"$PATH:$HOME/.local/bin\""
+wordlist_source = "arjun built-in large dictionary"
+wordlist_install_command = "pipx reinstall arjun"
 
 [binary]
 command = "arjun"
@@ -204,7 +288,9 @@ field = "casing"
 args = ["--casing", "{casing}"]
 
 [parser]
-kind = "none"
+kind = "arjun-json"
+id = "flagdeck.arjun-json"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 600000

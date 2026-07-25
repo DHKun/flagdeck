@@ -1520,7 +1520,9 @@ impl CoreService {
                         record.import_status,
                     )
                 });
-            let kind = structured_result_kind(&stored.command_spec.io, parser_id.as_deref());
+            let tool_id = stored.command_spec.tool_id.as_str();
+            let kind =
+                structured_result_kind(&stored.command_spec.io, parser_id.as_deref(), tool_id);
             if matches!(
                 stored.job.execution_status,
                 ExecutionStatus::Queued
@@ -1567,10 +1569,11 @@ impl CoreService {
                 });
             }
             let raw_artifact = artifacts.iter().find(|artifact| {
-                Path::new(&artifact.logical_name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-                    || artifact.logical_name.contains("output")
+                let name = artifact.logical_name.as_str();
+                name.contains("output")
+                    || Path::new(name).extension().is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("txt")
+                    })
             });
             let Some(raw_artifact) = raw_artifact else {
                 return Ok(StructuredResultPage {
@@ -1586,10 +1589,21 @@ impl CoreService {
                 });
             };
             let bytes = store.read_artifact_bounded(&raw_artifact.artifact_id, 4 * 1024 * 1024)?;
-            let adapter = select_http_discovery_adapter(parser_id.as_deref());
+            let adapter = select_http_discovery_adapter(
+                parser_id.as_deref(),
+                tool_id,
+                Some(raw_artifact.logical_name.as_str()),
+            );
+            let columns = match adapter {
+                HttpDiscoveryAdapter::ArjunJson => arjun_result_columns(),
+                _ => http_discovery_columns(),
+            };
             let parsed_rows = match adapter {
-                HttpDiscoveryAdapter::FfufJson => parse_ffuf_structured_rows(&bytes),
-                HttpDiscoveryAdapter::GenericJson => parse_generic_http_discovery_rows(&bytes),
+                HttpDiscoveryAdapter::FfufJson | HttpDiscoveryAdapter::GenericJson => {
+                    parse_ffuf_structured_rows(&bytes)
+                }
+                HttpDiscoveryAdapter::GobusterText => parse_gobuster_structured_rows(&bytes),
+                HttpDiscoveryAdapter::ArjunJson => parse_arjun_structured_rows(&bytes),
             };
             let Ok(mut all_rows) = parsed_rows else {
                 return Ok(StructuredResultPage {
@@ -1598,7 +1612,7 @@ impl CoreService {
                     parser_id,
                     parser_version,
                     parser_error: Some("structured result adapter failed".to_owned()),
-                    columns: http_discovery_columns(),
+                    columns,
                     rows: Vec::new(),
                     next_cursor: None,
                     source_artifact_ids,
@@ -1638,7 +1652,7 @@ impl CoreService {
                 parser_id,
                 parser_version,
                 parser_error,
-                columns: http_discovery_columns(),
+                columns,
                 rows: page_rows,
                 next_cursor,
                 source_artifact_ids,
@@ -2595,6 +2609,39 @@ impl CoreService {
         )?;
         queued.job.stdout_artifact_id = stdout.map(|artifact| artifact.artifact_id);
         queued.job.stderr_artifact_id = stderr.map(|artifact| artifact.artifact_id);
+        // Commit structured sidecar outputs written into the job scan directory
+        // (e.g. gobuster-output.txt, arjun-output.json, ffuf-output.json).
+        let scan_dir = queued.store.layout().scans.join(&job_id.0);
+        if let Ok(entries) = fs::read_dir(&scan_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if !is_safe_job_sidecar_filename(name) {
+                    continue;
+                }
+                if name == "stdout.log" || name == "stderr.log" || name == "wordlist.txt" {
+                    continue;
+                }
+                let mime = if Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                {
+                    "application/json"
+                } else {
+                    "text/plain; charset=utf-8"
+                };
+                let _ = commit_existing_file(
+                    &queued.store,
+                    &path,
+                    name,
+                    mime,
+                    Sensitivity::SensitiveEvidence,
+                    &job_id,
+                )?;
+            }
+        }
         queued.store.save_job(&queued.job)?;
         Ok(())
     }
@@ -3868,15 +3915,25 @@ fn sanitize_export_basename(logical_name: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HttpDiscoveryAdapter {
     FfufJson,
+    GobusterText,
+    ArjunJson,
     GenericJson,
 }
 
-fn structured_result_kind(io: &ToolRunIo, parser_id: Option<&str>) -> StructuredResultKind {
-    if select_http_discovery_adapter(parser_id) == HttpDiscoveryAdapter::FfufJson
-        || io
-            .outputs
-            .iter()
-            .any(|output| output.kind == ToolIoKind::HttpDiscovery)
+fn structured_result_kind(
+    io: &ToolRunIo,
+    parser_id: Option<&str>,
+    tool_id: &str,
+) -> StructuredResultKind {
+    if matches!(
+        select_http_discovery_adapter(parser_id, tool_id, None),
+        HttpDiscoveryAdapter::FfufJson
+            | HttpDiscoveryAdapter::GobusterText
+            | HttpDiscoveryAdapter::ArjunJson
+    ) || io
+        .outputs
+        .iter()
+        .any(|output| output.kind == ToolIoKind::HttpDiscovery)
     {
         StructuredResultKind::HttpDiscovery
     } else if io
@@ -3890,14 +3947,35 @@ fn structured_result_kind(io: &ToolRunIo, parser_id: Option<&str>) -> Structured
     }
 }
 
-fn select_http_discovery_adapter(parser_id: Option<&str>) -> HttpDiscoveryAdapter {
-    match parser_id {
-        Some(id) if id == "flagdeck.ffuf-json" || id.ends_with(".ffuf-json") => {
-            HttpDiscoveryAdapter::FfufJson
+fn select_http_discovery_adapter(
+    parser_id: Option<&str>,
+    tool_id: &str,
+    logical_name: Option<&str>,
+) -> HttpDiscoveryAdapter {
+    if let Some(id) = parser_id {
+        if id == "flagdeck.ffuf-json" || id.ends_with(".ffuf-json") || id.contains("ffuf") {
+            return HttpDiscoveryAdapter::FfufJson;
         }
-        Some(id) if id.contains("ffuf") && id.contains("json") => HttpDiscoveryAdapter::FfufJson,
-        _ => HttpDiscoveryAdapter::GenericJson,
+        if id == "flagdeck.gobuster-text"
+            || id.ends_with(".gobuster-text")
+            || id.contains("gobuster")
+        {
+            return HttpDiscoveryAdapter::GobusterText;
+        }
+        if id == "flagdeck.arjun-json" || id.ends_with(".arjun-json") || id.contains("arjun") {
+            return HttpDiscoveryAdapter::ArjunJson;
+        }
     }
+    if tool_id == "gobuster" || logical_name.is_some_and(|name| name.contains("gobuster")) {
+        return HttpDiscoveryAdapter::GobusterText;
+    }
+    if tool_id == "arjun" || logical_name.is_some_and(|name| name.contains("arjun")) {
+        return HttpDiscoveryAdapter::ArjunJson;
+    }
+    if tool_id == "ffuf" || logical_name.is_some_and(|name| name.contains("ffuf")) {
+        return HttpDiscoveryAdapter::FfufJson;
+    }
+    HttpDiscoveryAdapter::GenericJson
 }
 
 fn http_discovery_columns() -> Vec<StructuredResultColumnDto> {
@@ -3990,11 +4068,126 @@ fn parse_ffuf_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto
     Ok(rows)
 }
 
-fn parse_generic_http_discovery_rows(
-    bytes: &[u8],
-) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    // Prefer ffuf-shaped payloads when content matches; otherwise reject.
-    parse_ffuf_structured_rows(bytes)
+fn arjun_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "param".to_owned(),
+            label: "参数".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_gobuster_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let mut rows = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with('=')
+            || trimmed.starts_with("Gobuster")
+            || trimmed.starts_with('[')
+        {
+            continue;
+        }
+        // e.g. /admin              (Status: 200) [Size: 14]
+        let Some(captures) = regex_lite_gobuster_line(trimmed) else {
+            continue;
+        };
+        let mut cells = BTreeMap::new();
+        cells.insert("path".to_owned(), captures.0);
+        cells.insert("status".to_owned(), captures.1);
+        cells.insert("length".to_owned(), captures.2);
+        cells.insert("url".to_owned(), String::new());
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
+}
+
+fn regex_lite_gobuster_line(line: &str) -> Option<(String, String, String)> {
+    let path_end = line.find(" (Status:")?;
+    let path = line[..path_end].trim().to_owned();
+    let after = &line[path_end + " (Status:".len()..];
+    let status_end = after.find(')')?;
+    let status = after[..status_end].trim().to_owned();
+    let length = after
+        .find("[Size:")
+        .and_then(|start| {
+            let rest = &after[start + "[Size:".len()..];
+            rest.find(']').map(|end| rest[..end].trim().to_owned())
+        })
+        .unwrap_or_default();
+    Some((path, status, length))
+}
+
+fn parse_arjun_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let object = value.as_object().ok_or(CoreError::InvalidRequest)?;
+    let mut rows = Vec::new();
+    let mut index = 0_usize;
+    for (url, params) in object {
+        if url == "headers" || url == "method" {
+            continue;
+        }
+        let param_list = if let Some(map) = params.as_object() {
+            // Shape: { "http://x": { "params": ["a","b"] } } or nested values
+            if let Some(list) = map.get("params").and_then(|item| item.as_array()) {
+                list.iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            } else {
+                map.keys().cloned().collect()
+            }
+        } else if let Some(list) = params.as_array() {
+            list.iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        } else if let Some(text) = params.as_str() {
+            vec![text.to_owned()]
+        } else {
+            continue;
+        };
+        for param in param_list {
+            let mut cells = BTreeMap::new();
+            cells.insert("url".to_owned(), url.clone());
+            cells.insert("param".to_owned(), param);
+            cells.insert("source_job".to_owned(), String::new());
+            cells.insert("source_artifact".to_owned(), String::new());
+            rows.push(StructuredResultRowDto {
+                result_id: format!("row:{index}"),
+                cells,
+                source_job_id: JobId::new(),
+                source_artifact_id: None,
+            });
+            index += 1;
+        }
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
 }
 
 fn unique_export_basename(
@@ -6799,6 +6992,188 @@ mod tests {
                 .items
                 .iter()
                 .any(|item| item.artifact_id == raw.artifact_id)
+        );
+    }
+
+    #[test]
+    fn gobuster_and_arjun_structured_results_expose_rows_and_provenance() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Gobuster arjun results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+
+        // Gobuster text artifact
+        let gobuster_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "gobuster-output.txt",
+                    b"/admin              (Status: 200) [Size: 14]\n/api                (Status: 403) [Size: 9]\n",
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "gobuster".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "gobuster-output.txt".to_owned(),
+                        mime: "text/plain; charset=utf-8".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("gobuster-output.txt"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+
+        let gobuster_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: gobuster_job.0.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(gobuster_page.status, StructuredResultStatus::Ready);
+        assert_eq!(gobuster_page.rows.len(), 2);
+        assert_eq!(
+            gobuster_page.rows[0].cells.get("path").map(String::as_str),
+            Some("/admin")
+        );
+        assert_eq!(
+            gobuster_page.rows[0]
+                .cells
+                .get("status")
+                .map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            gobuster_page.rows[0].source_artifact_id.as_ref(),
+            Some(&gobuster_job.1.artifact_id)
+        );
+
+        // Arjun JSON artifact
+        let arjun_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "arjun-output.json",
+                    br#"{"http://x/search":{"params":["id","q"]}}"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "arjun".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "arjun-output.json".to_owned(),
+                        mime: "application/json".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("arjun-output.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+
+        let arjun_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id,
+                job_id: arjun_job.0.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(arjun_page.status, StructuredResultStatus::Ready);
+        assert_eq!(arjun_page.rows.len(), 2);
+        assert_eq!(
+            arjun_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://x/search")
+        );
+        assert!(
+            arjun_page
+                .rows
+                .iter()
+                .any(|row| row.cells.get("param").map(String::as_str) == Some("id"))
+        );
+        assert_eq!(arjun_page.rows[0].source_job_id, arjun_job.0);
+        assert_eq!(
+            arjun_page.rows[0].source_artifact_id.as_ref(),
+            Some(&arjun_job.1.artifact_id)
         );
     }
 

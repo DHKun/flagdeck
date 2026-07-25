@@ -1,17 +1,113 @@
 id = "gobuster"
 name = "gobuster"
 category = "content_discovery"
+tier = "tier_1"
+capabilities = ["path_discovery"]
+aliases = ["扫目录", "路径爆破", "目录枚举", "gobuster"]
+risk_level = "l2"
 summary = "目录枚举（gobuster dir）"
 
 usage = """
 【FlagDeck 表单】
 • 必填：URL、字典、线程、超时
 • 可选：扩展名、状态码、Cookie、认证、UA、代理、TLS 等
+• 输出：任务目录 gobuster-output.txt
 
 完整帮助：gobuster dir -h（需本机安装 gobuster）
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "quick_dir_scan"
+name = "快速目录扫描"
+core_fields = ["url", "wordlist", "threads", "timeout"]
+
+[presets.defaults]
+threads = "20"
+timeout = "10s"
+status_blacklist = "404"
+insecure = "no"
+follow_redirect = "no"
+
+[[presets]]
+id = "extension_scan"
+name = "扩展名扫描"
+core_fields = ["url", "wordlist", "threads", "timeout", "extensions"]
+
+[presets.defaults]
+threads = "20"
+timeout = "10s"
+extensions = "php,txt,bak,zip,old"
+status_blacklist = "404"
+insecure = "no"
+follow_redirect = "no"
+
+[[presets]]
+id = "authenticated_dir_scan"
+name = "带会话目录扫描"
+core_fields = ["url", "wordlist", "threads", "timeout", "cookies"]
+
+[presets.defaults]
+threads = "10"
+timeout = "15s"
+status_blacklist = "404"
+insecure = "no"
+follow_redirect = "no"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url", "wordlist"]
+
+[[field_groups]]
+id = "matching"
+name = "匹配与过滤"
+fields = ["status_codes", "status_blacklist", "exclude_length", "extensions"]
+
+[[field_groups]]
+id = "request"
+name = "请求"
+fields = ["cookies", "headers", "user_agent", "username", "password", "proxy"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["threads", "timeout", "insecure", "follow_redirect", "no_tls_validation"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.inputs]]
+id = "wordlist"
+kind = "wordlist"
+field = "wordlist"
+
+[[io.outputs]]
+id = "discoveries"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "Apache-2.0"
+homepage = "https://github.com/OJ/gobuster"
+version = "3.8.2"
+health_strategy = "safe-version-command"
+runtime = "standalone Go binary"
+version_args = ["--version"]
+install_command = "go install github.com/OJ/gobuster/v3@latest"
+path_fix = "export PATH=\"$PATH:$(go env GOPATH)/bin\""
+wordlist_source = "https://github.com/danielmiessler/SecLists"
+wordlist_install_command = "git clone --depth 1 https://github.com/danielmiessler/SecLists.git /data/CTF/Tools/Wordlists/SecLists"
 
 [binary]
 command = "gobuster"
@@ -239,7 +335,9 @@ field = "exclude_length"
 args = ["--exclude-length", "{exclude_length}"]
 
 [parser]
-kind = "none"
+kind = "gobuster-text"
+id = "flagdeck.gobuster-text"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 600000

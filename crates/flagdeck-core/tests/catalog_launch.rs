@@ -1386,3 +1386,202 @@ fn catalog_preview_does_not_persist_target_scope() {
 
     assert!(core.list_scopes(&project_id).unwrap().items.is_empty());
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn workspace_catalog_exposes_gobuster_and_arjun_v2_contracts() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let snapshot = core.list_catalog().expect("workspace catalog loads");
+
+    let gobuster = snapshot
+        .tools
+        .iter()
+        .find(|tool| tool.id == "gobuster")
+        .expect("gobuster present");
+    assert_eq!(gobuster.tier, "tier_1");
+    assert!(gobuster.capabilities.iter().any(|c| c == "path_discovery"));
+    assert!(
+        gobuster
+            .aliases
+            .iter()
+            .any(|a| a.contains("扫目录") || a.contains("目录"))
+    );
+    assert_eq!(gobuster.risk_level, "l2");
+    assert!(gobuster.presets.len() >= 3);
+    assert!(gobuster.presets.iter().any(|p| p.id == "quick_dir_scan"));
+    assert!(gobuster.presets.iter().any(|p| p.id == "extension_scan"));
+    assert!(
+        gobuster
+            .presets
+            .iter()
+            .any(|p| p.id == "authenticated_dir_scan")
+    );
+    assert!(!gobuster.field_groups.is_empty());
+    assert_eq!(
+        gobuster.installation.homepage,
+        "https://github.com/OJ/gobuster"
+    );
+    assert_eq!(gobuster.installation.license, "Apache-2.0");
+    assert!(!gobuster.installation.install_command.is_empty());
+    assert!(!gobuster.installation.version_args.is_empty());
+    assert_eq!(gobuster.io.schema_version, 1);
+    assert!(
+        gobuster
+            .io
+            .inputs
+            .iter()
+            .any(|i| i.kind == ToolIoKind::Url && i.field == "url")
+    );
+    assert!(
+        gobuster
+            .io
+            .inputs
+            .iter()
+            .any(|i| i.kind == ToolIoKind::Wordlist)
+    );
+    assert!(
+        gobuster
+            .io
+            .outputs
+            .iter()
+            .any(|o| o.kind == ToolIoKind::HttpDiscovery)
+    );
+    assert!(
+        gobuster
+            .io
+            .outputs
+            .iter()
+            .any(|o| o.kind == ToolIoKind::RawArtifact)
+    );
+
+    let arjun = snapshot
+        .tools
+        .iter()
+        .find(|tool| tool.id == "arjun")
+        .expect("arjun present");
+    assert_eq!(arjun.tier, "tier_1");
+    assert!(
+        arjun
+            .capabilities
+            .iter()
+            .any(|c| c == "parameter_discovery")
+    );
+    assert!(arjun.aliases.iter().any(|a| a.contains("参数")));
+    assert_eq!(arjun.risk_level, "l2");
+    assert!(arjun.presets.len() >= 3);
+    assert!(arjun.presets.iter().any(|p| p.id == "quick_get_params"));
+    assert!(arjun.presets.iter().any(|p| p.id == "post_params"));
+    assert!(arjun.presets.iter().any(|p| p.id == "stable_params"));
+    assert!(!arjun.field_groups.is_empty());
+    assert_eq!(
+        arjun.installation.homepage,
+        "https://github.com/s0md3v/Arjun"
+    );
+    assert!(!arjun.installation.install_command.is_empty());
+    assert!(
+        arjun
+            .io
+            .inputs
+            .iter()
+            .any(|i| i.kind == ToolIoKind::Url && i.field == "url")
+    );
+    assert!(
+        arjun
+            .io
+            .outputs
+            .iter()
+            .any(|o| o.kind == ToolIoKind::HttpDiscovery)
+    );
+    assert!(
+        arjun
+            .io
+            .outputs
+            .iter()
+            .any(|o| o.kind == ToolIoKind::RawArtifact)
+    );
+}
+
+#[test]
+fn gobuster_and_arjun_preview_and_diagnostic_are_available() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "gobuster-arjun-preview".to_owned(),
+        })
+        .unwrap();
+
+    let gobuster_preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id.clone(),
+            tool_id: "gobuster".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/".to_owned()),
+                ("wordlist".to_owned(), "seclists-common".to_owned()),
+                ("threads".to_owned(), "10".to_owned()),
+                ("timeout".to_owned(), "10s".to_owned()),
+            ]),
+        })
+        .expect("gobuster preview");
+    assert!(gobuster_preview.command_preview.contains("gobuster"));
+    assert!(gobuster_preview.command_preview.contains("dir"));
+    assert_eq!(gobuster_preview.risk_level, RiskLevel::L2);
+
+    let arjun_preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "arjun".to_owned(),
+            target_url: "http://127.0.0.1:9/search".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/search".to_owned()),
+                ("threads".to_owned(), "5".to_owned()),
+                ("method".to_owned(), "GET".to_owned()),
+            ]),
+        })
+        .expect("arjun preview");
+    assert!(arjun_preview.command_preview.contains("arjun"));
+    assert_eq!(arjun_preview.risk_level, RiskLevel::L2);
+
+    let gobuster_diag = core
+        .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "gobuster".to_owned(),
+        })
+        .expect("gobuster diagnostic");
+    assert_eq!(gobuster_diag.tool_id, "gobuster");
+    assert!(!gobuster_diag.checks.is_empty());
+    assert!(gobuster_diag.checks.iter().any(|c| c.id == "binary"));
+    assert!(
+        gobuster_diag
+            .checks
+            .iter()
+            .any(|c| !c.fix.is_empty() || c.status == CatalogDiagnosticStatus::Usable)
+    );
+
+    let arjun_diag = core
+        .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "arjun".to_owned(),
+        })
+        .expect("arjun diagnostic");
+    assert_eq!(arjun_diag.tool_id, "arjun");
+    assert!(!arjun_diag.checks.is_empty());
+}

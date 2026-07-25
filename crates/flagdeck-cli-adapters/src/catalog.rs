@@ -199,6 +199,11 @@ pub struct ArgvSpec {
 pub struct ParserSpec {
     #[serde(default = "default_parser_kind")]
     pub kind: String,
+    /// Optional stable parser identity used by structured-result adapters.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub version: String,
 }
 
 fn default_parser_kind() -> String {
