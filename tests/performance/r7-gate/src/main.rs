@@ -360,7 +360,10 @@ fn environment() -> Result<BTreeMap<String, String>> {
         ("kernel".to_owned(), command_output("uname", &["-r"])?),
         (
             "fedora".to_owned(),
-            fs::read_to_string("/etc/fedora-release")?.trim().to_owned(),
+            host_release(
+                Path::new("/etc/fedora-release"),
+                Path::new("/etc/os-release"),
+            )?,
         ),
         ("rustc".to_owned(), command_output("rustc", &["--version"])?),
         ("cargo".to_owned(), command_output("cargo", &["--version"])?),
@@ -381,6 +384,19 @@ fn environment() -> Result<BTreeMap<String, String>> {
     ]))
 }
 
+fn host_release(fedora_release: &Path, os_release: &Path) -> Result<String> {
+    if let Ok(value) = fs::read_to_string(fedora_release) {
+        return Ok(value.trim().to_owned());
+    }
+    let value = fs::read_to_string(os_release).context("host release is unavailable")?;
+    value
+        .lines()
+        .find_map(|line| line.strip_prefix("PRETTY_NAME="))
+        .map(|name| name.trim_matches('"').to_owned())
+        .filter(|name| !name.is_empty())
+        .context("PRETTY_NAME is unavailable")
+}
+
 fn command_output(program: &str, arguments: &[&str]) -> Result<String> {
     let output = Command::new(program).args(arguments).output()?;
     ensure!(output.status.success(), "{program} failed");
@@ -399,6 +415,28 @@ fn digest_file(path: &Path) -> Result<String> {
         digest.update(&buffer[..read]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_release_falls_back_to_standard_os_release() {
+        let temporary = tempfile::tempdir().unwrap();
+        let fedora_release = temporary.path().join("fedora-release");
+        let os_release = temporary.path().join("os-release");
+        fs::write(
+            &os_release,
+            "NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04 LTS\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            host_release(&fedora_release, &os_release).unwrap(),
+            "Ubuntu 24.04 LTS"
+        );
+    }
 }
 
 fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
