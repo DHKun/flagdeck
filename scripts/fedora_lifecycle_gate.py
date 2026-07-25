@@ -67,13 +67,16 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def read_command(arguments: list[str], fallback: str) -> str:
-    result = subprocess.run(
-        arguments,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            arguments,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except FileNotFoundError:
+        return fallback
     return result.stdout.strip() or fallback
 
 

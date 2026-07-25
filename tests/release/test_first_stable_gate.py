@@ -9,6 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from scripts.fedora_lifecycle_gate import read_command
 from scripts.finalize_release import validate_fedora_lifecycle
 
 
@@ -16,6 +17,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class FirstStableGateTests(unittest.TestCase):
+    def test_optional_host_command_uses_fallback_when_unavailable(self) -> None:
+        self.assertEqual(
+            read_command(["flagdeck-command-that-does-not-exist"], "unknown"),
+            "unknown",
+        )
+
     def test_v1_workflow_selects_first_release_lifecycle(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
