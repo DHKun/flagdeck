@@ -50,6 +50,22 @@ class FirstStableGateTests(unittest.TestCase):
 
         self.assertIn("runs-on: ubuntu-24.04", build_job)
 
+    def test_validation_job_runs_the_build_runner_that_produced_the_binary(self) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+        build_job = workflow[workflow.index("  build:") : workflow.index("  sign:")]
+        validate_job = workflow[workflow.index("  validate-and-publish:") :]
+
+        self.assertIn("TAURI_BINARY=", validate_job)
+        build_runner = next(
+            line.strip() for line in build_job.splitlines() if "runs-on:" in line
+        )
+        validate_runner = next(
+            line.strip() for line in validate_job.splitlines() if "runs-on:" in line
+        )
+        self.assertEqual(validate_runner, build_runner)
+
     def test_package_structure_check_reads_listings_without_broken_pipes(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
