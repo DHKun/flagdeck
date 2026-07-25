@@ -23,18 +23,19 @@ use flagdeck_core::{
     ImportProjectResult, IntruderAttemptPage, IntruderAttemptPageRequest, IntruderCampaignPage,
     JobArtifactPageRequest, JobFilePreview, JobLogPreview, JobPage, JobPageRequest, JobView,
     LaunchExternalRequest, ListIntruderCampaignsRequest, ListPayloadsRequest,
-    MetasploitConsoleCommandRequest, MetasploitEntityPage, MetasploitExecutionResult,
-    MetasploitModuleOption, MetasploitModuleSummary, MetasploitSessionCommandRequest,
-    MetasploitStatus, MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest,
-    OpenHttpBrowserPreviewResult, OpenProjectRequest, ParseMultipartRequest, PayloadPage,
-    PayloadPreview, PayloadSourceHealthDto, PersonalPresetStoreDto, PreviewArtifactRequest,
-    PreviewCatalogToolRequest, PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest,
-    ProjectContextRequest, ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult,
-    RunCatalogToolRequest, RunToolRequest, SavePersonalPresetsRequest, ScopePage,
-    SearchDictionaryRequest, SearchMetasploitModulesRequest, SendRawHttp1Request,
-    SendRawHttp1Result, StartIntruderRequest, StartMetasploitRequest, StartProxyRequest,
-    StartUploadCampaignRequest, StopMetasploitEntityRequest, StopMetasploitRequest,
-    StopProxyRequest, ToolHealthDto, ToolPackHealthDto,
+    ListStructuredResultsRequest, MetasploitConsoleCommandRequest, MetasploitEntityPage,
+    MetasploitExecutionResult, MetasploitModuleOption, MetasploitModuleSummary,
+    MetasploitSessionCommandRequest, MetasploitStatus, MetasploitTranscriptResult,
+    OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult, OpenProjectRequest,
+    ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
+    PersonalPresetStoreDto, PreviewArtifactRequest, PreviewCatalogToolRequest,
+    PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest, ProjectContextRequest,
+    ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest,
+    RunToolRequest, SavePersonalPresetsRequest, ScopePage, SearchDictionaryRequest,
+    SearchMetasploitModulesRequest, SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest,
+    StartMetasploitRequest, StartProxyRequest, StartUploadCampaignRequest,
+    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, StructuredResultPage,
+    ToolHealthDto, ToolPackHealthDto,
 };
 use flagdeck_domain::{
     AdapterEntity, Artifact, DictionaryIndex, HttpMessage, IntruderCampaign, MultipartDocument,
@@ -341,6 +342,15 @@ async fn export_job_artifact(
 ) -> Result<ExportJobArtifactResult, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.export_job_artifact(&request)).await
+}
+
+#[tauri::command]
+async fn list_structured_results(
+    state: State<'_, Arc<CoreService>>,
+    request: ListStructuredResultsRequest,
+) -> Result<StructuredResultPage, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.list_structured_results(&request)).await
 }
 
 #[tauri::command]
@@ -1100,6 +1110,7 @@ pub fn run() {
             preview_job_file,
             list_job_artifacts,
             export_job_artifact,
+            list_structured_results,
             cancel_job,
             cancel_all_jobs,
             list_jobs,

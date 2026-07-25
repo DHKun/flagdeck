@@ -32,6 +32,18 @@ export type ExportJobArtifactRequest = { project_id: ProjectId, job_id: JobId, a
 
 export type ExportJobArtifactResult = { artifact_id: ArtifactId, job_id: JobId, logical_name: string, export_name: string, size: number, sha256: string, sensitivity: Sensitivity, export_policy: ExportPolicy, };
 
+export type StructuredResultStatus = "ready" | "parse_failed" | "empty" | "pending";
+
+export type StructuredResultKind = "http_discovery" | "raw_only" | "unknown";
+
+export type StructuredResultColumnDto = { key: string, label: string, };
+
+export type StructuredResultRowDto = { result_id: string, cells: { [key in string]: string }, source_job_id: JobId, source_artifact_id: ArtifactId | null, };
+
+export type ListStructuredResultsRequest = { project_id: ProjectId, job_id: JobId, cursor: string | null, limit: number, };
+
+export type StructuredResultPage = { status: StructuredResultStatus, kind: StructuredResultKind, parser_id: string | null, parser_version: string | null, parser_error: string | null, columns: Array<StructuredResultColumnDto>, rows: Array<StructuredResultRowDto>, next_cursor: string | null, source_artifact_ids: Array<ArtifactId>, };
+
 export type CreateScopeRequest = { project_id: ProjectId, base_url: string, };
 
 export type ProjectContextRequest = { project_id: ProjectId, };

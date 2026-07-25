@@ -411,6 +411,12 @@
           "markdownDescription": "Enables the list_scopes command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_structured_results command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-structured-results",
+          "markdownDescription": "Enables the list_structured_results command without any pre-configured scope."
+        },
+        {
           "description": "Enables the load_personal_presets command without any pre-configured scope.",
           "type": "string",
           "const": "allow-load-personal-presets",
@@ -823,6 +829,12 @@
           "type": "string",
           "const": "deny-list-scopes",
           "markdownDescription": "Denies the list_scopes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_structured_results command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-structured-results",
+          "markdownDescription": "Denies the list_structured_results command without any pre-configured scope."
         },
         {
           "description": "Denies the load_personal_presets command without any pre-configured scope.",

@@ -249,6 +249,17 @@ const attempts = [
     },
   ],
   [
+    "list_structured_results",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+        cursor: null,
+        limit: 50,
+      },
+    },
+  ],
+  [
     "list_discoveries",
     {
       request: {

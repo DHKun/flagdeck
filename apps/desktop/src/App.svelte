@@ -16,6 +16,7 @@
     ExportJobArtifactResult,
     JobLogStream,
     JobView,
+    StructuredResultPage,
     WordlistDto,
   } from "./generated/ipc";
   import { commandErrorMessage, ipc } from "./lib/ipc";
@@ -26,10 +27,11 @@
     type JobLogWindow,
   } from "./lib/jobHistory";
   import {
-    parseJobResult,
-    resultCandidatesForTool,
-    type ParsedJobResult,
-  } from "./lib/jobResults";
+    exportStructuredRowsTsv,
+    filterStructuredRows,
+    sortStructuredRows,
+    type ResultSortDir,
+  } from "./lib/structuredResults";
   import {
     loadWorkbenchPrefs,
     rememberTool,
@@ -146,8 +148,10 @@
   let jobFilterToolId = prefs.jobFilterToolId;
   let autoScrollLog = prefs.autoScrollLog;
   let outputTab: OutputTab = "log";
-  let parsedResult: ParsedJobResult | null = null;
+  let structuredResult: StructuredResultPage | null = null;
   let resultFilter = "";
+  let resultSortKey = "status";
+  let resultSortDir: ResultSortDir = "asc";
   let logPaneEl: HTMLPreElement | null = null;
 
   $: selectedTool =
@@ -200,15 +204,14 @@
   $: jobToolOptions = [...new Set(jobs.map((item) => item.tool_id))].sort();
   $: jobLogContent = jobLogWindow?.content ?? "";
   $: jobLogRange = jobLogRangeLabel(jobLogWindow);
-  $: resultRows = parsedResult
-    ? parsedResult.rows.filter((row) => {
-        if (!resultFilter.trim()) return true;
-        const q = resultFilter.toLowerCase();
-        return Object.values(row).some((value) =>
-          String(value).toLowerCase().includes(q),
-        );
-      })
+  $: resultRows = structuredResult
+    ? sortStructuredRows(
+        filterStructuredRows(structuredResult.rows, resultFilter),
+        resultSortKey,
+        resultSortDir,
+      )
     : [];
+  $: resultColumns = structuredResult?.columns ?? [];
 
   function persistPrefs(): void {
     prefs = {
@@ -809,28 +812,17 @@
   }
 
   async function loadJobResult(): Promise<void> {
-    parsedResult = null;
+    structuredResult = null;
     if (!status?.active_project || !selectedLogJobId) return;
-    const item = selectedJob();
-    if (!item) return;
-    const candidates = resultCandidatesForTool(item.tool_id);
-    for (const filename of candidates) {
-      try {
-        const file = await ipc.previewJobFile({
-          project_id: status.active_project.project_id,
-          job_id: selectedLogJobId,
-          filename,
-          limit: 1024 * 1024,
-        });
-        if (!file.found || !file.content.trim()) continue;
-        const parsed = parseJobResult(item.tool_id, filename, file.content);
-        if (parsed && parsed.rows.length > 0) {
-          parsedResult = parsed;
-          return;
-        }
-      } catch {
-        /* try next candidate */
-      }
+    try {
+      structuredResult = await ipc.listStructuredResults({
+        project_id: status.active_project.project_id,
+        job_id: selectedLogJobId,
+        cursor: null,
+        limit: 500,
+      });
+    } catch (error) {
+      reportError(error);
     }
   }
 
@@ -851,20 +843,25 @@
   }
 
   async function copyResultTsv(): Promise<void> {
-    if (!parsedResult || resultRows.length === 0) return;
-    const cols = parsedResult.columns;
-    const lines = [
-      cols.map((c) => c.label).join("\t"),
-      ...resultRows.map((row) => cols.map((c) => row[c.key] ?? "").join("\t")),
-    ];
+    if (!structuredResult || resultRows.length === 0) return;
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      await navigator.clipboard.writeText(
+        exportStructuredRowsTsv(resultColumns, resultRows),
+      );
       notice = `已复制 ${resultRows.length} 行结果`;
       noticeKind = "success";
     } catch {
       notice = "复制失败";
       noticeKind = "error";
     }
+  }
+
+  function jumpToSourceArtifact(artifactId: string | null | undefined): void {
+    if (!artifactId) return;
+    outputTab = "evidence";
+    void loadJobEvidence();
+    notice = `已定位原始证据 ${artifactId}`;
+    noticeKind = "info";
   }
 
   function jobStatusLabel(item: JobView | null): string {
@@ -878,7 +875,7 @@
       selectedLogJobId = item.job.job_id;
       selectedLogStream = "stdout";
       jobLogWindow = null;
-      parsedResult = null;
+      structuredResult = null;
       jobArtifacts = [];
       lastJobExport = null;
       jobEvidenceNotice = "";
@@ -1034,7 +1031,7 @@
       selectedLogJobId = job.job.job_id;
       selectedLogStream = "stdout";
       jobLogWindow = null;
-      parsedResult = null;
+      structuredResult = null;
       jobArtifacts = [];
       lastJobExport = null;
       jobEvidenceNotice = "";
@@ -2048,7 +2045,9 @@
                   void loadJobResult();
                 }}
               >
-                结果{parsedResult ? ` · ${parsedResult.rows.length}` : ""}
+                结果{structuredResult
+                  ? ` · ${structuredResult.rows.length}`
+                  : ""}
               </button>
               <button
                 type="button"
@@ -2237,53 +2236,116 @@
               {/if}
             {:else}
               <div class="actions" style="margin: 10px 0">
-                <span class="pill muted"
-                  >{parsedResult?.title ?? "无结构化结果"}</span
-                >
+                <span class="pill muted" data-testid="structured-result-status">
+                  {#if !structuredResult}
+                    无结构化结果
+                  {:else if structuredResult.status === "parse_failed"}
+                    解析失败 · 原始证据仍可访问
+                  {:else if structuredResult.status === "pending"}
+                    结果导入中
+                  {:else if structuredResult.status === "empty"}
+                    无结果行
+                  {:else}
+                    {structuredResult.kind} · {structuredResult.parser_id ??
+                      "adapter"} · {resultRows.length}/{structuredResult.rows
+                      .length}
+                  {/if}
+                </span>
                 <input
                   class="inline-search"
+                  data-testid="result-filter"
                   placeholder="过滤结果…"
                   bind:value={resultFilter}
                 />
+                <select
+                  class="inline-select"
+                  data-testid="result-sort-key"
+                  bind:value={resultSortKey}
+                >
+                  {#each resultColumns as col}
+                    <option value={col.key}>{col.label}</option>
+                  {/each}
+                </select>
                 <button
                   class="btn btn-secondary"
                   type="button"
-                  disabled={!parsedResult}
+                  data-testid="result-sort-dir"
+                  onclick={() =>
+                    (resultSortDir = resultSortDir === "asc" ? "desc" : "asc")}
+                  >{resultSortDir === "asc" ? "升序" : "降序"}</button
+                >
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  disabled={!structuredResult}
                   onclick={() => void loadJobResult()}>刷新</button
                 >
                 <button
                   class="btn btn-secondary"
                   type="button"
+                  data-testid="copy-result-tsv"
                   disabled={resultRows.length === 0}
                   onclick={() => void copyResultTsv()}>复制 TSV</button
                 >
               </div>
-              {#if !parsedResult}
+              {#if structuredResult?.parser_error}
+                <div class="empty" data-testid="structured-parse-error">
+                  解析诊断：{structuredResult.parser_error}。请打开「证据」查看原始
+                  Artifact。
+                </div>
+              {/if}
+              {#if !structuredResult || structuredResult.status === "empty"}
                 <div class="empty">
-                  当前任务没有可解析的结果文件（如 ffuf
-                  JSON）。请查看日志，或换用 ffuf / dddd / fscan / gobuster /
-                  arjun。
+                  当前任务没有可展示的结构化结果。原始日志与 Artifact
+                  仍可在其它标签访问。
+                </div>
+              {:else if structuredResult.status === "parse_failed"}
+                <div class="empty">
+                  解析失败，结构化结果不可用。原始证据保留。
+                  <button
+                    class="btn btn-secondary"
+                    type="button"
+                    onclick={() => {
+                      outputTab = "evidence";
+                      void loadJobEvidence();
+                    }}>打开证据</button
+                  >
                 </div>
               {:else if resultRows.length === 0}
                 <div class="empty">没有匹配过滤条件的行。</div>
               {:else}
-                <div class="result-table-wrap">
+                <div
+                  class="result-table-wrap"
+                  data-testid="structured-result-table"
+                >
                   <table class="result-table">
                     <thead>
                       <tr>
-                        {#each parsedResult.columns as col}
+                        {#each resultColumns as col}
                           <th>{col.label}</th>
                         {/each}
+                        <th>定位</th>
                       </tr>
                     </thead>
                     <tbody>
                       {#each resultRows as row}
-                        <tr>
-                          {#each parsedResult.columns as col}
-                            <td title={row[col.key] ?? ""}
-                              >{row[col.key] ?? ""}</td
+                        <tr data-testid={`result-row-${row.result_id}`}>
+                          {#each resultColumns as col}
+                            <td title={row.cells[col.key] ?? ""}
+                              >{row.cells[col.key] ?? ""}</td
                             >
                           {/each}
+                          <td>
+                            <button
+                              class="btn btn-secondary"
+                              type="button"
+                              data-testid={`result-source-${row.result_id}`}
+                              disabled={!row.source_artifact_id}
+                              onclick={() =>
+                                jumpToSourceArtifact(row.source_artifact_id)}
+                              >原始证据</button
+                            >
+                          </td>
                         </tr>
                       {/each}
                     </tbody>

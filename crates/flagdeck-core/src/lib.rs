@@ -52,7 +52,7 @@ use flagdeck_domain::{
     HttpSource, ImportStatus, IntruderCampaign, Job, JobId, MessageDirection, MessageId,
     MultipartDocument, NetworkClass, OrderedValue, PortRange, ProjectId, ProjectSummary,
     ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, TargetScope, Timestamp,
-    ToolInputSource, ToolRunIo, Validate,
+    ToolInputSource, ToolIoKind, ToolRunIo, Validate,
 };
 use flagdeck_exec::{
     CancellationResult, ExecPolicyError, ManagedExecutionResult, ManagedProcessIdentity,
@@ -368,6 +368,60 @@ pub struct ExportJobArtifactResult {
     pub sha256: String,
     pub sensitivity: Sensitivity,
     pub export_policy: ExportPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum StructuredResultStatus {
+    Ready,
+    ParseFailed,
+    Empty,
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum StructuredResultKind {
+    HttpDiscovery,
+    RawOnly,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StructuredResultColumnDto {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StructuredResultRowDto {
+    pub result_id: String,
+    pub cells: BTreeMap<String, String>,
+    pub source_job_id: JobId,
+    pub source_artifact_id: Option<ArtifactId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ListStructuredResultsRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+    pub cursor: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StructuredResultPage {
+    pub status: StructuredResultStatus,
+    pub kind: StructuredResultKind,
+    pub parser_id: Option<String>,
+    pub parser_version: Option<String>,
+    pub parser_error: Option<String>,
+    pub columns: Vec<StructuredResultColumnDto>,
+    pub rows: Vec<StructuredResultRowDto>,
+    pub next_cursor: Option<String>,
+    pub source_artifact_ids: Vec<ArtifactId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -1433,6 +1487,161 @@ impl CoreService {
                 sha256: expected_sha.to_owned(),
                 sensitivity: artifact.sensitivity,
                 export_policy: artifact.export_policy,
+            })
+        })
+    }
+
+    pub fn list_structured_results(
+        &self,
+        request: &ListStructuredResultsRequest,
+    ) -> Result<StructuredResultPage, CoreError> {
+        if request.limit == 0 || request.limit > 500 {
+            return Err(CoreError::InvalidRequest);
+        }
+        request
+            .job_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        self.with_active(&request.project_id, |store| {
+            let stored = store.job(&request.job_id)?;
+            let (artifacts, _) = store.list_job_artifacts(&request.job_id, 100, None)?;
+            let source_artifact_ids = artifacts
+                .iter()
+                .map(|item| item.artifact_id.clone())
+                .collect::<Vec<_>>();
+            let (parser_id, parser_version, parser_error, import_status) = stored
+                .import
+                .as_ref()
+                .map_or((None, None, None, ImportStatus::Pending), |record| {
+                    (
+                        Some(record.parser_id.clone()),
+                        Some(record.parser_version.clone()),
+                        record.error_summary.clone(),
+                        record.import_status,
+                    )
+                });
+            let kind = structured_result_kind(&stored.command_spec.io, parser_id.as_deref());
+            if matches!(
+                stored.job.execution_status,
+                ExecutionStatus::Queued
+                    | ExecutionStatus::Starting
+                    | ExecutionStatus::Running
+                    | ExecutionStatus::Stopping
+            ) {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::Pending,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error,
+                    columns: http_discovery_columns(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            }
+            if import_status == ImportStatus::ParserFailed {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::ParseFailed,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error: parser_error.or_else(|| Some("parser failed".to_owned())),
+                    columns: http_discovery_columns(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            }
+            if kind != StructuredResultKind::HttpDiscovery {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::Empty,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error,
+                    columns: Vec::new(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            }
+            let raw_artifact = artifacts.iter().find(|artifact| {
+                Path::new(&artifact.logical_name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                    || artifact.logical_name.contains("output")
+            });
+            let Some(raw_artifact) = raw_artifact else {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::Empty,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error,
+                    columns: http_discovery_columns(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            };
+            let bytes = store.read_artifact_bounded(&raw_artifact.artifact_id, 4 * 1024 * 1024)?;
+            let adapter = select_http_discovery_adapter(parser_id.as_deref());
+            let parsed_rows = match adapter {
+                HttpDiscoveryAdapter::FfufJson => parse_ffuf_structured_rows(&bytes),
+                HttpDiscoveryAdapter::GenericJson => parse_generic_http_discovery_rows(&bytes),
+            };
+            let Ok(mut all_rows) = parsed_rows else {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::ParseFailed,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error: Some("structured result adapter failed".to_owned()),
+                    columns: http_discovery_columns(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            };
+            for (index, row) in all_rows.iter_mut().enumerate() {
+                row.source_job_id = request.job_id.clone();
+                row.source_artifact_id = Some(raw_artifact.artifact_id.clone());
+                row.result_id = format!("{}:{index}", request.job_id.0);
+                row.cells
+                    .insert("source_job".to_owned(), request.job_id.0.clone());
+                row.cells.insert(
+                    "source_artifact".to_owned(),
+                    raw_artifact.artifact_id.0.clone(),
+                );
+            }
+            let offset = request
+                .cursor
+                .as_deref()
+                .map(str::parse::<usize>)
+                .transpose()
+                .map_err(|_| CoreError::InvalidRequest)?
+                .unwrap_or(0);
+            if offset > all_rows.len() {
+                return Err(CoreError::InvalidRequest);
+            }
+            let end = (offset + request.limit).min(all_rows.len());
+            let page_rows = all_rows[offset..end].to_vec();
+            let next_cursor = (end < all_rows.len()).then(|| end.to_string());
+            Ok(StructuredResultPage {
+                status: if page_rows.is_empty() && all_rows.is_empty() {
+                    StructuredResultStatus::Empty
+                } else {
+                    StructuredResultStatus::Ready
+                },
+                kind,
+                parser_id,
+                parser_version,
+                parser_error,
+                columns: http_discovery_columns(),
+                rows: page_rows,
+                next_cursor,
+                source_artifact_ids,
             })
         })
     }
@@ -3629,6 +3838,138 @@ fn sanitize_export_basename(logical_name: &str) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpDiscoveryAdapter {
+    FfufJson,
+    GenericJson,
+}
+
+fn structured_result_kind(io: &ToolRunIo, parser_id: Option<&str>) -> StructuredResultKind {
+    if select_http_discovery_adapter(parser_id) == HttpDiscoveryAdapter::FfufJson
+        || io
+            .outputs
+            .iter()
+            .any(|output| output.kind == ToolIoKind::HttpDiscovery)
+    {
+        StructuredResultKind::HttpDiscovery
+    } else if io
+        .outputs
+        .iter()
+        .any(|output| output.kind == ToolIoKind::RawArtifact)
+    {
+        StructuredResultKind::RawOnly
+    } else {
+        StructuredResultKind::Unknown
+    }
+}
+
+fn select_http_discovery_adapter(parser_id: Option<&str>) -> HttpDiscoveryAdapter {
+    match parser_id {
+        Some(id) if id == "flagdeck.ffuf-json" || id.ends_with(".ffuf-json") => {
+            HttpDiscoveryAdapter::FfufJson
+        }
+        Some(id) if id.contains("ffuf") && id.contains("json") => HttpDiscoveryAdapter::FfufJson,
+        _ => HttpDiscoveryAdapter::GenericJson,
+    }
+}
+
+fn http_discovery_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "path".to_owned(),
+            label: "路径".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "status".to_owned(),
+            label: "状态".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "length".to_owned(),
+            label: "长度".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_ffuf_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let records = if let Some(results) = value.get("results").and_then(|item| item.as_array()) {
+        results.clone()
+    } else if let Some(results) = value.as_array() {
+        results.clone()
+    } else {
+        return Err(CoreError::InvalidRequest);
+    };
+    let mut rows = Vec::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let url = record
+            .get("url")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let path = record
+            .get("input")
+            .and_then(|item| item.get("FUZZ"))
+            .and_then(|item| item.as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+                url::Url::parse(&url)
+                    .ok()
+                    .map(|parsed| parsed.path().to_owned())
+            })
+            .unwrap_or_default();
+        let status = record
+            .get("status")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let length = record
+            .get("length")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let mut cells = BTreeMap::new();
+        cells.insert("url".to_owned(), url);
+        cells.insert("path".to_owned(), path);
+        cells.insert("status".to_owned(), status);
+        cells.insert("length".to_owned(), length);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    Ok(rows)
+}
+
+fn parse_generic_http_discovery_rows(
+    bytes: &[u8],
+) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    // Prefer ffuf-shaped payloads when content matches; otherwise reject.
+    parse_ffuf_structured_rows(bytes)
+}
+
 fn unique_export_basename(
     exports_dir: &Path,
     logical_name: &str,
@@ -4672,6 +5013,12 @@ pub fn typescript_declarations() -> String {
         declaration!(JobArtifactPageRequest),
         declaration!(ExportJobArtifactRequest),
         declaration!(ExportJobArtifactResult),
+        declaration!(StructuredResultStatus),
+        declaration!(StructuredResultKind),
+        declaration!(StructuredResultColumnDto),
+        declaration!(StructuredResultRowDto),
+        declaration!(ListStructuredResultsRequest),
+        declaration!(StructuredResultPage),
         declaration!(CreateScopeRequest),
         declaration!(ProjectContextRequest),
         declaration!(ScopePage),
@@ -4978,6 +5325,12 @@ mod tests {
             "JobArtifactPageRequest",
             "ExportJobArtifactRequest",
             "ExportJobArtifactResult",
+            "StructuredResultStatus",
+            "StructuredResultKind",
+            "StructuredResultColumnDto",
+            "StructuredResultRowDto",
+            "ListStructuredResultsRequest",
+            "StructuredResultPage",
             "CommandError",
             "CreateScopeRequest",
             "ExternalLauncherHealthDto",
@@ -6195,6 +6548,230 @@ mod tests {
         assert_eq!(
             Path::new(&exported.export_name).file_name().unwrap(),
             exported.export_name.as_str()
+        );
+    }
+
+    #[test]
+    fn output_type_and_parser_select_ffuf_result_adapter() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Structured adapter".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            b"",
+            b"",
+            Some((
+                "ffuf-output.json",
+                br#"{"results":[{"url":"http://x/admin","input":{"FUZZ":"admin"},"status":200,"length":12}]}"#,
+            )),
+        );
+        // Rewrite command_spec IO + import parser without using tool_id branching in the API under test.
+        let mut stored = store.job(&job_id).unwrap();
+        stored.command_spec.io = ToolRunIo {
+            schema_version: 1,
+            inputs: Vec::new(),
+            outputs: vec![
+                flagdeck_domain::ToolOutputSpec {
+                    id: "discoveries".to_owned(),
+                    kind: ToolIoKind::HttpDiscovery,
+                },
+                flagdeck_domain::ToolOutputSpec {
+                    id: "raw".to_owned(),
+                    kind: ToolIoKind::RawArtifact,
+                },
+            ],
+        };
+        stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+        stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+        store.save_command_spec(&stored.command_spec).unwrap();
+        store.save_job(&stored.job).unwrap();
+        let raw = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-output.json".to_owned(),
+                    mime: "application/json".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: None,
+                    expected_sha256: None,
+                },
+                File::open(
+                    store
+                        .layout()
+                        .scans
+                        .join(&job_id.0)
+                        .join("ffuf-output.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .complete_import(
+                &stored.job,
+                &JobImportRecord {
+                    job_id: job_id.clone(),
+                    parser_id: "flagdeck.ffuf-json".to_owned(),
+                    parser_version: "1".to_owned(),
+                    import_status: ImportStatus::Imported,
+                    discovery_count: 0,
+                    http_message_count: 0,
+                    source_artifact_ids: vec![raw.artifact_id.clone()],
+                    error_summary: None,
+                    completed_at: Some(Timestamp::now()),
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(page.status, StructuredResultStatus::Ready);
+        assert_eq!(page.kind, StructuredResultKind::HttpDiscovery);
+        assert_eq!(page.parser_id.as_deref(), Some("flagdeck.ffuf-json"));
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://x/admin")
+        );
+        assert_eq!(
+            page.rows[0].cells.get("path").map(String::as_str),
+            Some("admin")
+        );
+        assert_eq!(
+            page.rows[0].cells.get("status").map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            page.rows[0].cells.get("length").map(String::as_str),
+            Some("12")
+        );
+        assert_eq!(page.rows[0].source_job_id, job_id);
+        assert_eq!(
+            page.rows[0].source_artifact_id.as_ref(),
+            Some(&raw.artifact_id)
+        );
+    }
+
+    #[test]
+    fn parse_failure_keeps_raw_artifact_and_diagnostic_status() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Parse failure results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            b"",
+            b"parser boom\n",
+            Some(("ffuf-output.json", b"{corrupted")),
+        );
+        let mut stored = store.job(&job_id).unwrap();
+        stored.command_spec.io = ToolRunIo {
+            schema_version: 1,
+            inputs: Vec::new(),
+            outputs: vec![flagdeck_domain::ToolOutputSpec {
+                id: "discoveries".to_owned(),
+                kind: ToolIoKind::HttpDiscovery,
+            }],
+        };
+        stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+        stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+        store.save_command_spec(&stored.command_spec).unwrap();
+        let raw = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-output.json".to_owned(),
+                    mime: "application/json".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: None,
+                    expected_sha256: None,
+                },
+                File::open(
+                    store
+                        .layout()
+                        .scans
+                        .join(&job_id.0)
+                        .join("ffuf-output.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        stored.job.import_status = ImportStatus::ParserFailed;
+        store.save_job(&stored.job).unwrap();
+        store
+            .complete_import(
+                &stored.job,
+                &JobImportRecord {
+                    job_id: job_id.clone(),
+                    parser_id: "flagdeck.ffuf-json".to_owned(),
+                    parser_version: "1".to_owned(),
+                    import_status: ImportStatus::ParserFailed,
+                    discovery_count: 0,
+                    http_message_count: 0,
+                    source_artifact_ids: vec![raw.artifact_id.clone()],
+                    error_summary: Some("invalid json".to_owned()),
+                    completed_at: Some(Timestamp::now()),
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(page.status, StructuredResultStatus::ParseFailed);
+        assert!(
+            page.parser_error
+                .as_deref()
+                .is_some_and(|value| value.contains("invalid"))
+        );
+        assert!(page.source_artifact_ids.contains(&raw.artifact_id));
+        assert!(page.rows.is_empty());
+        let evidence = core
+            .list_job_artifacts(&JobArtifactPageRequest {
+                project_id: project.project_id,
+                job_id,
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert!(
+            evidence
+                .items
+                .iter()
+                .any(|item| item.artifact_id == raw.artifact_id)
         );
     }
 

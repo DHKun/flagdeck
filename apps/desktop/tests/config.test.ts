@@ -50,6 +50,7 @@ const commands = [
   "preview_job_file",
   "list_job_artifacts",
   "export_job_artifact",
+  "list_structured_results",
   "list_discoveries",
   "create_dictionary",
   "list_dictionaries",

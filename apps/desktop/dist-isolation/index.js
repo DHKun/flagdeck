@@ -36,6 +36,7 @@
     "preview_job_file",
     "list_job_artifacts",
     "export_job_artifact",
+    "list_structured_results",
     "list_discoveries",
     "create_dictionary",
     "list_dictionaries",
@@ -475,6 +476,19 @@
           projectId(request.job_id) &&
           projectId(request.artifact_id) &&
           typeof request.confirm_sensitive === "boolean";
+        break;
+      case "list_structured_results":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id) &&
+          (request.cursor === null ||
+            request.cursor === undefined ||
+            (typeof request.cursor === "string" &&
+              request.cursor.length <= 128)) &&
+          Number.isSafeInteger(request.limit) &&
+          request.limit >= 1 &&
+          request.limit <= 500;
         break;
       case "create_dictionary":
         valid =

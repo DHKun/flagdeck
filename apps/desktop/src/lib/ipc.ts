@@ -48,6 +48,8 @@ import type {
   JobFilePreview,
   JobLogPreview,
   JobView,
+  ListStructuredResultsRequest,
+  StructuredResultPage,
   LaunchExternalRequest,
   ListPayloadsRequest,
   OpenHttpBrowserPreviewRequest,
@@ -192,6 +194,10 @@ export const ipc = {
     request: ExportJobArtifactRequest,
   ): Promise<ExportJobArtifactResult> =>
     invoke("export_job_artifact", { request }),
+  listStructuredResults: (
+    request: ListStructuredResultsRequest,
+  ): Promise<StructuredResultPage> =>
+    invoke("list_structured_results", { request }),
   listDiscoveries: (request: DiscoveryPageRequest): Promise<DiscoveryPage> =>
     invoke("list_discoveries", { request }),
   createDictionary: (

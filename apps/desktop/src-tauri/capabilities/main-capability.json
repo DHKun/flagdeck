@@ -39,6 +39,7 @@
     "allow-preview-job-file",
     "allow-list-job-artifacts",
     "allow-export-job-artifact",
+    "allow-list-structured-results",
     "allow-list-discoveries",
     "allow-create-dictionary",
     "allow-list-dictionaries",

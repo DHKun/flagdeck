@@ -32,6 +32,7 @@ fn main() {
             "preview_job_file",
             "list_job_artifacts",
             "export_job_artifact",
+            "list_structured_results",
             "cancel_job",
             "cancel_all_jobs",
             "list_jobs",
