@@ -255,6 +255,12 @@
           "markdownDescription": "Enables the delete_job command without any pre-configured scope."
         },
         {
+          "description": "Enables the diagnose_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnose-catalog-tool",
+          "markdownDescription": "Enables the diagnose_catalog_tool command without any pre-configured scope."
+        },
+        {
           "description": "Enables the diff_http command without any pre-configured scope.",
           "type": "string",
           "const": "allow-diff-http",
@@ -271,6 +277,12 @@
           "type": "string",
           "const": "allow-execute-metasploit-module",
           "markdownDescription": "Enables the execute_metasploit_module command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_job_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-job-artifact",
+          "markdownDescription": "Enables the export_job_artifact command without any pre-configured scope."
         },
         {
           "description": "Enables the export_project command without any pre-configured scope.",
@@ -363,6 +375,12 @@
           "markdownDescription": "Enables the list_intruder_campaigns command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_job_artifacts command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-job-artifacts",
+          "markdownDescription": "Enables the list_job_artifacts command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_jobs command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-jobs",
@@ -391,6 +409,18 @@
           "type": "string",
           "const": "allow-list-scopes",
           "markdownDescription": "Enables the list_scopes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_structured_results command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-structured-results",
+          "markdownDescription": "Enables the list_structured_results command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the load_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-personal-presets",
+          "markdownDescription": "Enables the load_personal_presets command without any pre-configured scope."
         },
         {
           "description": "Enables the metasploit_console_command command without any pre-configured scope.",
@@ -441,6 +471,12 @@
           "markdownDescription": "Enables the preview_artifact command without any pre-configured scope."
         },
         {
+          "description": "Enables the preview_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-catalog-tool",
+          "markdownDescription": "Enables the preview_catalog_tool command without any pre-configured scope."
+        },
+        {
           "description": "Enables the preview_job_file command without any pre-configured scope.",
           "type": "string",
           "const": "allow-preview-job-file",
@@ -481,6 +517,12 @@
           "type": "string",
           "const": "allow-run-tool",
           "markdownDescription": "Enables the run_tool command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-personal-presets",
+          "markdownDescription": "Enables the save_personal_presets command without any pre-configured scope."
         },
         {
           "description": "Enables the search_dictionary command without any pre-configured scope.",
@@ -633,6 +675,12 @@
           "markdownDescription": "Denies the delete_job command without any pre-configured scope."
         },
         {
+          "description": "Denies the diagnose_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnose-catalog-tool",
+          "markdownDescription": "Denies the diagnose_catalog_tool command without any pre-configured scope."
+        },
+        {
           "description": "Denies the diff_http command without any pre-configured scope.",
           "type": "string",
           "const": "deny-diff-http",
@@ -649,6 +697,12 @@
           "type": "string",
           "const": "deny-execute-metasploit-module",
           "markdownDescription": "Denies the execute_metasploit_module command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_job_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-job-artifact",
+          "markdownDescription": "Denies the export_job_artifact command without any pre-configured scope."
         },
         {
           "description": "Denies the export_project command without any pre-configured scope.",
@@ -741,6 +795,12 @@
           "markdownDescription": "Denies the list_intruder_campaigns command without any pre-configured scope."
         },
         {
+          "description": "Denies the list_job_artifacts command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-job-artifacts",
+          "markdownDescription": "Denies the list_job_artifacts command without any pre-configured scope."
+        },
+        {
           "description": "Denies the list_jobs command without any pre-configured scope.",
           "type": "string",
           "const": "deny-list-jobs",
@@ -769,6 +829,18 @@
           "type": "string",
           "const": "deny-list-scopes",
           "markdownDescription": "Denies the list_scopes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_structured_results command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-structured-results",
+          "markdownDescription": "Denies the list_structured_results command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-personal-presets",
+          "markdownDescription": "Denies the load_personal_presets command without any pre-configured scope."
         },
         {
           "description": "Denies the metasploit_console_command command without any pre-configured scope.",
@@ -819,6 +891,12 @@
           "markdownDescription": "Denies the preview_artifact command without any pre-configured scope."
         },
         {
+          "description": "Denies the preview_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-catalog-tool",
+          "markdownDescription": "Denies the preview_catalog_tool command without any pre-configured scope."
+        },
+        {
           "description": "Denies the preview_job_file command without any pre-configured scope.",
           "type": "string",
           "const": "deny-preview-job-file",
@@ -859,6 +937,12 @@
           "type": "string",
           "const": "deny-run-tool",
           "markdownDescription": "Denies the run_tool command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-personal-presets",
+          "markdownDescription": "Denies the save_personal_presets command without any pre-configured scope."
         },
         {
           "description": "Denies the search_dictionary command without any pre-configured scope.",

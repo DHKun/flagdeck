@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-job-artifact"
+description = "Enables the export_job_artifact command without any pre-configured scope."
+commands.allow = ["export_job_artifact"]
+
+[[permission]]
+identifier = "deny-export-job-artifact"
+description = "Denies the export_job_artifact command without any pre-configured scope."
+commands.deny = ["export_job_artifact"]

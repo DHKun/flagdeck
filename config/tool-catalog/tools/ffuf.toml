@@ -1,6 +1,10 @@
 id = "ffuf"
 name = "ffuf"
 category = "content_discovery"
+tier = "tier_1"
+capabilities = ["path_discovery"]
+aliases = ["扫目录", "路径发现", "目录扫描"]
+risk_level = "l2"
 summary = "目录/路径模糊测试（FUZZ）"
 
 usage = """
@@ -13,6 +17,92 @@ usage = """
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "quick_scan"
+name = "快速扫描"
+core_fields = ["url", "wordlist", "threads", "mc"]
+
+[presets.defaults]
+recursion = "no"
+
+[[presets]]
+id = "recursive_scan"
+name = "递归扫描"
+core_fields = ["url", "wordlist", "threads", "mc", "recursion_depth"]
+
+[presets.defaults]
+recursion = "yes"
+
+[[presets]]
+id = "virtual_host_discovery"
+name = "虚拟主机发现"
+core_fields = ["url", "wordlist", "threads", "mc", "vhost"]
+
+[presets.defaults]
+recursion = "no"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url", "wordlist"]
+
+[[field_groups]]
+id = "matching"
+name = "匹配与过滤"
+fields = ["mc", "fc", "fs", "fw", "fl", "match_regex", "filter_regex"]
+
+[[field_groups]]
+id = "request"
+name = "请求"
+fields = ["method", "post_data", "headers", "vhost", "proxy"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = [
+  "threads",
+  "extensions",
+  "auto_calibrate",
+  "recursion",
+  "recursion_depth",
+  "rate",
+  "timeout",
+]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.inputs]]
+id = "wordlist"
+kind = "wordlist"
+field = "wordlist"
+
+[[io.outputs]]
+id = "discoveries"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "MIT"
+homepage = "https://github.com/ffuf/ffuf"
+version = "2.1.0-dev"
+health_strategy = "safe-version-command"
+runtime = "standalone Go binary"
+version_args = ["-V"]
+install_command = "go install github.com/ffuf/ffuf/v2@latest"
+path_fix = "export PATH=\"$PATH:$(go env GOPATH)/bin\""
+wordlist_source = "https://github.com/danielmiessler/SecLists"
+wordlist_install_command = "git clone --depth 1 https://github.com/danielmiessler/SecLists.git /data/CTF/Tools/Wordlists/SecLists"
 
 [binary]
 command = "ffuf"
@@ -107,6 +197,7 @@ hint = "HTTP 方法；POST 时常配合 -d 体"
 [[form.fields]]
 id = "post_data"
 type = "text"
+sensitive = true
 label = "POST 体 -d（可选）"
 default = ""
 required = false
@@ -115,6 +206,7 @@ hint = "请求体；可在体中放 FUZZ 做参数 fuzz"
 [[form.fields]]
 id = "headers"
 type = "text"
+sensitive = true
 label = "请求头 -H（可选）"
 default = ""
 required = false
@@ -123,6 +215,7 @@ hint = "单条 Header: Value；Cookie/Authorization 可写在此"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 -x（可选）"
 default = ""
 required = false
@@ -281,7 +374,9 @@ field = "filter_regex"
 args = ["-fr", "{filter_regex}"]
 
 [parser]
-kind = "none"
+kind = "ffuf-json"
+id = "flagdeck.ffuf-json"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 600000

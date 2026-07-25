@@ -48,6 +48,7 @@
       "../../../config/presets.toml": "config/presets.toml",
       "../../../config/tool-paths.example.toml": "config/tool-paths.example.toml",
       "../../../config/tools.toml": "config/tools.toml",
+      "../../../config/tool-catalog": "config/tool-catalog",
       "../../../docs/TOOL_PACKS.md": "docs/TOOL_PACKS.md",
       "../../../workers/mitmproxy/pyproject.toml": "workers/mitmproxy/pyproject.toml",
       "../../../workers/mitmproxy/uv.lock": "workers/mitmproxy/uv.lock",

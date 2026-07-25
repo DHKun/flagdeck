@@ -18,6 +18,7 @@ usage = """
 """
 mode = "external_launch"
 featured = true
+platforms = ["linux"]
 # Long-running HTTP server: keep managed so stop/cancel works.
 detach = false
 cwd = "Active/fscan"

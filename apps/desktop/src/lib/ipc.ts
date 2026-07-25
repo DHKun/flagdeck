@@ -15,6 +15,8 @@ import type {
   CancelAllJobsResult,
   CancelJobRequest,
   CancelJobResult,
+  CatalogToolDiagnosticDto,
+  CatalogRunPreview,
   CommandError,
   CoreEvent,
   CreateDictionaryRequest,
@@ -24,9 +26,12 @@ import type {
   CreateScopeRequest,
   DictionaryPage,
   DictionarySearchResult,
+  DiagnoseCatalogToolRequest,
   DiffHttpMessagesRequest,
   DiscoveryPage,
   DiscoveryPageRequest,
+  ExportJobArtifactRequest,
+  ExportJobArtifactResult,
   ExportProjectRequest,
   ExportProjectResult,
   ExternalLauncherHealthDto,
@@ -37,11 +42,14 @@ import type {
   HttpHistoryPage,
   HttpHistoryPageRequest,
   HttpMessageDiff,
+  JobArtifactPageRequest,
   JobPage,
   JobPageRequest,
   JobFilePreview,
   JobLogPreview,
   JobView,
+  ListStructuredResultsRequest,
+  StructuredResultPage,
   LaunchExternalRequest,
   ListPayloadsRequest,
   OpenHttpBrowserPreviewRequest,
@@ -50,7 +58,9 @@ import type {
   PayloadPage,
   PayloadPreview,
   PayloadSourceHealthDto,
+  PersonalPresetStoreDto,
   PreviewArtifactRequest,
+  PreviewCatalogToolRequest,
   PreviewJobFileRequest,
   PreviewJobLogRequest,
   PreviewPayloadRequest,
@@ -64,6 +74,7 @@ import type {
   SearchDictionaryRequest,
   SendRawHttp1Request,
   SendRawHttp1Result,
+  SavePersonalPresetsRequest,
   StartProxyRequest,
   StopProxyRequest,
   ToolHealthDto,
@@ -107,6 +118,12 @@ import type {
 
 export const ipc = {
   status: (): Promise<AppStatus> => invoke("app_status"),
+  loadPersonalPresets: (): Promise<PersonalPresetStoreDto> =>
+    invoke("load_personal_presets"),
+  savePersonalPresets: (
+    request: SavePersonalPresetsRequest,
+  ): Promise<PersonalPresetStoreDto> =>
+    invoke("save_personal_presets", { request }),
   createProject: (request: CreateProjectRequest): Promise<ProjectSummary> =>
     invoke("create_project", { request }),
   listProjects: (request: ProjectPageRequest): Promise<ProjectPage> =>
@@ -127,6 +144,13 @@ export const ipc = {
     invoke("list_scopes", { request }),
   toolHealth: (): Promise<ToolHealthDto[]> => invoke("tool_health"),
   listCatalog: (): Promise<CatalogSnapshot> => invoke("list_catalog"),
+  diagnoseCatalogTool: (
+    request: DiagnoseCatalogToolRequest,
+  ): Promise<CatalogToolDiagnosticDto> =>
+    invoke("diagnose_catalog_tool", { request }),
+  previewCatalogTool: (
+    request: PreviewCatalogToolRequest,
+  ): Promise<CatalogRunPreview> => invoke("preview_catalog_tool", { request }),
   ensureTarget: (request: EnsureTargetRequest): Promise<TargetScope> =>
     invoke("ensure_target", { request }),
   runCatalogTool: (request: RunCatalogToolRequest): Promise<JobView> =>
@@ -164,6 +188,16 @@ export const ipc = {
     invoke("preview_job_log", { request }),
   previewJobFile: (request: PreviewJobFileRequest): Promise<JobFilePreview> =>
     invoke("preview_job_file", { request }),
+  listJobArtifacts: (request: JobArtifactPageRequest): Promise<ArtifactPage> =>
+    invoke("list_job_artifacts", { request }),
+  exportJobArtifact: (
+    request: ExportJobArtifactRequest,
+  ): Promise<ExportJobArtifactResult> =>
+    invoke("export_job_artifact", { request }),
+  listStructuredResults: (
+    request: ListStructuredResultsRequest,
+  ): Promise<StructuredResultPage> =>
+    invoke("list_structured_results", { request }),
   listDiscoveries: (request: DiscoveryPageRequest): Promise<DiscoveryPage> =>
     invoke("list_discoveries", { request }),
   createDictionary: (

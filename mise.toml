@@ -54,17 +54,21 @@ run = "pnpm --dir apps/desktop test:all"
 description = "运行 Adapter v1 Rust/Python 共用 fixture 合同"
 run = "python3 -m unittest tests/contract/test_adapter_protocol.py"
 
+[tasks.test-release-tools]
+description = "运行 Stable 签名身份、可信公钥与最终清单合同测试"
+run = "python3 -m unittest tests/release/test_signing_tools.py"
+
 [tasks.test-python]
 description = "运行正式 mitmproxy Worker 格式、类型与合同测试"
 run = "uv run --project workers/mitmproxy --locked ruff format --check workers/mitmproxy/src workers/mitmproxy/tests workers/mitmproxy/flagdeck_worker_addon.py && uv run --project workers/mitmproxy --locked ruff check workers/mitmproxy/src workers/mitmproxy/tests workers/mitmproxy/flagdeck_worker_addon.py && uv run --project workers/mitmproxy --locked mypy workers/mitmproxy/src && uv run --project workers/mitmproxy --locked pytest --import-mode=importlib workers/mitmproxy/tests"
 
 [tasks.test]
 description = "运行 FlagDeck 主程序完整门禁"
-depends = ["lint-rust", "test-rust", "test-ui", "test-contract"]
+depends = ["lint-rust", "test-rust", "test-ui", "test-contract", "test-release-tools"]
 
 [tasks.test-all]
 description = "运行主程序与当前 Python Worker 完整门禁"
-depends = ["lint-rust", "test-rust", "test-ui", "test-python", "test-contract"]
+depends = ["lint-rust", "test-rust", "test-ui", "test-python", "test-contract", "test-release-tools"]
 
 [tasks.build]
 description = "构建 FlagDeck Release 桌面二进制"
@@ -74,7 +78,7 @@ run = "pnpm --dir apps/desktop tauri build --no-bundle"
 [tasks.package]
 description = "构建 FlagDeck Linux AppImage、DEB 与 RPM 候选包"
 depends = ["generate", "stage-host-runtime", "r7-sbom"]
-run = "pnpm --dir apps/desktop tauri build --bundles appimage,deb,rpm"
+run = "NO_STRIP=1 pnpm --dir apps/desktop tauri build --bundles appimage,deb,rpm"
 
 [tasks.build-msf-sidecars]
 description = "构建并暂存当前平台的 Metasploit Adapter 与凭据 launcher"
@@ -131,7 +135,7 @@ run = "python3 scripts/run_release_audits.py --tool-root .release-tools --output
 [tasks.r7-sign]
 description = "使用隔离 Ed25519 发布密钥签名 RPM 并通过独立 RPM 密钥库验签"
 depends = ["package"]
-run = "python3 scripts/sign_rpm.py --rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --gpg-home release/private-signing/gnupg --public-key release/FlagDeck-1.0.0-signing-key.asc --rpm-db release/evidence/rpmdb --evidence release/evidence/rpm-signature.json"
+run = "python3 scripts/sign_rpm.py --rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --gpg-home release/private-signing/gnupg --public-key release/FlagDeck-1.0.0-signing-key.asc --rpm-db release/evidence/rpmdb --evidence release/evidence/rpm-signature.json --expected-fingerprint 5DEDB3781215AC2CB323FE2B3742F9C007201D22"
 
 [tasks.r7-fedora-lifecycle]
 description = "在干净 Fedora 44 容器执行 RPM 安装、升级、回退、再升级与卸载门禁"

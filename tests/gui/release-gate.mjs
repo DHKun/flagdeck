@@ -15,9 +15,44 @@ const application = process.env.TAURI_BINARY
 const packagePath = process.env.TAURI_PACKAGE
   ? resolve(process.env.TAURI_PACKAGE)
   : undefined;
-const tauriDriver = resolve(homedir(), ".cargo/bin/tauri-driver");
+const tauriDriver = process.env.TAURI_DRIVER
+  ? resolve(process.env.TAURI_DRIVER)
+  : resolve(homedir(), ".cargo/bin/tauri-driver");
 const runCount = Number(process.env.FLAGDECK_R7_GUI_RUNS ?? "10");
-const expectedCommandCount = 57;
+const expectedTier1ToolIds = [
+  "arjun",
+  "curl",
+  "dddd",
+  "ffuf",
+  "fscan",
+  "githacker",
+  "gobuster",
+  "php-filter-chain",
+  "sqlmap",
+  "wafw00f",
+];
+const capability = JSON.parse(
+  await readFile(
+    resolve(
+      workspace,
+      "apps/desktop/src-tauri/capabilities/main-capability.json",
+    ),
+    "utf8",
+  ),
+);
+const expectedCommands = capability.permissions
+  .filter((permission) => permission.startsWith("allow-"))
+  .map((permission) => permission.slice("allow-".length).replaceAll("-", "_"))
+  .sort();
+
+function allExpectedCommandsDenied(result) {
+  const deniedCommands = result.unprivilegedProbe?.deniedCommands;
+  return (
+    Array.isArray(deniedCommands) &&
+    JSON.stringify([...deniedCommands].sort()) ===
+      JSON.stringify(expectedCommands)
+  );
+}
 
 async function sha256(path) {
   return createHash("sha256")
@@ -73,6 +108,10 @@ function percentile(values, quantile) {
 }
 
 function validate(result) {
+  const tier1Toolbox = result.main?.tier1Toolbox;
+  const tier1ToolIds = Array.isArray(tier1Toolbox)
+    ? tier1Toolbox.map((tool) => tool.id).sort()
+    : [];
   return (
     result.status === "PASS" &&
     result.main?.authorizedCoreLifecycle === true &&
@@ -87,13 +126,35 @@ function validate(result) {
     result.main?.windowCountBefore === result.main?.windowCountAfter &&
     result.main?.automaticWorkspace === true &&
     result.unprivilegedProbe?.allIpcDenied === true &&
-    result.unprivilegedProbe?.deniedCommands?.length === expectedCommandCount &&
-    result.main?.httpWorkbench?.proxy === true &&
-    result.main?.httpWorkbench?.history === true &&
-    result.main?.httpWorkbench?.raw === true &&
-    result.main?.httpWorkbench?.scriptNodes === 0 &&
-    result.main?.stableWorkbenches?.intruderPositionSelector === true &&
-    result.main?.stableWorkbenches?.payloadBrowser === true &&
+    allExpectedCommandsDenied(result) &&
+    result.main?.catalogWorkbench?.catalogLoaded === true &&
+    result.main?.catalogWorkbench?.toolCount > 0 &&
+    result.main?.catalogWorkbench?.curlSelected === true &&
+    result.main?.catalogWorkbench?.sensitiveInputPassword === true &&
+    Array.isArray(tier1Toolbox) &&
+    tier1Toolbox.length === expectedTier1ToolIds.length &&
+    JSON.stringify(tier1ToolIds) === JSON.stringify(expectedTier1ToolIds) &&
+    tier1Toolbox.every(
+      (tool) =>
+        Number.isFinite(tool.locateMillis) &&
+        tool.locateMillis <= 10_000 &&
+        Number.isFinite(tool.formReadyMillis) &&
+        tool.formReadyMillis <= 30_000 &&
+        tool.fieldCount > 0 &&
+        tool.presetCount >= 3 &&
+        tool.runDisabled === !tool.available &&
+        typeof tool.diagnosticStatus === "string" &&
+        tool.diagnosticStatus.length > 0,
+    ) &&
+    result.main?.preferenceEvidence?.targetDenied === true &&
+    result.main?.preferenceEvidence?.formSecretDenied === true &&
+    result.main?.ffufDiagnostic?.checkIds?.length === 6 &&
+    result.main?.ffufDiagnostic?.sourceVisible === true &&
+    result.main?.ffufDiagnostic?.recheck === true &&
+    result.main?.ffufPersonalPreset?.threads === "41" &&
+    result.main?.ffufPersonalPreset?.sensitiveDenied === true &&
+    result.main?.ffufPersonalPresetExport?.schemaVersion === 1 &&
+    result.main?.ffufPersonalPresetExport?.sensitiveDenied === true &&
     result.unprivilegedProbe?.localFile === "blocked" &&
     result.process?.coreLimitZero === true &&
     result.process?.argvContainsFixtureSecret === false &&
@@ -136,6 +197,12 @@ for (let index = 1; index <= runCount; index += 1) {
 
 const timings = results.map((result) => result.interactiveMillis);
 const hotTimings = timings.length > 1 ? timings.slice(1) : timings;
+const tier1LocateTimings = results.flatMap((result) =>
+  result.main.tier1Toolbox.map((tool) => tool.locateMillis),
+);
+const tier1FormReadyTimings = results.flatMap((result) =>
+  result.main.tier1Toolbox.map((tool) => tool.formReadyMillis),
+);
 const rssValues = results
   .map((result) => result.process.rssKiB)
   .filter((value) => Number.isFinite(value));
@@ -169,6 +236,34 @@ const summary = {
     protocol:
       "first run after release build is the cold candidate; remaining isolated sessions are hot-cache runs",
   },
+  tier1Toolbox: {
+    toolIds: expectedTier1ToolIds,
+    observations: tier1LocateTimings.length,
+    locateMillis: {
+      p50: percentile(tier1LocateTimings, 0.5),
+      p95: percentile(tier1LocateTimings, 0.95),
+      maximum: Math.max(...tier1LocateTimings),
+      budget: 10_000,
+    },
+    formReadyMillis: {
+      p50: percentile(tier1FormReadyTimings, 0.5),
+      p95: percentile(tier1FormReadyTimings, 0.95),
+      maximum: Math.max(...tier1FormReadyTimings),
+      budget: 30_000,
+    },
+    allToolsCovered: results.every(
+      (result) =>
+        JSON.stringify(
+          result.main.tier1Toolbox.map((tool) => tool.id).sort(),
+        ) === JSON.stringify(expectedTier1ToolIds),
+    ),
+    allLocateWithinBudget: tier1LocateTimings.every(
+      (duration) => duration <= 10_000,
+    ),
+    allFormsWithinBudget: tier1FormReadyTimings.every(
+      (duration) => duration <= 30_000,
+    ),
+  },
   securityProbeMainProcessRssKiB: {
     p50: percentile(rssValues, 0.5),
     p95: percentile(rssValues, 0.95),
@@ -193,12 +288,20 @@ const summary = {
     measurement:
       "two-window security-probe process tree; Stable single-window budget is measured separately",
   },
-  allCustomCommandsDeniedFromProbe: results.every(
-    (result) =>
-      result.unprivilegedProbe.deniedCommands.length === expectedCommandCount,
-  ),
+  allCustomCommandsDeniedFromProbe: results.every(allExpectedCommandsDenied),
   allHostilePreviewsDataOnly: results.every(
     (result) => result.main.hostileDom.dangerousNodes === 0,
+  ),
+  allCatalogWorkbenchesReady: results.every(
+    (result) =>
+      result.main.catalogWorkbench.catalogLoaded &&
+      result.main.catalogWorkbench.curlSelected &&
+      result.main.catalogWorkbench.sensitiveInputPassword,
+  ),
+  allSensitivePreferencesDenied: results.every(
+    (result) =>
+      result.main.preferenceEvidence.targetDenied &&
+      result.main.preferenceEvidence.formSecretDenied,
   ),
   allCredentialsRejectedWithoutPersistence: results.every(
     (result) =>

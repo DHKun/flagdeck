@@ -7,7 +7,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use flagdeck_domain::{
-    CommandSpec, CommandSpecId, ResourceLimits, RiskLevel, ScopeId, SecretTransport,
+    CommandSpec, CommandSpecId, ResourceLimits, RiskLevel, ScopeId, SecretInputLifecycle,
+    SecretTransport, ToolInputRecord, ToolInputSource, ToolIoContract, ToolRunIo,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -120,12 +121,58 @@ pub struct FormField {
     /// Short helper under the field.
     #[serde(default)]
     pub hint: String,
+    /// Values that must stay out of preferences, logs, and persisted command previews.
+    #[serde(default)]
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FormSpec {
     #[serde(default)]
     pub fields: Vec<FormField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogPreset {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub core_fields: Vec<String>,
+    #[serde(default)]
+    pub defaults: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogFieldGroup {
+    pub id: String,
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CatalogInstallation {
+    #[serde(default)]
+    pub distribution: String,
+    #[serde(default)]
+    pub license: String,
+    #[serde(default)]
+    pub homepage: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub health_strategy: String,
+    #[serde(default)]
+    pub runtime: String,
+    #[serde(default)]
+    pub version_args: Vec<String>,
+    #[serde(default)]
+    pub install_command: String,
+    #[serde(default)]
+    pub path_fix: String,
+    #[serde(default)]
+    pub wordlist_source: String,
+    #[serde(default)]
+    pub wordlist_install_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -152,6 +199,11 @@ pub struct ArgvSpec {
 pub struct ParserSpec {
     #[serde(default = "default_parser_kind")]
     pub kind: String,
+    /// Optional stable parser identity used by structured-result adapters.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub version: String,
 }
 
 fn default_parser_kind() -> String {
@@ -207,6 +259,22 @@ pub struct CatalogToolManifest {
     pub id: String,
     pub name: String,
     pub category: String,
+    #[serde(default = "default_tier")]
+    pub tier: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub presets: Vec<CatalogPreset>,
+    #[serde(default)]
+    pub field_groups: Vec<CatalogFieldGroup>,
+    #[serde(default = "default_catalog_risk_level")]
+    pub risk_level: String,
+    #[serde(default)]
+    pub installation: CatalogInstallation,
+    #[serde(default)]
+    pub io: ToolIoContract,
     #[serde(default)]
     pub summary: String,
     /// Hover help: practical usage for this tool (CLI flags / GUI notes).
@@ -216,6 +284,9 @@ pub struct CatalogToolManifest {
     pub mode: ToolMode,
     #[serde(default)]
     pub featured: bool,
+    /// Empty means all supported desktop platforms.
+    #[serde(default)]
+    pub platforms: Vec<String>,
     /// Working directory (absolute, or relative to tools root). Empty = job dir (CLI) or binary parent (GUI).
     #[serde(default)]
     pub cwd: String,
@@ -247,6 +318,14 @@ pub struct CatalogToolView {
     pub name: String,
     pub category: String,
     pub category_name: String,
+    pub tier: String,
+    pub capabilities: Vec<String>,
+    pub aliases: Vec<String>,
+    pub presets: Vec<CatalogPreset>,
+    pub field_groups: Vec<CatalogFieldGroup>,
+    pub risk_level: String,
+    pub installation: CatalogInstallation,
+    pub io: ToolIoContract,
     pub summary: String,
     pub usage: String,
     pub mode: String,
@@ -294,11 +373,24 @@ impl CatalogPaths {
 }
 
 fn default_catalog_root() -> PathBuf {
-    let candidates = [
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog"),
-        PathBuf::from("config/tool-catalog"),
-        PathBuf::from("/usr/lib/flagdeck/config/tool-catalog"),
-    ];
+    let mut candidates = Vec::new();
+    if let Ok(current) = env::current_dir() {
+        candidates.extend(
+            current
+                .ancestors()
+                .take(8)
+                .map(|ancestor| ancestor.join("config/tool-catalog")),
+        );
+    }
+    if let Ok(executable) = env::current_exe() {
+        candidates.extend(
+            executable
+                .ancestors()
+                .take(8)
+                .map(|ancestor| ancestor.join("config/tool-catalog")),
+        );
+    }
+    candidates.push(PathBuf::from("/usr/lib/FlagDeck/config/tool-catalog"));
     candidates
         .into_iter()
         .find(|path| path.join("tools").is_dir())
@@ -335,6 +427,14 @@ impl ToolCatalog {
         self.tools.iter().find(|tool| tool.id == id)
     }
 
+    pub fn resolve_tool_binary(&self, id: &str) -> Result<PathBuf, CatalogError> {
+        let tool = self.tool(id).ok_or(CatalogError::NotFound)?;
+        if !tool_supports_current_platform(tool) {
+            return Err(CatalogError::BinaryMissing);
+        }
+        resolve_binary(tool, &self.paths)
+    }
+
     #[must_use]
     pub fn tool_views(&self) -> Vec<CatalogToolView> {
         let mut views = self
@@ -346,12 +446,18 @@ impl ToolCatalog {
                     .iter()
                     .find(|category| category.id == tool.category)
                     .map_or_else(|| tool.category.clone(), |category| category.name.clone());
-                let resolved = resolve_binary(tool, &self.paths);
+                let resolved =
+                    tool_supports_current_platform(tool).then(|| resolve_binary(tool, &self.paths));
                 let (available, binary_path, detail) = match resolved {
-                    Ok(path) if tool.cwd.is_empty() => {
+                    None => (
+                        false,
+                        String::new(),
+                        format!("unsupported platform: {}", env::consts::OS),
+                    ),
+                    Some(Ok(path)) if tool.cwd.is_empty() => {
                         (true, path.display().to_string(), "ready".to_owned())
                     }
-                    Ok(path) => {
+                    Some(Ok(path)) => {
                         let cwd = if Path::new(&tool.cwd).is_absolute() {
                             PathBuf::from(&tool.cwd)
                         } else {
@@ -367,13 +473,22 @@ impl ToolCatalog {
                             )
                         }
                     }
-                    Err(error) => (false, String::new(), error.to_string()),
+                    Some(Err(error)) => (false, String::new(), error.to_string()),
                 };
                 CatalogToolView {
                     id: tool.id.clone(),
                     name: tool.name.clone(),
                     category: tool.category.clone(),
                     category_name,
+                    tier: tool.tier.clone(),
+                    capabilities: tool.capabilities.clone(),
+                    aliases: tool.aliases.clone(),
+                    presets: tool.presets.clone(),
+                    field_groups: tool.field_groups.clone(),
+                    risk_level: catalog_risk_level_name(effective_catalog_risk_level(tool))
+                        .to_owned(),
+                    installation: tool.installation.clone(),
+                    io: tool.io.clone(),
                     summary: tool.summary.clone(),
                     usage: tool.usage.clone(),
                     mode: match tool.mode {
@@ -433,6 +548,50 @@ impl ToolCatalog {
         }
         Err(CatalogError::InvalidInput)
     }
+
+    fn preview_wordlist_path(&self, value: &str) -> Result<PathBuf, CatalogError> {
+        if value.is_empty() {
+            return Err(CatalogError::InvalidInput);
+        }
+        if let Some(shortcut) = self.wordlists.iter().find(|entry| entry.id == value) {
+            return Ok(self.paths.wordlists_root.join(&shortcut.path));
+        }
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+        Ok(self.paths.wordlists_root.join(path))
+    }
+}
+
+fn default_tier() -> String {
+    "tier_2".to_owned()
+}
+
+fn default_catalog_risk_level() -> String {
+    String::new()
+}
+
+fn effective_catalog_risk_level(tool: &CatalogToolManifest) -> RiskLevel {
+    match tool.risk_level.to_ascii_lowercase().as_str() {
+        "l0" => RiskLevel::L0,
+        "l1" => RiskLevel::L1,
+        "l2" => RiskLevel::L2,
+        "l3" => RiskLevel::L3,
+        _ => match tool.mode {
+            ToolMode::ExternalLaunch => RiskLevel::L3,
+            ToolMode::EmbeddedCli => RiskLevel::L2,
+        },
+    }
+}
+
+fn catalog_risk_level_name(risk_level: RiskLevel) -> &'static str {
+    match risk_level {
+        RiskLevel::L0 => "l0",
+        RiskLevel::L1 => "l1",
+        RiskLevel::L2 => "l2",
+        RiskLevel::L3 => "l3",
+    }
 }
 
 fn tool_needs_target(tool: &CatalogToolManifest) -> bool {
@@ -490,6 +649,33 @@ fn load_tools(root: &Path) -> Result<Vec<CatalogToolManifest>, CatalogError> {
         if tool.id.is_empty() || tool.name.is_empty() {
             return Err(CatalogError::Invalid(format!(
                 "{} missing required fields",
+                path.display()
+            )));
+        }
+        if !matches!(tool.io.schema_version, 0 | 1) {
+            return Err(CatalogError::Invalid(format!(
+                "{} unsupported I/O schema version {}",
+                path.display(),
+                tool.io.schema_version
+            )));
+        }
+        if tool.io.schema_version == 0
+            && (!tool.io.inputs.is_empty() || !tool.io.outputs.is_empty())
+        {
+            return Err(CatalogError::Invalid(format!(
+                "{} typed I/O requires schema version 1",
+                path.display()
+            )));
+        }
+        if tool.io.schema_version == 1
+            && tool.io.inputs.iter().any(|input| {
+                input.id.is_empty()
+                    || input.field.is_empty()
+                    || !tool.form.fields.iter().any(|field| field.id == input.field)
+            })
+        {
+            return Err(CatalogError::Invalid(format!(
+                "{} typed I/O input references an unknown field",
                 path.display()
             )));
         }
@@ -635,6 +821,8 @@ pub struct PreparedCatalogCommand {
     pub tool_id: String,
     pub tool_name: String,
     pub mode: ToolMode,
+    pub parser_id: String,
+    pub parser_version: String,
     /// See [`CatalogToolManifest::detach`].
     pub detach: bool,
     pub spec: CommandSpec,
@@ -650,7 +838,71 @@ pub fn prepare_catalog_command(
     form_values: &BTreeMap<String, String>,
     job_directory: &Path,
 ) -> Result<PreparedCatalogCommand, CatalogError> {
+    let input_sources = form_values
+        .keys()
+        .map(|field| (field.clone(), ToolInputSource::Form))
+        .collect();
+    prepare_catalog_command_with_sources(
+        catalog,
+        tool_id,
+        scope_id,
+        form_values,
+        &input_sources,
+        job_directory,
+    )
+}
+
+pub fn prepare_catalog_command_with_sources(
+    catalog: &ToolCatalog,
+    tool_id: &str,
+    scope_id: &ScopeId,
+    form_values: &BTreeMap<String, String>,
+    input_sources: &BTreeMap<String, ToolInputSource>,
+    job_directory: &Path,
+) -> Result<PreparedCatalogCommand, CatalogError> {
+    prepare_catalog_command_with_sources_impl(
+        catalog,
+        tool_id,
+        scope_id,
+        form_values,
+        input_sources,
+        job_directory,
+        true,
+    )
+}
+
+pub fn prepare_catalog_preview_with_sources(
+    catalog: &ToolCatalog,
+    tool_id: &str,
+    scope_id: &ScopeId,
+    form_values: &BTreeMap<String, String>,
+    input_sources: &BTreeMap<String, ToolInputSource>,
+    job_directory: &Path,
+) -> Result<PreparedCatalogCommand, CatalogError> {
+    prepare_catalog_command_with_sources_impl(
+        catalog,
+        tool_id,
+        scope_id,
+        form_values,
+        input_sources,
+        job_directory,
+        false,
+    )
+}
+
+fn prepare_catalog_command_with_sources_impl(
+    catalog: &ToolCatalog,
+    tool_id: &str,
+    scope_id: &ScopeId,
+    form_values: &BTreeMap<String, String>,
+    input_sources: &BTreeMap<String, ToolInputSource>,
+    job_directory: &Path,
+    require_available_binary: bool,
+) -> Result<PreparedCatalogCommand, CatalogError> {
     let tool = catalog.tool(tool_id).ok_or(CatalogError::NotFound)?;
+    if !tool_supports_current_platform(tool) {
+        return Err(CatalogError::BinaryMissing);
+    }
     if !job_directory.is_absolute() {
         return Err(CatalogError::InvalidInput);
     }
@@ -658,8 +910,22 @@ pub fn prepare_catalog_command(
     fs::create_dir_all(job_directory.join("tmp"))?;
     fs::create_dir_all(job_directory.join("home"))?;
 
-    let binary = resolve_binary(tool, &catalog.paths)?;
-    let sha256 = file_sha256(&binary)?;
+    validate_form_values(tool, form_values)?;
+
+    let (binary, sha256) = if require_available_binary {
+        let binary = resolve_binary(tool, &catalog.paths)?;
+        let sha256 = file_sha256(&binary)?;
+        (binary, sha256)
+    } else {
+        let binary = {
+            if tool.binary.command.is_empty() {
+                resolve_path_candidate(&tool.binary.path, &catalog.paths)
+            } else {
+                PathBuf::from(&tool.binary.command)
+            }
+        };
+        (binary, String::new())
+    };
     let binary_str = binary.display().to_string();
 
     let mut values = form_values.clone();
@@ -700,20 +966,13 @@ pub fn prepare_catalog_command(
                 }
             })
             .ok_or(CatalogError::InvalidInput)?;
-        let path = catalog.resolve_wordlist_path(&raw)?;
+        let path = if require_available_binary {
+            catalog.resolve_wordlist_path(&raw)?
+        } else {
+            catalog.preview_wordlist_path(&raw)?
+        };
         values.insert(field.id.clone(), path.display().to_string());
         values.insert("wordlist".to_owned(), path.display().to_string());
-    }
-
-    // Validate required fields
-    for field in &tool.form.fields {
-        if !field.required {
-            continue;
-        }
-        let value = values.get(&field.id).map_or("", String::as_str);
-        if value.is_empty() {
-            return Err(CatalogError::InvalidInput);
-        }
     }
 
     // Normalize URL / host / target fields for tools that need them.
@@ -835,12 +1094,66 @@ pub fn prepare_catalog_command(
         return Err(CatalogError::InvalidInput);
     }
 
-    let cwd = resolve_cwd(tool, &catalog.paths, &binary, job_directory)?;
+    let cwd = resolve_cwd(
+        tool,
+        &catalog.paths,
+        &binary,
+        job_directory,
+        require_available_binary,
+    )?;
     let environment = build_environment(tool, job_directory, &cwd);
 
-    let risk_level = match tool.mode {
-        ToolMode::ExternalLaunch => RiskLevel::L3,
-        ToolMode::EmbeddedCli => RiskLevel::L2,
+    let risk_level = effective_catalog_risk_level(tool);
+
+    let mut sensitive_values = tool
+        .form
+        .fields
+        .iter()
+        .filter(|field| field.sensitive)
+        .filter_map(|field| {
+            values
+                .get(&field.id)
+                .filter(|value| !value.is_empty())
+                .map(|value| (field.id.clone(), value.clone()))
+        })
+        .collect::<Vec<_>>();
+    sensitive_values.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
+    let argv_redacted = argv
+        .iter()
+        .map(|argument| redact_argument(argument, &sensitive_values))
+        .collect();
+    let has_sensitive_argv = !sensitive_values.is_empty();
+    let io = ToolRunIo {
+        schema_version: tool.io.schema_version,
+        inputs: tool
+            .io
+            .inputs
+            .iter()
+            .filter(|input| {
+                values
+                    .get(&input.field)
+                    .is_some_and(|value| !value.is_empty())
+            })
+            .map(|input| ToolInputRecord {
+                id: input.id.clone(),
+                kind: input.kind,
+                source: input_sources.get(&input.field).copied().unwrap_or_else(|| {
+                    let uses_default = tool
+                        .form
+                        .fields
+                        .iter()
+                        .find(|field| field.id == input.field)
+                        .is_some_and(|field| !field.default.is_empty());
+                    if uses_default {
+                        ToolInputSource::CatalogDefault
+                    } else {
+                        ToolInputSource::Form
+                    }
+                }),
+                source_id: input.field.clone(),
+            })
+            .collect(),
+        outputs: tool.io.outputs.clone(),
     };
 
     let spec = CommandSpec {
@@ -850,17 +1163,34 @@ pub fn prepare_catalog_command(
         tool_sha256: sha256,
         program: binary_str,
         argv_exec: argv.clone(),
-        argv_redacted: argv,
+        argv_redacted,
         env_exec: environment.clone(),
         env_redacted: environment.clone(),
-        secret_transport: SecretTransport::None,
-        secret_inputs: Vec::new(),
+        secret_transport: if has_sensitive_argv {
+            SecretTransport::ArgvException
+        } else {
+            SecretTransport::None
+        },
+        secret_inputs: sensitive_values
+            .iter()
+            .map(|(identifier, _)| SecretInputLifecycle {
+                identifier: identifier.clone(),
+                transport: SecretTransport::ArgvException,
+                destroy_after_open: false,
+                lifetime_millis: None,
+            })
+            .collect(),
         cwd: cwd.display().to_string(),
         environment_allowlist: environment.keys().cloned().collect(),
         timeout_millis: tool.limits.timeout_millis,
         stop_grace_millis: 2_000,
         expected_outputs: vec!["stdout.log".to_owned(), "stderr.log".to_owned()],
-        risk_level,
+        io,
+        risk_level: if has_sensitive_argv {
+            RiskLevel::L3
+        } else {
+            risk_level
+        },
         scope_id: Some(scope_id.clone()),
         sandbox_profile: "catalog-systemd-or-pgid".to_owned(),
         resource_limits: ResourceLimits {
@@ -880,6 +1210,8 @@ pub fn prepare_catalog_command(
         tool_id: tool.id.clone(),
         tool_name: tool.name.clone(),
         mode: tool.mode.clone(),
+        parser_id: tool.parser.id.clone(),
+        parser_version: tool.parser.version.clone(),
         detach,
         spec,
         stdout_path: job_directory.join("stdout.log"),
@@ -888,8 +1220,95 @@ pub fn prepare_catalog_command(
     })
 }
 
+fn validate_form_values(
+    tool: &CatalogToolManifest,
+    form_values: &BTreeMap<String, String>,
+) -> Result<(), CatalogError> {
+    if form_values
+        .keys()
+        .any(|key| !tool.form.fields.iter().any(|field| field.id == *key))
+    {
+        return Err(CatalogError::InvalidInput);
+    }
+    for field in &tool.form.fields {
+        let value = form_values.get(&field.id).map_or("", String::as_str);
+        if value.contains('\0') || value.len() > 16 * 1024 {
+            return Err(CatalogError::InvalidInput);
+        }
+        if field.required
+            && value.trim().is_empty()
+            && (form_values.contains_key(&field.id) || field.default.is_empty())
+        {
+            return Err(CatalogError::InvalidInput);
+        }
+        if value.is_empty() {
+            continue;
+        }
+        match field.field_type.as_str() {
+            "select" if !field.options.iter().any(|option| option == value) => {
+                return Err(CatalogError::InvalidInput);
+            }
+            "number" => {
+                let number = value
+                    .parse::<f64>()
+                    .map_err(|_| CatalogError::InvalidInput)?;
+                if !number.is_finite() || !(0.0..=1_000_000_000.0).contains(&number) {
+                    return Err(CatalogError::InvalidInput);
+                }
+            }
+            "url" => {
+                let parsed = Url::parse(value).map_err(|_| CatalogError::InvalidInput)?;
+                if !valid_http_target(&parsed) {
+                    return Err(CatalogError::InvalidInput);
+                }
+            }
+            "host" => validate_single_target(value)?,
+            "select" | "text" | "wordlist" => {}
+            _ => return Err(CatalogError::InvalidInput),
+        }
+    }
+    Ok(())
+}
+
+fn validate_single_target(value: &str) -> Result<(), CatalogError> {
+    if looks_like_url(value) {
+        let parsed = Url::parse(value).map_err(|_| CatalogError::InvalidInput)?;
+        if valid_http_target(&parsed) {
+            return Ok(());
+        }
+    }
+    if value.starts_with('-')
+        || value.contains('/')
+        || value.contains('\\')
+        || value.chars().any(char::is_whitespace)
+    {
+        return Err(CatalogError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn valid_http_target(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+}
+
+fn redact_argument(argument: &str, sensitive_values: &[(String, String)]) -> String {
+    sensitive_values
+        .iter()
+        .fold(argument.to_owned(), |redacted, (_, value)| {
+            redacted.replace(value, "[REDACTED]")
+        })
+}
+
 fn looks_like_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn tool_supports_current_platform(tool: &CatalogToolManifest) -> bool {
+    tool.platforms.is_empty() || tool.platforms.iter().any(|value| value == env::consts::OS)
 }
 
 fn resolve_cwd(
@@ -897,6 +1316,7 @@ fn resolve_cwd(
     paths: &CatalogPaths,
     binary: &Path,
     job_directory: &Path,
+    require_existing: bool,
 ) -> Result<PathBuf, CatalogError> {
     if !tool.cwd.is_empty() {
         let cwd = if Path::new(&tool.cwd).is_absolute() {
@@ -904,7 +1324,7 @@ fn resolve_cwd(
         } else {
             paths.tools_root.join(&tool.cwd)
         };
-        if cwd.is_dir() {
+        if cwd.is_dir() || !require_existing {
             return Ok(cwd);
         }
         return Err(CatalogError::InvalidInput);
@@ -936,14 +1356,27 @@ fn build_environment(
 
     match tool.mode {
         ToolMode::ExternalLaunch => {
-            // Desktop GUIs need the real session environment (GTK, X11, dbus, locale…).
-            // Start from the parent process env, then ensure critical display vars exist.
-            for (key, value) in env::vars() {
-                // Skip oversized / noisy vars that can break argv/env validation.
-                if key.starts_with("BASH_FUNC_") || value.contains('\0') {
-                    continue;
+            // Forward only the desktop-session values required by GUI applications.
+            for key in [
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+                "XAUTHORITY",
+                "XDG_RUNTIME_DIR",
+                "XDG_CURRENT_DESKTOP",
+                "XDG_SESSION_TYPE",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "GDK_BACKEND",
+                "QT_QPA_PLATFORM",
+            ] {
+                if let Ok(value) = env::var(key)
+                    && !value.contains('\0')
+                    && value.len() <= 4096
+                {
+                    environment.insert(key.to_owned(), value);
                 }
-                environment.insert(key, value);
             }
             environment.insert("PATH".to_owned(), path);
             environment.insert("PWD".to_owned(), cwd.display().to_string());
@@ -1084,6 +1517,76 @@ mod tests {
         assert!(catalog.tools.iter().any(|tool| tool.id == "dddd"));
         assert!(catalog.tools.iter().any(|tool| tool.id == "behinder"));
         assert!(!catalog.wordlists.is_empty());
+        let curl = catalog.tool("curl").expect("curl manifest");
+        assert_eq!(curl.io.schema_version, 1);
+        assert!(curl.io.inputs.iter().any(|input| {
+            input.kind == flagdeck_domain::ToolIoKind::Url && input.field == "url"
+        }));
+        assert!(!curl.io.outputs.is_empty());
+        assert_eq!(curl.tier, "tier_1");
+        assert!(curl.presets.len() >= 3);
+    }
+
+    #[test]
+    fn legacy_catalog_risk_defaults_follow_execution_mode() {
+        let embedded: CatalogToolManifest = toml::from_str(
+            r#"
+id = "embedded"
+name = "embedded"
+category = "test"
+mode = "embedded_cli"
+"#,
+        )
+        .unwrap();
+        let external: CatalogToolManifest = toml::from_str(
+            r#"
+id = "external"
+name = "external"
+category = "test"
+mode = "external_launch"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(effective_catalog_risk_level(&embedded), RiskLevel::L2);
+        assert_eq!(effective_catalog_risk_level(&external), RiskLevel::L3);
+    }
+
+    #[test]
+    fn rejects_unknown_tool_io_schema_version() {
+        let temporary = tempdir().unwrap();
+        let tools_dir = temporary.path().join("tools");
+        fs::create_dir_all(&tools_dir).unwrap();
+        fs::write(
+            tools_dir.join("typed.toml"),
+            r#"
+id = "typed"
+name = "typed"
+category = "test"
+mode = "embedded_cli"
+
+[io]
+schema_version = 2
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[argv]
+template = ["--version"]
+"#,
+        )
+        .unwrap();
+        let paths = CatalogPaths {
+            tools_root: temporary.path().join("tools-root"),
+            wordlists_root: temporary.path().join("wordlists"),
+            catalog_root: temporary.path().to_path_buf(),
+        };
+
+        assert!(matches!(
+            ToolCatalog::load(paths),
+            Err(CatalogError::Invalid(message)) if message.contains("unsupported I/O schema version")
+        ));
     }
 
     #[test]
@@ -1116,6 +1619,85 @@ mod tests {
     }
 
     #[test]
+    fn sensitive_catalog_values_are_redacted_and_declared() {
+        if !Path::new("/usr/bin/curl").is_file() {
+            return;
+        }
+        let catalog = ToolCatalog::load_default().unwrap();
+        let job = tempdir().unwrap();
+        let mut form = BTreeMap::new();
+        form.insert("url".to_owned(), "http://127.0.0.1:9/".to_owned());
+        form.insert("method".to_owned(), "GET".to_owned());
+        form.insert("cookie".to_owned(), "session=top-secret".to_owned());
+        let prepared =
+            prepare_catalog_command(&catalog, "curl", &ScopeId::new(), &form, job.path()).unwrap();
+        assert!(
+            prepared
+                .spec
+                .argv_exec
+                .iter()
+                .any(|value| value == "session=top-secret")
+        );
+        assert!(
+            prepared
+                .spec
+                .argv_redacted
+                .iter()
+                .all(|value| !value.contains("top-secret"))
+        );
+        assert_eq!(
+            prepared.spec.secret_transport,
+            SecretTransport::ArgvException
+        );
+        assert_eq!(prepared.spec.risk_level, RiskLevel::L3);
+    }
+
+    #[test]
+    fn form_validation_rejects_unknown_enum_and_multi_target_values() {
+        let catalog = ToolCatalog::load_default().unwrap();
+        let curl = catalog.tool("curl").unwrap();
+        let mut form = BTreeMap::new();
+        form.insert("url".to_owned(), "http://127.0.0.1/".to_owned());
+        form.insert("method".to_owned(), "TRACE".to_owned());
+        assert!(matches!(
+            validate_form_values(curl, &form),
+            Err(CatalogError::InvalidInput)
+        ));
+        form.insert("method".to_owned(), "GET".to_owned());
+        form.insert("unknown".to_owned(), "value".to_owned());
+        assert!(matches!(
+            validate_form_values(curl, &form),
+            Err(CatalogError::InvalidInput)
+        ));
+        form.remove("unknown");
+        form.insert("method".to_owned(), String::new());
+        assert!(matches!(
+            validate_form_values(curl, &form),
+            Err(CatalogError::InvalidInput)
+        ));
+        assert!(matches!(
+            validate_single_target("192.0.2.0/24"),
+            Err(CatalogError::InvalidInput)
+        ));
+        assert!(matches!(
+            validate_single_target("/tmp/targets.txt"),
+            Err(CatalogError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn external_environment_uses_a_fixed_desktop_allowlist() {
+        let catalog = ToolCatalog::load_default().unwrap();
+        let tool = catalog.tool("behinder").unwrap();
+        let job = tempdir().unwrap();
+        let environment = build_environment(tool, job.path(), job.path());
+        assert!(!environment.contains_key("HOME"));
+        assert!(!environment.contains_key("SSH_AUTH_SOCK"));
+        assert!(!environment.contains_key("GITHUB_TOKEN"));
+        assert!(environment.contains_key("PATH"));
+    }
+
+    #[test]
     fn resolves_ffuf_from_mise_when_present() {
         let catalog = ToolCatalog::load_default().unwrap();
         let tool = catalog.tool("ffuf").expect("ffuf manifest");
@@ -1128,7 +1710,17 @@ mod tests {
     #[test]
     fn gui_tools_have_no_required_url() {
         let catalog = ToolCatalog::load_default().unwrap();
-        for id in ["antsword", "behinder", "godzilla", "shiro"] {
+        for id in [
+            "antsword",
+            "behinder",
+            "cyberchef",
+            "godzilla",
+            "godzilla-super",
+            "godzilla-super-mcp",
+            "payloader",
+            "shiro",
+            "uploadranger",
+        ] {
             let tool = catalog.tool(id).unwrap_or_else(|| panic!("missing {id}"));
             assert!(!tool_needs_target(tool), "{id} should not require target");
         }

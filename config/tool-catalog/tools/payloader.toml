@@ -1,31 +1,31 @@
 id = "payloader"
 name = "Payloader"
 category = "gui"
-summary = "Payload 构造工作台（Vite 本地服务）"
+summary = "Payload 构造工作台（桌面 AppImage）"
 
 usage = """
-【类型】本地 Web 服务（Payloader）
+【类型】独立 GUI（Payloader Client 2.0，linux x86_64）
 
 【FlagDeck】
-在工具目录执行 npm run dev（受管进程）：
-• 默认 http://127.0.0.1:5173
-• 任务保持「运行中」时可用「取消当前任务」结束服务
-• 首次需在目录内 npm install
+一键启动本机 AppImage（经 start-payloader.sh），无需填写目标 URL。
+Payload / 攻击链 / 编解码均在客户端窗口内操作。
 
 【注意】
-• 需要本机 Node.js / npm
-• 仅作辅助构造，不自动对目标发包
+• 需要图形桌面会话（DISPLAY / XAUTHORITY）
+• 包装脚本默认 APPIMAGE_EXTRACT_AND_RUN=1（不依赖 FUSE）
+• 仅在授权靶场 / CTF 环境使用
 """
 mode = "external_launch"
 featured = false
+platforms = ["linux"]
+# Windowed GUI: detach after probe (cancel not needed once the window is up).
+detach = true
 cwd = "Active/Payloader"
-# Keep process managed so cancel/stop works for the Vite server.
-detach = false
 
 [binary]
-command = "npm"
-path = ""
-resolve = ["system"]
+command = "start-payloader.sh"
+path = "Active/Payloader/start-payloader.sh"
+resolve = ["tools_root", "path"]
 
 [ui]
 icon = "app"
@@ -35,12 +35,12 @@ accent = "indigo"
 fields = []
 
 [argv]
-template = ["run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"]
+template = []
 
 [parser]
 kind = "none"
 
 [limits]
 timeout_millis = 86400000
-memory_max_bytes = 1073741824
-tasks_max = 64
+memory_max_bytes = 2147483648
+tasks_max = 256

@@ -479,6 +479,64 @@ impl Default for ResourceLimits {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ToolIoKind {
+    Url,
+    Wordlist,
+    HttpDiscovery,
+    RawArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ToolInputSpec {
+    pub id: String,
+    pub kind: ToolIoKind,
+    pub field: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ToolOutputSpec {
+    pub id: String,
+    pub kind: ToolIoKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, Default)]
+pub struct ToolIoContract {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub inputs: Vec<ToolInputSpec>,
+    #[serde(default)]
+    pub outputs: Vec<ToolOutputSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ToolInputSource {
+    Form,
+    TargetContext,
+    CatalogDefault,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ToolInputRecord {
+    pub id: String,
+    pub kind: ToolIoKind,
+    pub source: ToolInputSource,
+    pub source_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, Default)]
+pub struct ToolRunIo {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub inputs: Vec<ToolInputRecord>,
+    #[serde(default)]
+    pub outputs: Vec<ToolOutputSpec>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommandSpec {
     pub command_spec_id: CommandSpecId,
@@ -505,6 +563,8 @@ pub struct CommandSpec {
     #[ts(type = "number")]
     pub stop_grace_millis: u64,
     pub expected_outputs: Vec<String>,
+    #[serde(default)]
+    pub io: ToolRunIo,
     pub risk_level: RiskLevel,
     pub scope_id: Option<ScopeId>,
     pub sandbox_profile: String,
@@ -1259,6 +1319,13 @@ pub fn typescript_declarations() -> String {
         declaration!(SecretTransport),
         declaration!(SecretInputLifecycle),
         declaration!(ResourceLimits),
+        declaration!(ToolIoKind),
+        declaration!(ToolInputSpec),
+        declaration!(ToolOutputSpec),
+        declaration!(ToolIoContract),
+        declaration!(ToolInputSource),
+        declaration!(ToolInputRecord),
+        declaration!(ToolRunIo),
         declaration!(CommandSpec),
         declaration!(ExecutionStatus),
         declaration!(ImportStatus),
@@ -1307,6 +1374,10 @@ pub fn contract_schemas() -> Result<BTreeMap<&'static str, serde_json::Value>, s
         (
             "command-spec",
             serde_json::to_value(schemars::schema_for!(CommandSpec))?,
+        ),
+        (
+            "tool-io-contract",
+            serde_json::to_value(schemars::schema_for!(ToolIoContract))?,
         ),
         ("job", serde_json::to_value(schemars::schema_for!(Job))?),
         (
@@ -1407,6 +1478,7 @@ mod tests {
             timeout_millis: 1000,
             stop_grace_millis: 100,
             expected_outputs: Vec::new(),
+            io: ToolRunIo::default(),
             risk_level: RiskLevel::L3,
             scope_id: None,
             sandbox_profile: "none".to_owned(),
@@ -1423,12 +1495,13 @@ mod tests {
     #[test]
     fn schemas_cover_all_frozen_contracts() {
         let schemas = contract_schemas().unwrap();
-        assert_eq!(schemas.len(), 10);
+        assert_eq!(schemas.len(), 11);
         assert!(schemas.values().all(|value| value["$schema"].is_string()));
         for name in [
             "target-scope",
             "http-message",
             "command-spec",
+            "tool-io-contract",
             "job",
             "discovery",
             "artifact",

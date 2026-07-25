@@ -1,21 +1,106 @@
 id = "sqlmap"
 name = "sqlmap"
 category = "web_exploit"
+tier = "tier_1"
+capabilities = ["sqli", "database_enumeration"]
+aliases = ["SQL 注入", "注测", "sqlmap", "数据库"]
+risk_level = "l3"
 summary = "自动化 SQL 注入检测与利用（PATH）"
 
 usage = """
 【FlagDeck 表单】
 • 必填：URL、level、risk
 • 可选：POST/Cookie/参数、DBMS、线程、代理、tamper、枚举动作
-
-【实际调用】
-sqlmap -u URL [--data] [--cookie] [-p] --level N --risk N --batch …
+• 输出：任务目录 sqlmap-output/
 
 完整帮助：sqlmap -h / sqlmap -hh
 仅限 CTF / 靶场 / 书面授权目标。
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "safe_detect"
+name = "安全探测"
+core_fields = ["url", "level", "risk", "batch"]
+
+[presets.defaults]
+level = "1"
+risk = "1"
+batch = "yes"
+threads = "1"
+
+[[presets]]
+id = "cookie_inject"
+name = "Cookie 注入"
+core_fields = ["url", "cookie", "level", "risk", "batch"]
+
+[presets.defaults]
+level = "2"
+risk = "1"
+batch = "yes"
+threads = "1"
+
+[[presets]]
+id = "enum_dbs"
+name = "枚举库名"
+core_fields = ["url", "level", "risk", "dbs", "batch"]
+
+[presets.defaults]
+level = "2"
+risk = "2"
+dbs = "yes"
+batch = "yes"
+threads = "1"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url", "data", "cookie", "param", "request_file"]
+
+[[field_groups]]
+id = "injection"
+name = "注入参数"
+fields = ["level", "risk", "dbms", "technique", "tamper"]
+
+[[field_groups]]
+id = "enumeration"
+name = "枚举"
+fields = ["dbs", "tables", "columns", "dump"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["batch", "threads", "proxy", "timeout"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.outputs]]
+id = "findings"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "GPL-2.0"
+homepage = "https://sqlmap.org/"
+version = "1.8"
+health_strategy = "safe-version-command"
+runtime = "Python"
+version_args = ["--version"]
+install_command = "pipx install sqlmap"
+path_fix = "export PATH=\"$PATH:$HOME/.local/bin\""
+wordlist_source = ""
+wordlist_install_command = ""
 
 [binary]
 command = "sqlmap"
@@ -34,9 +119,19 @@ required = true
 from = "target_url"
 hint = "含注入点的地址，例 http://target/vuln.php?id=1"
 
+
+[[form.fields]]
+id = "request_file"
+type = "text"
+label = "请求文件 -r（可选）"
+default = ""
+required = false
+hint = "仅支持当前项目 HTTP 请求 Artifact 逻辑名/任务侧车，不接受任意本地路径"
+
 [[form.fields]]
 id = "data"
 type = "text"
+sensitive = true
 label = "POST 体 --data（可选）"
 default = ""
 required = false
@@ -45,6 +140,7 @@ hint = "POST 注入时填，例 id=1&user=a；会改为请求体传参"
 [[form.fields]]
 id = "cookie"
 type = "text"
+sensitive = true
 label = "Cookie --cookie（可选）"
 default = ""
 required = false
@@ -61,6 +157,7 @@ hint = "只测指定参数，例 id 或 id,user；留空=自动发现"
 [[form.fields]]
 id = "headers"
 type = "text"
+sensitive = true
 label = "额外头 --headers（可选）"
 default = ""
 required = false
@@ -144,6 +241,7 @@ hint = "两次请求间隔秒数，用于降速防 WAF/限流"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 --proxy（可选）"
 default = ""
 required = false
@@ -350,8 +448,14 @@ field = "enum"
 equals = "dump-all"
 args = ["--dump-all"]
 
+[[argv.optional]]
+field = "request_file"
+args = ["-r", "{request_file}"]
+
 [parser]
-kind = "none"
+kind = "sqlmap-text"
+id = "flagdeck.sqlmap-text"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 3600000

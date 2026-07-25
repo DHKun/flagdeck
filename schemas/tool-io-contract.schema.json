@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "ToolInputSpec": {
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolIoKind"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "field"
+      ],
+      "type": "object"
+    },
+    "ToolIoKind": {
+      "enum": [
+        "url",
+        "wordlist",
+        "http_discovery",
+        "raw_artifact"
+      ],
+      "type": "string"
+    },
+    "ToolOutputSpec": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolIoKind"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "inputs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ToolInputSpec"
+      },
+      "type": "array"
+    },
+    "outputs": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ToolOutputSpec"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version"
+  ],
+  "title": "ToolIoContract",
+  "type": "object"
+}

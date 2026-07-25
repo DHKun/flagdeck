@@ -11,28 +11,31 @@ use std::sync::Arc;
 
 use flagdeck_core::{
     AppStatus, ArtifactPage, ArtifactPageRequest, ArtifactPreview, CampaignRequest,
-    CancelAllJobsResult, CancelJobRequest, CancelJobResult, CatalogSnapshot, ClearJobsRequest,
-    ClearJobsResult, CommandError, CoreError, CoreEvent, CoreService, CreateDictionaryRequest,
-    CreateNoteRequest, CreateProjectRequest, CreateScopeRequest, CreateSqlmapRequestFileRequest,
-    DeleteJobRequest, DeleteJobResult, DictionaryPage, DictionarySearchResult,
-    DiffHttpMessagesRequest, DiscoveryPage, DiscoveryPageRequest, EnsureTargetRequest,
-    ExecuteMetasploitModuleRequest, ExportProjectRequest, ExportProjectResult,
+    CancelAllJobsResult, CancelJobRequest, CancelJobResult, CatalogRunPreview, CatalogSnapshot,
+    CatalogToolDiagnosticDto, ClearJobsRequest, ClearJobsResult, CommandError, CoreError,
+    CoreEvent, CoreService, CreateDictionaryRequest, CreateNoteRequest, CreateProjectRequest,
+    CreateScopeRequest, CreateSqlmapRequestFileRequest, DeleteJobRequest, DeleteJobResult,
+    DiagnoseCatalogToolRequest, DictionaryPage, DictionarySearchResult, DiffHttpMessagesRequest,
+    DiscoveryPage, DiscoveryPageRequest, EnsureTargetRequest, ExecuteMetasploitModuleRequest,
+    ExportJobArtifactRequest, ExportJobArtifactResult, ExportProjectRequest, ExportProjectResult,
     ExternalLauncherHealthDto, GetHttpMessageRequest, GetMetasploitOptionsRequest, HttpHistoryPage,
     HttpHistoryPageRequest, HttpMessageDiff, ImportPackagePage, ImportProjectRequest,
     ImportProjectResult, IntruderAttemptPage, IntruderAttemptPageRequest, IntruderCampaignPage,
-    JobFilePreview, JobLogPreview, JobPage, JobPageRequest, JobView, LaunchExternalRequest,
-    ListIntruderCampaignsRequest, ListPayloadsRequest, MetasploitConsoleCommandRequest,
-    MetasploitEntityPage, MetasploitExecutionResult, MetasploitModuleOption,
-    MetasploitModuleSummary, MetasploitSessionCommandRequest, MetasploitStatus,
-    MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult,
-    OpenProjectRequest, ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
-    PreviewArtifactRequest, PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest,
-    ProjectContextRequest, ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult,
-    RunCatalogToolRequest, RunToolRequest, ScopePage, SearchDictionaryRequest,
+    JobArtifactPageRequest, JobFilePreview, JobLogPreview, JobPage, JobPageRequest, JobView,
+    LaunchExternalRequest, ListIntruderCampaignsRequest, ListPayloadsRequest,
+    ListStructuredResultsRequest, MetasploitConsoleCommandRequest, MetasploitEntityPage,
+    MetasploitExecutionResult, MetasploitModuleOption, MetasploitModuleSummary,
+    MetasploitSessionCommandRequest, MetasploitStatus, MetasploitTranscriptResult,
+    OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult, OpenProjectRequest,
+    ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
+    PersonalPresetStoreDto, PreviewArtifactRequest, PreviewCatalogToolRequest,
+    PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest, ProjectContextRequest,
+    ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest,
+    RunToolRequest, SavePersonalPresetsRequest, ScopePage, SearchDictionaryRequest,
     SearchMetasploitModulesRequest, SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest,
     StartMetasploitRequest, StartProxyRequest, StartUploadCampaignRequest,
-    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, ToolHealthDto,
-    ToolPackHealthDto,
+    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, StructuredResultPage,
+    ToolHealthDto, ToolPackHealthDto,
 };
 use flagdeck_domain::{
     AdapterEntity, Artifact, DictionaryIndex, HttpMessage, IntruderCampaign, MultipartDocument,
@@ -79,6 +82,32 @@ fn emit_core_event(
 async fn app_status(state: State<'_, Arc<CoreService>>) -> Result<AppStatus, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.status()).await
+}
+
+#[tauri::command]
+async fn load_personal_presets(
+    state: State<'_, Arc<CoreService>>,
+) -> Result<PersonalPresetStoreDto, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.load_personal_presets()).await
+}
+
+#[tauri::command]
+async fn save_personal_presets(
+    state: State<'_, Arc<CoreService>>,
+    request: SavePersonalPresetsRequest,
+) -> Result<PersonalPresetStoreDto, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.save_personal_presets(request)).await
+}
+
+#[tauri::command]
+async fn diagnose_catalog_tool(
+    state: State<'_, Arc<CoreService>>,
+    request: DiagnoseCatalogToolRequest,
+) -> Result<CatalogToolDiagnosticDto, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.diagnose_catalog_tool(&request)).await
 }
 
 #[tauri::command]
@@ -221,6 +250,15 @@ async fn ensure_target(
 }
 
 #[tauri::command]
+async fn preview_catalog_tool(
+    state: State<'_, Arc<CoreService>>,
+    request: PreviewCatalogToolRequest,
+) -> Result<CatalogRunPreview, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.preview_catalog_tool(request)).await
+}
+
+#[tauri::command]
 async fn run_catalog_tool(
     app: AppHandle,
     state: State<'_, Arc<CoreService>>,
@@ -286,6 +324,33 @@ async fn preview_job_file(
 ) -> Result<JobFilePreview, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.preview_job_file(&request)).await
+}
+
+#[tauri::command]
+async fn list_job_artifacts(
+    state: State<'_, Arc<CoreService>>,
+    request: JobArtifactPageRequest,
+) -> Result<ArtifactPage, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.list_job_artifacts(&request)).await
+}
+
+#[tauri::command]
+async fn export_job_artifact(
+    state: State<'_, Arc<CoreService>>,
+    request: ExportJobArtifactRequest,
+) -> Result<ExportJobArtifactResult, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.export_job_artifact(&request)).await
+}
+
+#[tauri::command]
+async fn list_structured_results(
+    state: State<'_, Arc<CoreService>>,
+    request: ListStructuredResultsRequest,
+) -> Result<StructuredResultPage, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.list_structured_results(&request)).await
 }
 
 #[tauri::command]
@@ -969,7 +1034,8 @@ pub fn run() {
         configured_workspaces_root().expect("FlagDeck workspace root configuration failed");
     let application = tauri::Builder::default()
         .setup(move |app| {
-            let bundled_worker = app.path().resource_dir()?.join("workers/mitmproxy");
+            let resource_directory = app.path().resource_dir()?;
+            let bundled_worker = resource_directory.join("workers/mitmproxy");
             let worker_source = bundled_worker
                 .join("pyproject.toml")
                 .is_file()
@@ -997,18 +1063,26 @@ pub fn run() {
                 .as_ref()
                 .map(|root| root.join("uv"))
                 .filter(|path| path.is_file());
+            let catalog_root = resource_directory
+                .join("config/tool-catalog")
+                .is_dir()
+                .then(|| resource_directory.join("config/tool-catalog"));
             app.manage(Arc::new(CoreService::with_bundled_resources(
                 workspaces_root,
                 worker_source,
                 uv_program,
                 metasploit_adapter,
                 metasploit_launcher,
+                catalog_root,
             )));
             create_windows(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            load_personal_presets,
+            save_personal_presets,
+            diagnose_catalog_tool,
             create_project,
             list_projects,
             open_project,
@@ -1021,6 +1095,7 @@ pub fn run() {
             tool_health,
             list_catalog,
             ensure_target,
+            preview_catalog_tool,
             run_catalog_tool,
             delete_job,
             clear_jobs,
@@ -1033,6 +1108,9 @@ pub fn run() {
             run_tool,
             preview_job_log,
             preview_job_file,
+            list_job_artifacts,
+            export_job_artifact,
+            list_structured_results,
             cancel_job,
             cancel_all_jobs,
             list_jobs,

@@ -1,4 +1,5 @@
-const STORAGE_KEY = "flagdeck.workbench.v1";
+const STORAGE_KEY = "flagdeck.workbench.v2";
+const LEGACY_STORAGE_KEY = "flagdeck.workbench.v1";
 
 export type WorkbenchPrefs = {
   targetUrl: string;
@@ -21,6 +22,7 @@ const defaults: WorkbenchPrefs = {
 
 export function loadWorkbenchPrefs(): WorkbenchPrefs {
   try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...defaults, formByTool: {} };
     const parsed = JSON.parse(raw) as Partial<WorkbenchPrefs>;
@@ -54,7 +56,14 @@ export function loadWorkbenchPrefs(): WorkbenchPrefs {
 
 export function saveWorkbenchPrefs(prefs: WorkbenchPrefs): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...prefs,
+        targetUrl: defaults.targetUrl,
+        formByTool: {},
+      }),
+    );
   } catch {
     // ignore quota / private mode
   }

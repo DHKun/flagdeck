@@ -2,6 +2,9 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "app_status",
+            "load_personal_presets",
+            "save_personal_presets",
+            "diagnose_catalog_tool",
             "create_project",
             "list_projects",
             "open_project",
@@ -14,6 +17,7 @@ fn main() {
             "tool_health",
             "list_catalog",
             "ensure_target",
+            "preview_catalog_tool",
             "run_catalog_tool",
             "delete_job",
             "clear_jobs",
@@ -26,6 +30,9 @@ fn main() {
             "run_tool",
             "preview_job_log",
             "preview_job_file",
+            "list_job_artifacts",
+            "export_job_artifact",
+            "list_structured_results",
             "cancel_job",
             "cancel_all_jobs",
             "list_jobs",

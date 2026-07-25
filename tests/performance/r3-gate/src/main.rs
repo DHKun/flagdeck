@@ -460,6 +460,7 @@ fn fixture_spec(cwd: &Path) -> Result<CommandSpec> {
         timeout_millis: 60_000,
         stop_grace_millis: 50,
         expected_outputs: Vec::new(),
+        io: flagdeck_domain::ToolRunIo::default(),
         risk_level: RiskLevel::L0,
         scope_id: None,
         sandbox_profile: "r3-gate".to_owned(),

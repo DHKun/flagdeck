@@ -17,6 +17,9 @@ const isolation = read("dist-isolation/index.js");
 
 const commands = [
   "app_status",
+  "load_personal_presets",
+  "save_personal_presets",
+  "diagnose_catalog_tool",
   "create_project",
   "list_projects",
   "open_project",
@@ -29,6 +32,7 @@ const commands = [
   "tool_health",
   "list_catalog",
   "ensure_target",
+  "preview_catalog_tool",
   "run_catalog_tool",
   "delete_job",
   "clear_jobs",
@@ -44,6 +48,9 @@ const commands = [
   "list_jobs",
   "preview_job_log",
   "preview_job_file",
+  "list_job_artifacts",
+  "export_job_artifact",
+  "list_structured_results",
   "list_discoveries",
   "create_dictionary",
   "list_dictionaries",

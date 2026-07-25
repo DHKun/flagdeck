@@ -1143,6 +1143,61 @@ impl ProjectStore {
         Ok((artifacts, next_cursor))
     }
 
+    pub fn list_job_artifacts(
+        &self,
+        job_id: &flagdeck_domain::JobId,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<Artifact>, Option<String>), StorageError> {
+        job_id
+            .validate()
+            .map_err(|error| StorageError::Domain(error.to_string()))?;
+        if limit == 0 || limit > 100 {
+            return Err(StorageError::Domain(
+                "artifact page limit must be 1..=100".to_owned(),
+            ));
+        }
+        let (cursor_time, cursor_id) = cursor
+            .map(parse_artifact_cursor)
+            .transpose()?
+            .unwrap_or_else(|| ("~".to_owned(), "~".to_owned()));
+        let connection = open_reader_connection(&self.layout.database)?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json,created_at,artifact_id FROM artifacts
+             WHERE state IN ('committed','corrupt')
+               AND source_job_id = ?1
+               AND (created_at < ?2 OR (created_at = ?2 AND artifact_id < ?3))
+             ORDER BY created_at DESC,artifact_id DESC LIMIT ?4",
+        )?;
+        let sql_limit = i64::try_from(limit + 1)
+            .map_err(|_| StorageError::Domain("page limit overflow".to_owned()))?;
+        let mut rows = statement
+            .query_map(
+                params![job_id.0, cursor_time, cursor_id, sql_limit],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = if has_more {
+            rows.last()
+                .map(|(_, created_at, artifact_id)| format!("{created_at}:{artifact_id}"))
+        } else {
+            None
+        };
+        let artifacts = rows
+            .into_iter()
+            .map(|(payload, _, _)| serde_json::from_str(&payload).map_err(Into::into))
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        Ok((artifacts, next_cursor))
+    }
+
     pub fn index_dictionary(
         &self,
         index: &DictionaryIndex,
@@ -3741,6 +3796,7 @@ mod tests {
             timeout_millis: 1000,
             stop_grace_millis: 100,
             expected_outputs: Vec::new(),
+            io: flagdeck_domain::ToolRunIo::default(),
             risk_level: RiskLevel::L0,
             scope_id: None,
             sandbox_profile: "test".to_owned(),

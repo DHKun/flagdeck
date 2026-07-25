@@ -1,0 +1,305 @@
+name: Stable Release
+
+run-name: Stable release ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag in vMAJOR.MINOR.PATCH form
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build unsigned candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Validate stable tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "stable tag must use vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          app_version="$(jq -r '.version' apps/desktop/src-tauri/tauri.conf.json)"
+          test "${BASH_REMATCH[1]}" = "$app_version"
+          test "$(git cat-file -t "$RELEASE_TAG")" = "tag"
+          tag_commit="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          test "$tag_commit" = "$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists" >&2
+            exit 1
+          fi
+      - name: Install build and GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            rpm \
+            webkit2gtk-driver \
+            wget \
+            xvfb
+
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Sync locked dependencies
+        run: mise run sync-all
+
+      - name: Run source and dependency gates
+        run: |
+          mise run test-all
+          mise run r7-audits
+          mise run r7-performance-gate
+
+      - name: Build unsigned Linux candidate
+        run: mise run package
+
+      - name: Install pinned Tauri WebDriver
+        run: |
+          cargo install tauri-driver --locked --version 2.0.6
+          mkdir -p stable-input
+          install -m 755 "$HOME/.cargo/bin/tauri-driver" stable-input/tauri-driver
+
+      - name: Verify unsigned package structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimage="$(find target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+          deb="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          rpm_package="$(find target/release/bundle/rpm -maxdepth 1 -name '*.rpm' -print -quit)"
+          test -f "$appimage"
+          test -f "$deb"
+          test -f "$rpm_package"
+          dpkg-deb --contents "$deb" | grep -q 'usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml'
+          rpm -qpl "$rpm_package" | grep -q '/usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-unsigned-input
+          path: |
+            target/release/flagdeck-desktop
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            release/evidence/dependency-audits.json
+            release/evidence/flagdeck-1.0.0.cdx.json
+            tests/performance/r7-stable/results.json
+            stable-input/tauri-driver
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    name: Sign approved RPM
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    environment: stable-release
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-unsigned-input
+          path: .
+
+      - name: Install isolated signing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gnupg rpm
+
+      - name: Import approved key and sign RPM
+        shell: bash
+        env:
+          FLAGDECK_RPM_SIGNING_KEY: ${{ secrets.FLAGDECK_RPM_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$FLAGDECK_RPM_SIGNING_KEY"
+          signing_home="${RUNNER_TEMP:?}/flagdeck-signing"
+          install -d -m 700 "$signing_home"
+          printf '%s' "$FLAGDECK_RPM_SIGNING_KEY" | \
+            gpg --batch --homedir "$signing_home" --import
+          unset FLAGDECK_RPM_SIGNING_KEY
+          python3 scripts/sign_rpm.py \
+            --rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm \
+            --gpg-home "$signing_home" \
+            --public-key release/FlagDeck-1.0.0-signing-key.asc \
+            --rpm-db release/evidence/rpmdb \
+            --evidence release/evidence/rpm-signature.json \
+            --expected-fingerprint 5DEDB3781215AC2CB323FE2B3742F9C007201D22
+
+      - name: Remove private signing material
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          signing_home="${RUNNER_TEMP:?}/flagdeck-signing"
+          gpgconf --homedir "$signing_home" --kill all 2>/dev/null || true
+          if [[ "$signing_home" == "$RUNNER_TEMP/flagdeck-signing" ]]; then
+            rm -rf -- "$signing_home"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-signed-input
+          path: |
+            target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm
+            release/FlagDeck-1.0.0-signing-key.asc
+            release/evidence/rpm-signature.json
+          if-no-files-found: error
+          retention-days: 1
+
+  validate-and-publish:
+    name: Validate signed candidate and publish
+    needs: sign
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-unsigned-input
+          path: .
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-signed-input
+          path: .
+
+      - name: Restore executable modes
+        run: |
+          chmod 755 target/release/flagdeck-desktop
+          chmod 755 target/release/bundle/appimage/*.AppImage
+          chmod 755 stable-input/tauri-driver
+
+      - name: Install signed-candidate validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            gnupg \
+            podman \
+            rpm \
+            webkit2gtk-driver \
+            xvfb
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.22.2
+
+      - name: Run signed GUI and memory gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          xvfb-run -a env \
+            FLAGDECK_R7_GUI_RUNS=10 \
+            TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
+            TAURI_DRIVER="$PWD/stable-input/tauri-driver" \
+            TAURI_PACKAGE="$PWD/target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm" \
+            node tests/gui/release-gate.mjs
+          xvfb-run -a env \
+            FLAGDECK_R7_MEMORY_RUNS=10 \
+            TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
+            node tests/gui/desktop-memory-gate.mjs
+
+      - name: Download previous Stable RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download v0.6.0 \
+            --pattern 'FlagDeck-0.6.0-1.x86_64.rpm' \
+            --dir target/release/bundle/rpm
+          test -f target/release/bundle/rpm/FlagDeck-0.6.0-1.x86_64.rpm
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Run Fedora lifecycle and finalize evidence
+        run: |
+          python3 scripts/fedora_lifecycle_gate.py \
+            --old-rpm target/release/bundle/rpm/FlagDeck-0.6.0-1.x86_64.rpm \
+            --new-rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm \
+            --public-key release/FlagDeck-1.0.0-signing-key.asc \
+            --output release/evidence/fedora-lifecycle.json
+          python3 scripts/finalize_release.py \
+            --output release/evidence/release-manifest.json
+
+      - name: Stage Stable release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/stable
+          install -m 755 target/release/bundle/appimage/*.AppImage dist/stable/
+          install -m 644 target/release/bundle/deb/*.deb dist/stable/
+          install -m 644 target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm dist/stable/
+          install -m 644 release/FlagDeck-1.0.0-signing-key.asc dist/stable/
+          install -m 644 release/evidence/flagdeck-1.0.0.cdx.json dist/stable/
+          install -m 644 release/evidence/dependency-audits.json dist/stable/
+          install -m 644 release/evidence/rpm-signature.json dist/stable/
+          install -m 644 release/evidence/fedora-lifecycle.json dist/stable/
+          install -m 644 release/evidence/release-manifest.json dist/stable/
+          install -m 644 tests/gui/evidence/summary.json dist/stable/FlagDeck-GUI-EVIDENCE.json
+          install -m 644 tests/gui/evidence/desktop-memory.json dist/stable/FlagDeck-MEMORY-EVIDENCE.json
+          (
+            cd dist/stable
+            sha256sum ./* > FlagDeck-1.0.0-SHA256SUMS.txt
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlagDeck-1.0.0-Stable
+          path: dist/stable/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish Stable GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find dist/stable -maxdepth 1 -type f -print | sort)
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --verify-tag \
+            --generate-notes \
+            --latest

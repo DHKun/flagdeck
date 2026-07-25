@@ -162,6 +162,7 @@ for (let index = 1; index <= runCount; index += 1) {
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
       WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
       DISPLAY: process.env.DISPLAY,
+      XAUTHORITY: process.env.XAUTHORITY,
       DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS,
       XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE,
       XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP,
@@ -171,21 +172,23 @@ for (let index = 1; index <= runCount; index += 1) {
     },
     stdio: "ignore",
   });
+  let sample;
   try {
     const tree = await waitForTree(child.pid);
     const limits = await readFile(`/proc/${child.pid}/limits`, "utf8");
     const coreLimitLine = limits
       .split("\n")
       .find((line) => line.startsWith("Max core file size"));
-    runs.push({
+    sample = {
       index,
       tree,
       coreLimitZero:
         coreLimitLine?.trim().split(/\s+/u).slice(-3).join(" ") === "0 0 bytes",
-    });
+    };
+    runs.push(sample);
   } finally {
     const cleanupPassed = await stop(child);
-    runs.at(-1).cleanupPassed = cleanupPassed;
+    if (sample) sample.cleanupPassed = cleanupPassed;
     await rm(temporaryRoot, { recursive: true, force: true });
   }
   console.log(`FlagDeck R7 desktop memory run ${index}/${runCount}: PASS`);

@@ -2,6 +2,20 @@ import { invoke } from "@tauri-apps/api/core";
 
 const attempts = [
   ["app_status", {}],
+  ["load_personal_presets", {}],
+  [
+    "save_personal_presets",
+    {
+      request: {
+        store: {
+          schema_version: 1,
+          presets: [],
+          default_by_tool: {},
+        },
+      },
+    },
+  ],
+  ["diagnose_catalog_tool", { request: { tool_id: "ffuf" } }],
   ["list_projects", { request: { cursor: null, limit: 20 } }],
   ["create_project", { request: { name: "probe" } }],
   [
@@ -72,6 +86,17 @@ const attempts = [
     },
   ],
   [
+    "preview_catalog_tool",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        tool_id: "curl",
+        target_url: "http://127.0.0.1:1/",
+        form: {},
+      },
+    },
+  ],
+  [
     "run_catalog_tool",
     {
       request: {
@@ -79,6 +104,9 @@ const attempts = [
         tool_id: "curl",
         target_url: "http://127.0.0.1:1/",
         form: {},
+        confirm_sensitive_argv: false,
+        confirm_l2: true,
+        l3_confirmation: null,
       },
     },
   ],
@@ -153,6 +181,19 @@ const attempts = [
     { request: { project_id: "00000000-0000-0000-0000-000000000000" } },
   ],
   [
+    "delete_job",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+      },
+    },
+  ],
+  [
+    "clear_jobs",
+    { request: { project_id: "00000000-0000-0000-0000-000000000000" } },
+  ],
+  [
     "list_jobs",
     {
       request: {
@@ -182,6 +223,39 @@ const attempts = [
         job_id: "00000000-0000-0000-0000-000000000000",
         filename: "ffuf-output.json",
         limit: 1,
+      },
+    },
+  ],
+  [
+    "list_job_artifacts",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+        cursor: null,
+        limit: 20,
+      },
+    },
+  ],
+  [
+    "export_job_artifact",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+        artifact_id: "00000000-0000-0000-0000-000000000000",
+        confirm_sensitive: false,
+      },
+    },
+  ],
+  [
+    "list_structured_results",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+        cursor: null,
+        limit: 50,
       },
     },
   ],

@@ -3,6 +3,8 @@
 
   const commands = new Set([
     "app_status",
+    "load_personal_presets",
+    "save_personal_presets",
     "create_project",
     "list_projects",
     "open_project",
@@ -14,7 +16,9 @@
     "list_scopes",
     "tool_health",
     "list_catalog",
+    "diagnose_catalog_tool",
     "ensure_target",
+    "preview_catalog_tool",
     "run_catalog_tool",
     "delete_job",
     "clear_jobs",
@@ -30,6 +34,9 @@
     "list_jobs",
     "preview_job_log",
     "preview_job_file",
+    "list_job_artifacts",
+    "export_job_artifact",
+    "list_structured_results",
     "list_discoveries",
     "create_dictionary",
     "list_dictionaries",
@@ -165,6 +172,53 @@
         step.extractors.length <= 16 &&
         step.extractors.every(tokenExtractor),
     );
+  const personalPresetId =
+    /^user:[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$/u;
+  const personalPresetStore = (value) => {
+    if (
+      !object(value) ||
+      Array.isArray(value) ||
+      value.schema_version !== 1 ||
+      !Array.isArray(value.presets) ||
+      value.presets.length > 200 ||
+      !object(value.default_by_tool) ||
+      Array.isArray(value.default_by_tool) ||
+      Object.keys(value.default_by_tool).length > 200
+    ) {
+      return false;
+    }
+    const presetsValid = value.presets.every(
+      (preset) =>
+        object(preset) &&
+        !Array.isArray(preset) &&
+        personalPresetId.test(preset.id) &&
+        boundedString(preset.tool_id, 64) &&
+        /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(preset.tool_id) &&
+        boundedString(preset.name, 80) &&
+        preset.name.length > 0 &&
+        boundedString(preset.base_preset_id, 64) &&
+        preset.base_preset_id.length > 0 &&
+        boundedString(preset.created_at, 64) &&
+        boundedString(preset.updated_at, 64) &&
+        object(preset.values) &&
+        !Array.isArray(preset.values) &&
+        Object.keys(preset.values).length <= 256 &&
+        Object.entries(preset.values).every(
+          ([field, fieldValue]) =>
+            /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(field) &&
+            boundedString(fieldValue, 16_384),
+        ),
+    );
+    return (
+      presetsValid &&
+      Object.entries(value.default_by_tool).every(
+        ([tool, presetId]) =>
+          /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(tool) &&
+          boundedString(presetId, 134) &&
+          personalPresetId.test(presetId),
+      )
+    );
+  };
 
   window.__TAURI_ISOLATION_HOOK__ = (message) => {
     if (!object(message) || !commands.has(message.cmd)) {
@@ -178,12 +232,26 @@
     let valid = false;
     switch (message.cmd) {
       case "app_status":
+      case "load_personal_presets":
       case "close_project":
       case "tool_health":
       case "list_catalog":
       case "tool_pack_health":
       case "list_import_packages":
         valid = Object.keys(payload).length === 0;
+        break;
+      case "diagnose_catalog_tool":
+        valid =
+          object(request) &&
+          Object.keys(request).length === 1 &&
+          boundedString(request.tool_id, 64) &&
+          /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(request.tool_id);
+        break;
+      case "save_personal_presets":
+        valid =
+          object(request) &&
+          Object.keys(request).length === 1 &&
+          personalPresetStore(request.store);
         break;
       case "create_project":
         valid =
@@ -305,7 +373,7 @@
           boundedString(request.base_url, 4096) &&
           request.base_url.length > 0;
         break;
-      case "run_catalog_tool":
+      case "preview_catalog_tool":
         valid =
           object(request) &&
           projectId(request.project_id) &&
@@ -321,6 +389,39 @@
               typeof value === "string" &&
               value.length <= 16_384,
           );
+        break;
+      case "run_catalog_tool":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          boundedString(request.tool_id, 128) &&
+          request.tool_id.length > 0 &&
+          boundedString(request.target_url, 4096) &&
+          object(request.form) &&
+          !Array.isArray(request.form) &&
+          Object.keys(request.form).length <= 64 &&
+          Object.entries(request.form).every(
+            ([key, value]) =>
+              boundedString(key, 128) &&
+              typeof value === "string" &&
+              value.length <= 16_384,
+          ) &&
+          typeof request.confirm_sensitive_argv === "boolean" &&
+          typeof request.confirm_l2 === "boolean" &&
+          (request.l3_confirmation === null ||
+            request.l3_confirmation === undefined ||
+            boundedString(request.l3_confirmation, 256)) &&
+          (request.source_job_id === null ||
+            request.source_job_id === undefined ||
+            projectId(request.source_job_id)) &&
+          (request.source_result_id === null ||
+            request.source_result_id === undefined ||
+            (typeof request.source_result_id === "string" &&
+              request.source_result_id.length > 0 &&
+              request.source_result_id.length <= 256)) &&
+          (request.source_artifact_id === null ||
+            request.source_artifact_id === undefined ||
+            projectId(request.source_artifact_id));
         break;
       case "delete_job":
         valid =
@@ -372,6 +473,34 @@
           Number.isSafeInteger(request.limit) &&
           request.limit >= 1 &&
           request.limit <= 1_048_576;
+        break;
+      case "list_job_artifacts":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id) &&
+          page(request);
+        break;
+      case "export_job_artifact":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id) &&
+          projectId(request.artifact_id) &&
+          typeof request.confirm_sensitive === "boolean";
+        break;
+      case "list_structured_results":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id) &&
+          (request.cursor === null ||
+            request.cursor === undefined ||
+            (typeof request.cursor === "string" &&
+              request.cursor.length <= 128)) &&
+          Number.isSafeInteger(request.limit) &&
+          request.limit >= 1 &&
+          request.limit <= 500;
         break;
       case "create_dictionary":
         valid =

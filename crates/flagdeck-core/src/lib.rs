@@ -13,8 +13,10 @@ mod metasploit;
 mod payloads;
 
 pub use catalog_api::{
-    CatalogCategoryDto, CatalogFormFieldDto, CatalogSnapshot, CatalogToolDto, EnsureTargetRequest,
-    RunCatalogToolRequest, WordlistDto,
+    CatalogCategoryDto, CatalogDiagnosticCheckDto, CatalogDiagnosticStatus, CatalogFieldGroupDto,
+    CatalogFormFieldDto, CatalogInstallationDto, CatalogPresetDto, CatalogRunPreview,
+    CatalogSnapshot, CatalogToolDiagnosticDto, CatalogToolDto, DiagnoseCatalogToolRequest,
+    EnsureTargetRequest, PreviewCatalogToolRequest, RunCatalogToolRequest, WordlistDto,
 };
 pub use external::{ExternalLauncherHealthDto, ExternalLauncherId, LaunchExternalRequest};
 pub use http::*;
@@ -25,10 +27,11 @@ pub use payloads::{
     PayloadSourceHealthDto, PreviewPayloadRequest,
 };
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -38,22 +41,22 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use flagdeck_cli_adapters::{
-    AdapterError, CatalogError, ExpectedOutput, OutputRole, ParsedHttpResponse,
+    AdapterError, CatalogError, CatalogPaths, ExpectedOutput, OutputRole, ParsedHttpResponse,
     PreparedToolCommand, ToolCatalog, ToolId, ToolManifest, manifest, materialize_discoveries,
-    parse_output, prepare_catalog_command, prepare_command, registry, write_wordlist,
+    parse_output, prepare_catalog_command_with_sources, prepare_catalog_preview_with_sources,
+    prepare_command, registry, write_wordlist,
 };
 use flagdeck_domain::{
     Artifact, ArtifactId, BodyState, CommandSpec, ConnectionMetadata, DictionaryId,
     DictionaryIndex, Discovery, DnsResolutionSnapshot, ExecutionStatus, ExportPolicy, HttpMessage,
     HttpSource, ImportStatus, IntruderCampaign, Job, JobId, MessageDirection, MessageId,
     MultipartDocument, NetworkClass, OrderedValue, PortRange, ProjectId, ProjectSummary,
-    ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, SupervisorBackend,
-    TargetScope, Timestamp, Validate,
+    ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, TargetScope, Timestamp,
+    ToolInputSource, ToolIoKind, ToolRunIo, Validate,
 };
 use flagdeck_exec::{
     CancellationResult, ExecPolicyError, ManagedExecutionResult, ManagedProcessIdentity,
-    SecretPolicy, SupervisorPolicy, cancel_managed, process_start_ticks, start_managed,
-    validate_program,
+    SecretPolicy, SupervisorPolicy, cancel_managed, start_managed, validate_program,
 };
 use flagdeck_storage::{
     ArtifactWriteRequest, JobImportRecord, MAX_DICTIONARY_TERM_BYTES, MAX_DICTIONARY_TERMS,
@@ -62,6 +65,7 @@ use flagdeck_storage::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::Notify;
 use ts_rs::TS;
@@ -72,6 +76,8 @@ pub const MAX_NOTE_BYTES: usize = 1024 * 1024;
 pub const MAX_DICTIONARY_INPUT_BYTES: usize = 1024 * 1024;
 pub const MAX_JOB_LOG_PREVIEW_BYTES: usize = 64 * 1024;
 pub const MAX_JOB_FILE_PREVIEW_BYTES: usize = 1024 * 1024;
+pub const MAX_PERSONAL_PRESETS: usize = 200;
+pub const MAX_PERSONAL_PRESET_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
@@ -89,6 +95,8 @@ pub enum CoreError {
     ScopeViolation,
     #[error("tool integrity or execution policy failed")]
     ToolUnavailable,
+    #[error("catalog run confirmation required")]
+    CatalogConfirmationRequired(flagdeck_domain::RiskLevel),
     #[error("job is no longer active")]
     JobNotActive,
     #[error("managed cancellation failed")]
@@ -144,6 +152,14 @@ impl From<CoreError> for CommandError {
                 "tool_unavailable",
                 "The selected tool failed its integrity or health policy",
             ),
+            CoreError::CatalogConfirmationRequired(flagdeck_domain::RiskLevel::L3) => (
+                "l3_confirmation_required",
+                "The exact catalog L3 confirmation phrase is required",
+            ),
+            CoreError::CatalogConfirmationRequired(_) => (
+                "l2_confirmation_required",
+                "Catalog L2 confirmation is required",
+            ),
             CoreError::JobNotActive => ("job_not_active", "The job is no longer active"),
             CoreError::CancellationFailed => {
                 ("cancellation_failed", "Managed job cancellation failed")
@@ -155,6 +171,10 @@ impl From<CoreError> for CommandError {
             CoreError::CredentialPersistenceDenied => (
                 "credential_persistence_denied",
                 "Credential persistence is disabled",
+            ),
+            CoreError::Storage(StorageError::SensitiveExportConfirmationRequired) => (
+                "sensitive_export_confirmation_required",
+                "Exporting sensitive artifacts requires confirmation",
             ),
             CoreError::StateLock => ("state_lock", "Core state is temporarily unavailable"),
             CoreError::Http(_) => ("http_workbench_error", "HTTP workbench operation failed"),
@@ -322,6 +342,89 @@ pub struct ArtifactPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct JobArtifactPageRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+    pub cursor: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ExportJobArtifactRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+    pub artifact_id: ArtifactId,
+    pub confirm_sensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ExportJobArtifactResult {
+    pub artifact_id: ArtifactId,
+    pub job_id: JobId,
+    pub logical_name: String,
+    pub export_name: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    pub sha256: String,
+    pub sensitivity: Sensitivity,
+    pub export_policy: ExportPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum StructuredResultStatus {
+    Ready,
+    ParseFailed,
+    Empty,
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum StructuredResultKind {
+    HttpDiscovery,
+    RawOnly,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StructuredResultColumnDto {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StructuredResultRowDto {
+    pub result_id: String,
+    pub cells: BTreeMap<String, String>,
+    pub source_job_id: JobId,
+    pub source_artifact_id: Option<ArtifactId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ListStructuredResultsRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+    pub cursor: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StructuredResultPage {
+    pub status: StructuredResultStatus,
+    pub kind: StructuredResultKind,
+    pub parser_id: Option<String>,
+    pub parser_version: Option<String>,
+    pub parser_error: Option<String>,
+    pub columns: Vec<StructuredResultColumnDto>,
+    pub rows: Vec<StructuredResultRowDto>,
+    pub next_cursor: Option<String>,
+    pub source_artifact_ids: Vec<ArtifactId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CreateScopeRequest {
     pub project_id: ProjectId,
     pub base_url: String,
@@ -379,6 +482,7 @@ pub struct JobView {
     pub tool_id: String,
     pub command_preview: String,
     pub network_isolation: String,
+    pub io: ToolRunIo,
     pub parser_id: Option<String>,
     pub parser_version: Option<String>,
     pub parser_error: Option<String>,
@@ -404,6 +508,7 @@ impl From<StoredJob> for JobView {
             tool_id: value.command_spec.tool_id,
             command_preview,
             network_isolation: value.command_spec.network_isolation,
+            io: value.command_spec.io,
             parser_id,
             parser_version,
             parser_error,
@@ -798,6 +903,42 @@ pub struct AppStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPresetDto {
+    pub id: String,
+    pub tool_id: String,
+    pub name: String,
+    pub base_preset_id: String,
+    pub values: BTreeMap<String, String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPresetStoreDto {
+    pub schema_version: u32,
+    pub presets: Vec<PersonalPresetDto>,
+    pub default_by_tool: BTreeMap<String, String>,
+}
+
+impl Default for PersonalPresetStoreDto {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            presets: Vec::new(),
+            default_by_tool: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SavePersonalPresetsRequest {
+    pub store: PersonalPresetStoreDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CoreEvent {
     #[ts(type = "number")]
     pub sequence: u64,
@@ -807,10 +948,13 @@ pub struct CoreEvent {
 
 pub struct CoreService {
     workspaces_root: PathBuf,
+    catalog_paths: CatalogPaths,
     active: Mutex<Option<Arc<ProjectStore>>>,
     active_runs: Arc<AtomicUsize>,
     active_executions: Mutex<HashMap<JobId, Arc<ActiveExecution>>>,
     event_sequence: AtomicU64,
+    personal_preset_write_sequence: AtomicU64,
+    personal_preset_lock: Mutex<()>,
     http_workbench: HttpWorkbench,
     metasploit_workbench: MetasploitWorkbench,
     intruder_workbench: IntruderWorkbench,
@@ -843,6 +987,7 @@ impl CoreService {
             None,
             metasploit_adapter,
             metasploit_launcher,
+            None,
         )
     }
 
@@ -853,13 +998,21 @@ impl CoreService {
         uv_program: Option<PathBuf>,
         metasploit_adapter: Option<PathBuf>,
         metasploit_launcher: Option<PathBuf>,
+        catalog_root: Option<PathBuf>,
     ) -> Self {
+        let mut catalog_paths = CatalogPaths::from_env();
+        if let Some(root) = catalog_root {
+            catalog_paths.catalog_root = root;
+        }
         Self {
             workspaces_root: workspaces_root.into(),
+            catalog_paths,
             active: Mutex::new(None),
             active_runs: Arc::new(AtomicUsize::new(0)),
             active_executions: Mutex::new(HashMap::new()),
             event_sequence: AtomicU64::new(0),
+            personal_preset_write_sequence: AtomicU64::new(0),
+            personal_preset_lock: Mutex::new(()),
             http_workbench: worker_source_root.map_or_else(HttpWorkbench::new, |source| {
                 HttpWorkbench::with_worker_source_and_uv(source, uv_program)
             }),
@@ -887,6 +1040,148 @@ impl CoreService {
             active_jobs: self.active_runs.load(Ordering::SeqCst),
             security: SecurityBaselineDto::default(),
         })
+    }
+
+    pub fn load_personal_presets(&self) -> Result<PersonalPresetStoreDto, CoreError> {
+        let _guard = self
+            .personal_preset_lock
+            .lock()
+            .map_err(|_| CoreError::StateLock)?;
+        let path = self.personal_presets_path();
+        let file = match File::options()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(PersonalPresetStoreDto::default());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        if metadata.len() > MAX_PERSONAL_PRESET_BYTES as u64 {
+            return Err(CoreError::InvalidRequest);
+        }
+        if metadata.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        let mut bytes = Vec::new();
+        file.take((MAX_PERSONAL_PRESET_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_PERSONAL_PRESET_BYTES {
+            return Err(CoreError::InvalidRequest);
+        }
+        let store: PersonalPresetStoreDto =
+            serde_json::from_slice(&bytes).map_err(|_| CoreError::InvalidRequest)?;
+        self.validate_personal_presets(&store)?;
+        Ok(store)
+    }
+
+    pub fn save_personal_presets(
+        &self,
+        request: SavePersonalPresetsRequest,
+    ) -> Result<PersonalPresetStoreDto, CoreError> {
+        use std::io::Write;
+
+        self.validate_personal_presets(&request.store)?;
+        let bytes =
+            serde_json::to_vec_pretty(&request.store).map_err(|_| CoreError::InvalidRequest)?;
+        if bytes.len() > MAX_PERSONAL_PRESET_BYTES {
+            return Err(CoreError::InvalidRequest);
+        }
+        let _guard = self
+            .personal_preset_lock
+            .lock()
+            .map_err(|_| CoreError::StateLock)?;
+        fs::create_dir_all(&self.workspaces_root)?;
+        fs::set_permissions(&self.workspaces_root, fs::Permissions::from_mode(0o700))?;
+        let path = self.personal_presets_path();
+        let sequence = self
+            .personal_preset_write_sequence
+            .fetch_add(1, Ordering::SeqCst);
+        let temporary = self.workspaces_root.join(format!(
+            ".personal-presets-v1.json.tmp-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut file = File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&temporary)?;
+        let write_result = (|| -> Result<(), CoreError> {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, &path)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            File::open(&self.workspaces_root)?.sync_all()?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        write_result?;
+        Ok(request.store)
+    }
+
+    fn personal_presets_path(&self) -> PathBuf {
+        self.workspaces_root.join(".personal-presets-v1.json")
+    }
+
+    fn validate_personal_presets(&self, store: &PersonalPresetStoreDto) -> Result<(), CoreError> {
+        if store.schema_version != 1
+            || store.presets.len() > MAX_PERSONAL_PRESETS
+            || store.default_by_tool.len() > MAX_PERSONAL_PRESETS
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        let catalog = self.list_catalog()?;
+        let tools = catalog
+            .tools
+            .iter()
+            .map(|tool| (tool.id.as_str(), tool))
+            .collect::<BTreeMap<_, _>>();
+        let mut preset_ids = BTreeSet::new();
+        for preset in &store.presets {
+            if !valid_personal_preset_id(&preset.id)
+                || !preset_ids.insert(preset.id.as_str())
+                || preset.name.trim().is_empty()
+                || preset.name.chars().count() > 80
+                || preset.base_preset_id.is_empty()
+                || preset.created_at.len() > 64
+                || preset.updated_at.len() > 64
+                || preset.values.len() > 256
+            {
+                return Err(CoreError::InvalidRequest);
+            }
+            let Some(tool) = tools.get(preset.tool_id.as_str()) else {
+                return Err(CoreError::InvalidRequest);
+            };
+            for (field_id, value) in &preset.values {
+                let Some(field) = tool.fields.iter().find(|field| field.id == *field_id) else {
+                    return Err(CoreError::InvalidRequest);
+                };
+                if field.sensitive {
+                    return Err(CoreError::CredentialPersistenceDenied);
+                }
+                if value.len() > 16_384 {
+                    return Err(CoreError::InvalidRequest);
+                }
+            }
+        }
+        for (tool_id, preset_id) in &store.default_by_tool {
+            if !tools.contains_key(tool_id.as_str())
+                || !store
+                    .presets
+                    .iter()
+                    .any(|preset| preset.tool_id == *tool_id && preset.id == *preset_id)
+            {
+                return Err(CoreError::InvalidRequest);
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -1048,6 +1343,329 @@ impl CoreService {
             let (items, next_cursor) =
                 store.list_artifacts(request.limit, request.cursor.as_deref())?;
             Ok(ArtifactPage { items, next_cursor })
+        })
+    }
+
+    pub fn list_job_artifacts(
+        &self,
+        request: &JobArtifactPageRequest,
+    ) -> Result<ArtifactPage, CoreError> {
+        if request.limit == 0 || request.limit > 100 {
+            return Err(CoreError::InvalidRequest);
+        }
+        request
+            .job_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        self.with_active(&request.project_id, |store| {
+            let _job = store.job(&request.job_id)?;
+            let (items, next_cursor) = store.list_job_artifacts(
+                &request.job_id,
+                request.limit,
+                request.cursor.as_deref(),
+            )?;
+            Ok(ArtifactPage { items, next_cursor })
+        })
+    }
+
+    pub fn export_job_artifact(
+        &self,
+        request: &ExportJobArtifactRequest,
+    ) -> Result<ExportJobArtifactResult, CoreError> {
+        request
+            .job_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        request
+            .artifact_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        self.with_active(&request.project_id, |store| {
+            let _job = store.job(&request.job_id)?;
+            let artifact = store.artifact(&request.artifact_id)?;
+            if artifact.state != flagdeck_domain::ArtifactState::Committed {
+                return Err(CoreError::InvalidRequest);
+            }
+            if artifact.source_job_id.as_ref() != Some(&request.job_id) {
+                return Err(CoreError::InvalidRequest);
+            }
+            match artifact.export_policy {
+                ExportPolicy::Include => {}
+                ExportPolicy::ConfirmSensitive => {
+                    if !request.confirm_sensitive {
+                        return Err(CoreError::Storage(
+                            StorageError::SensitiveExportConfirmationRequired,
+                        ));
+                    }
+                }
+                ExportPolicy::ExcludeCredential | ExportPolicy::ExcludeRuntime => {
+                    return Err(CoreError::InvalidRequest);
+                }
+            }
+            let blob_relative = artifact
+                .blob_relative_path
+                .as_ref()
+                .ok_or(CoreError::InvalidRequest)?;
+            let blob_path = store.layout().root.join(blob_relative);
+            let expected_size = artifact.size.ok_or(CoreError::InvalidRequest)?;
+            let expected_sha = artifact
+                .sha256
+                .as_deref()
+                .ok_or(CoreError::InvalidRequest)?;
+            let metadata = fs::metadata(&blob_path)?;
+            if !metadata.is_file() || metadata.len() != expected_size {
+                return Err(CoreError::Storage(StorageError::HashMismatch));
+            }
+            let mut hasher = Sha256::new();
+            let mut source = File::options()
+                .read(true)
+                .custom_flags(nix::libc::O_NOFOLLOW)
+                .open(&blob_path)?;
+            let mut buffer = vec![0_u8; 64 * 1024];
+            let mut copied = 0_u64;
+            loop {
+                let read = source.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                copied = copied
+                    .checked_add(u64::try_from(read).map_err(|_| CoreError::InvalidRequest)?)
+                    .ok_or(CoreError::InvalidRequest)?;
+            }
+            let actual_sha = format!("{:x}", hasher.finalize());
+            if copied != expected_size || actual_sha != expected_sha {
+                return Err(CoreError::Storage(StorageError::HashMismatch));
+            }
+            let export_name = unique_export_basename(
+                &store.layout().exports,
+                &artifact.logical_name,
+                &artifact.artifact_id.0,
+            )?;
+            let final_path = store.layout().exports.join(&export_name);
+            let temporary = store
+                .layout()
+                .exports
+                .join(format!(".{export_name}.partial"));
+            {
+                let mut destination = File::options()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&temporary)?;
+                source.seek(SeekFrom::Start(0))?;
+                std::io::copy(&mut source, &mut destination)?;
+                destination.sync_all()?;
+            }
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+            let written_size = fs::metadata(&temporary)?.len();
+            let written_sha = {
+                let mut verify = File::open(&temporary)?;
+                let mut hasher = Sha256::new();
+                let mut buffer = vec![0_u8; 64 * 1024];
+                loop {
+                    let read = verify.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+                format!("{:x}", hasher.finalize())
+            };
+            if written_size != expected_size || written_sha != expected_sha {
+                let _ = fs::remove_file(&temporary);
+                return Err(CoreError::Storage(StorageError::HashMismatch));
+            }
+            fs::rename(&temporary, &final_path)?;
+            fs::set_permissions(&final_path, fs::Permissions::from_mode(0o600))?;
+            Ok(ExportJobArtifactResult {
+                artifact_id: artifact.artifact_id,
+                job_id: request.job_id.clone(),
+                logical_name: artifact.logical_name,
+                export_name,
+                size: expected_size,
+                sha256: expected_sha.to_owned(),
+                sensitivity: artifact.sensitivity,
+                export_policy: artifact.export_policy,
+            })
+        })
+    }
+
+    pub fn list_structured_results(
+        &self,
+        request: &ListStructuredResultsRequest,
+    ) -> Result<StructuredResultPage, CoreError> {
+        if request.limit == 0 || request.limit > 500 {
+            return Err(CoreError::InvalidRequest);
+        }
+        request
+            .job_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        self.with_active(&request.project_id, |store| {
+            let stored = store.job(&request.job_id)?;
+            let (artifacts, _) = store.list_job_artifacts(&request.job_id, 100, None)?;
+            let source_artifact_ids = artifacts
+                .iter()
+                .map(|item| item.artifact_id.clone())
+                .collect::<Vec<_>>();
+            let (parser_id, parser_version, parser_error, import_status) = stored
+                .import
+                .as_ref()
+                .map_or((None, None, None, ImportStatus::Pending), |record| {
+                    (
+                        Some(record.parser_id.clone()),
+                        Some(record.parser_version.clone()),
+                        record.error_summary.clone(),
+                        record.import_status,
+                    )
+                });
+            let tool_id = stored.command_spec.tool_id.as_str();
+            let kind =
+                structured_result_kind(&stored.command_spec.io, parser_id.as_deref(), tool_id);
+            if matches!(
+                stored.job.execution_status,
+                ExecutionStatus::Queued
+                    | ExecutionStatus::Starting
+                    | ExecutionStatus::Running
+                    | ExecutionStatus::Stopping
+            ) {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::Pending,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error,
+                    columns: http_discovery_columns(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            }
+            if import_status == ImportStatus::ParserFailed {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::ParseFailed,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error: parser_error.or_else(|| Some("parser failed".to_owned())),
+                    columns: http_discovery_columns(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            }
+            if kind != StructuredResultKind::HttpDiscovery {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::Empty,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error,
+                    columns: Vec::new(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            }
+            let raw_artifact = artifacts.iter().find(|artifact| {
+                let name = artifact.logical_name.as_str();
+                name.contains("output")
+                    || Path::new(name).extension().is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("txt")
+                    })
+            });
+            let Some(raw_artifact) = raw_artifact else {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::Empty,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error,
+                    columns: http_discovery_columns(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            };
+            let bytes = store.read_artifact_bounded(&raw_artifact.artifact_id, 4 * 1024 * 1024)?;
+            let adapter = select_http_discovery_adapter(
+                parser_id.as_deref(),
+                tool_id,
+                Some(raw_artifact.logical_name.as_str()),
+            );
+            let columns = match adapter {
+                HttpDiscoveryAdapter::ArjunJson => arjun_result_columns(),
+                HttpDiscoveryAdapter::Wafw00fJson => wafw00f_result_columns(),
+                HttpDiscoveryAdapter::CurlHeaders => curl_result_columns(),
+                HttpDiscoveryAdapter::DdddJsonl | HttpDiscoveryAdapter::FscanJson => {
+                    host_service_result_columns()
+                }
+                _ => http_discovery_columns(),
+            };
+            let parsed_rows = match adapter {
+                HttpDiscoveryAdapter::FfufJson | HttpDiscoveryAdapter::GenericJson => {
+                    parse_ffuf_structured_rows(&bytes)
+                }
+                HttpDiscoveryAdapter::GobusterText => parse_gobuster_structured_rows(&bytes),
+                HttpDiscoveryAdapter::ArjunJson => parse_arjun_structured_rows(&bytes),
+                HttpDiscoveryAdapter::CurlHeaders => parse_curl_headers_structured_rows(&bytes),
+                HttpDiscoveryAdapter::Wafw00fJson => parse_wafw00f_structured_rows(&bytes),
+                HttpDiscoveryAdapter::DdddJsonl => parse_dddd_structured_rows(&bytes),
+                HttpDiscoveryAdapter::FscanJson => parse_fscan_structured_rows(&bytes),
+            };
+            let Ok(mut all_rows) = parsed_rows else {
+                return Ok(StructuredResultPage {
+                    status: StructuredResultStatus::ParseFailed,
+                    kind,
+                    parser_id,
+                    parser_version,
+                    parser_error: Some("structured result adapter failed".to_owned()),
+                    columns,
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    source_artifact_ids,
+                });
+            };
+            for (index, row) in all_rows.iter_mut().enumerate() {
+                row.source_job_id = request.job_id.clone();
+                row.source_artifact_id = Some(raw_artifact.artifact_id.clone());
+                row.result_id = format!("{}:{index}", request.job_id.0);
+                row.cells
+                    .insert("source_job".to_owned(), request.job_id.0.clone());
+                row.cells.insert(
+                    "source_artifact".to_owned(),
+                    raw_artifact.artifact_id.0.clone(),
+                );
+            }
+            let offset = request
+                .cursor
+                .as_deref()
+                .map(str::parse::<usize>)
+                .transpose()
+                .map_err(|_| CoreError::InvalidRequest)?
+                .unwrap_or(0);
+            if offset > all_rows.len() {
+                return Err(CoreError::InvalidRequest);
+            }
+            let end = (offset + request.limit).min(all_rows.len());
+            let page_rows = all_rows[offset..end].to_vec();
+            let next_cursor = (end < all_rows.len()).then(|| end.to_string());
+            Ok(StructuredResultPage {
+                status: if page_rows.is_empty() && all_rows.is_empty() {
+                    StructuredResultStatus::Empty
+                } else {
+                    StructuredResultStatus::Ready
+                },
+                kind,
+                parser_id,
+                parser_version,
+                parser_error,
+                columns,
+                rows: page_rows,
+                next_cursor,
+                source_artifact_ids,
+            })
         })
     }
 
@@ -2000,12 +2618,60 @@ impl CoreService {
         )?;
         queued.job.stdout_artifact_id = stdout.map(|artifact| artifact.artifact_id);
         queued.job.stderr_artifact_id = stderr.map(|artifact| artifact.artifact_id);
-        queued.store.save_job(&queued.job)?;
+        // Commit structured sidecar outputs written into the job scan directory
+        // (e.g. gobuster-output.txt, arjun-output.json, ffuf-output.json).
+        let scan_dir = queued.store.layout().scans.join(&job_id.0);
+        if let Ok(entries) = fs::read_dir(&scan_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if !is_safe_job_sidecar_filename(name) {
+                    continue;
+                }
+                if name == "stdout.log" || name == "stderr.log" || name == "wordlist.txt" {
+                    continue;
+                }
+                let mime = if Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                {
+                    "application/json"
+                } else {
+                    "text/plain; charset=utf-8"
+                };
+                let _ = commit_existing_file(
+                    &queued.store,
+                    &path,
+                    name,
+                    mime,
+                    Sensitivity::SensitiveEvidence,
+                    &job_id,
+                )?;
+            }
+        }
+        if let Some(mut import) = queued.store.job(&job_id)?.import {
+            queued.job.import_status = ImportStatus::Skipped;
+            import.import_status = ImportStatus::Skipped;
+            import.source_artifact_ids = queued
+                .store
+                .list_job_artifacts(&job_id, 100, None)?
+                .0
+                .into_iter()
+                .map(|artifact| artifact.artifact_id)
+                .collect();
+            import.completed_at = Some(Timestamp::now());
+            queued.store.write_import_state(&queued.job, &import)?;
+        } else {
+            queued.store.save_job(&queued.job)?;
+        }
         Ok(())
     }
 
     pub fn list_catalog(&self) -> Result<CatalogSnapshot, CoreError> {
-        let catalog = ToolCatalog::load_default().map_err(|e| map_catalog_error(&e))?;
+        let catalog =
+            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
         Ok(CatalogSnapshot {
             tools_root: catalog.paths.tools_root.display().to_string(),
             wordlists_root: catalog.paths.wordlists_root.display().to_string(),
@@ -2027,6 +2693,43 @@ impl CoreService {
                     name: view.name,
                     category: view.category,
                     category_name: view.category_name,
+                    tier: view.tier,
+                    capabilities: view.capabilities,
+                    aliases: view.aliases,
+                    presets: view
+                        .presets
+                        .into_iter()
+                        .map(|preset| CatalogPresetDto {
+                            id: preset.id,
+                            name: preset.name,
+                            core_fields: preset.core_fields,
+                            defaults: preset.defaults,
+                        })
+                        .collect(),
+                    field_groups: view
+                        .field_groups
+                        .into_iter()
+                        .map(|group| CatalogFieldGroupDto {
+                            id: group.id,
+                            name: group.name,
+                            fields: group.fields,
+                        })
+                        .collect(),
+                    risk_level: view.risk_level,
+                    installation: CatalogInstallationDto {
+                        distribution: view.installation.distribution,
+                        license: view.installation.license,
+                        homepage: view.installation.homepage,
+                        version: view.installation.version,
+                        health_strategy: view.installation.health_strategy,
+                        runtime: view.installation.runtime,
+                        version_args: view.installation.version_args,
+                        install_command: view.installation.install_command,
+                        path_fix: view.installation.path_fix,
+                        wordlist_source: view.installation.wordlist_source,
+                        wordlist_install_command: view.installation.wordlist_install_command,
+                    },
+                    io: view.io,
                     summary: view.summary,
                     usage: view.usage,
                     mode: view.mode,
@@ -2049,6 +2752,7 @@ impl CoreService {
                             from: field.from,
                             options: field.options,
                             hint: field.hint,
+                            sensitive: field.sensitive,
                         })
                         .collect(),
                 })
@@ -2064,6 +2768,296 @@ impl CoreService {
                     tags: view.tags,
                 })
                 .collect(),
+        })
+    }
+
+    pub fn diagnose_catalog_tool(
+        &self,
+        request: &DiagnoseCatalogToolRequest,
+    ) -> Result<CatalogToolDiagnosticDto, CoreError> {
+        if request.tool_id.is_empty() || request.tool_id.len() > 64 {
+            return Err(CoreError::InvalidRequest);
+        }
+        let catalog =
+            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
+        let tool = catalog
+            .tool(&request.tool_id)
+            .ok_or(CoreError::InvalidRequest)?;
+        let source = if tool.installation.homepage.trim().is_empty() {
+            format!("Catalog 清单 tools/{}.toml", tool.id)
+        } else {
+            tool.installation.homepage.clone()
+        };
+        let install_fix = if tool.installation.install_command.trim().is_empty() {
+            format!("安装 {} 并确认其二进制可由 PATH 解析", tool.id)
+        } else {
+            tool.installation.install_command.clone()
+        };
+        let path_repair_copy = if tool.installation.path_fix.trim().is_empty() {
+            install_fix.clone()
+        } else {
+            tool.installation.path_fix.clone()
+        };
+        let mut checks = Vec::with_capacity(6);
+        let mut binary_path = String::new();
+        let mut detected_version = String::new();
+
+        let resolved = catalog.resolve_tool_binary(&request.tool_id);
+        let missing_status = if tool.binary.path.is_empty() {
+            CatalogDiagnosticStatus::Missing
+        } else {
+            CatalogDiagnosticStatus::PathAbnormal
+        };
+        match &resolved {
+            Ok(path) => {
+                binary_path = path.display().to_string();
+                checks.push(catalog_diagnostic_check(
+                    "binary",
+                    "二进制解析",
+                    CatalogDiagnosticStatus::Usable,
+                    format!("已解析 {}", path.display()),
+                    &source,
+                    "",
+                    "",
+                ));
+            }
+            Err(_) => checks.push(catalog_diagnostic_check(
+                "binary",
+                "二进制解析",
+                missing_status,
+                "未解析到工具二进制",
+                &source,
+                "从官方来源安装工具后重新检测",
+                &install_fix,
+            )),
+        }
+
+        let path_status = match &resolved {
+            Ok(path) => {
+                if path.is_absolute() && path.is_file() {
+                    CatalogDiagnosticStatus::Usable
+                } else {
+                    CatalogDiagnosticStatus::PathAbnormal
+                }
+            }
+            Err(_) if !tool.binary.path.is_empty() => CatalogDiagnosticStatus::PathAbnormal,
+            Err(_) => CatalogDiagnosticStatus::Missing,
+        };
+        checks.push(catalog_diagnostic_check(
+            "path",
+            "路径",
+            path_status,
+            if path_status == CatalogDiagnosticStatus::Usable {
+                "路径存在且为普通文件"
+            } else {
+                "配置路径无效或工具目录未进入 PATH"
+            },
+            &source,
+            if path_status == CatalogDiagnosticStatus::Usable {
+                ""
+            } else {
+                "修复工具路径后重新检测"
+            },
+            &path_repair_copy,
+        ));
+
+        let permission_status = resolved.as_ref().map_or(missing_status, |path| {
+            fs::metadata(path).map_or(CatalogDiagnosticStatus::PathAbnormal, |metadata| {
+                if metadata.permissions().mode() & 0o111 == 0 {
+                    CatalogDiagnosticStatus::PermissionAbnormal
+                } else {
+                    CatalogDiagnosticStatus::Usable
+                }
+            })
+        });
+        let permission_copy = match permission_status {
+            CatalogDiagnosticStatus::Usable => String::new(),
+            CatalogDiagnosticStatus::PermissionAbnormal => {
+                format!("chmod u+x -- {binary_path}")
+            }
+            _ => path_repair_copy.clone(),
+        };
+        checks.push(catalog_diagnostic_check(
+            "permission",
+            "执行权限",
+            permission_status,
+            if permission_status == CatalogDiagnosticStatus::Usable {
+                "当前用户可执行该文件"
+            } else if permission_status == CatalogDiagnosticStatus::PermissionAbnormal {
+                "文件缺少执行权限"
+            } else {
+                "等待有效二进制路径"
+            },
+            &source,
+            match permission_status {
+                CatalogDiagnosticStatus::Usable => "",
+                CatalogDiagnosticStatus::PermissionAbnormal => "为当前用户添加执行权限",
+                _ => "先修复工具二进制路径",
+            },
+            &permission_copy,
+        ));
+
+        let version_status = if permission_status == CatalogDiagnosticStatus::Usable {
+            if tool.installation.version_args.is_empty() {
+                CatalogDiagnosticStatus::VersionAbnormal
+            } else if let Ok(path) = &resolved {
+                let mut command = Command::new(path);
+                command
+                    .args(&tool.installation.version_args)
+                    .env_clear()
+                    .env("LANG", "C.UTF-8")
+                    .env("LC_ALL", "C.UTF-8")
+                    .stdin(Stdio::null());
+                if let Some(path) = env::var_os("PATH") {
+                    command.env("PATH", path);
+                }
+                let output = command.output();
+                match output {
+                    Ok(output) if output.status.success() => {
+                        let mut evidence = output.stdout;
+                        evidence.extend_from_slice(&output.stderr);
+                        detected_version = bounded_diagnostic_text(&evidence);
+                        if tool.installation.version.is_empty()
+                            || detected_version.contains(&tool.installation.version)
+                        {
+                            CatalogDiagnosticStatus::Usable
+                        } else {
+                            CatalogDiagnosticStatus::VersionAbnormal
+                        }
+                    }
+                    _ => CatalogDiagnosticStatus::VersionAbnormal,
+                }
+            } else {
+                CatalogDiagnosticStatus::PathAbnormal
+            }
+        } else {
+            permission_status
+        };
+        checks.push(catalog_diagnostic_check(
+            "version",
+            "版本",
+            version_status,
+            if version_status == CatalogDiagnosticStatus::Usable {
+                format!("检测到 {detected_version}")
+            } else {
+                format!("期望版本 {}", tool.installation.version)
+            },
+            &source,
+            match version_status {
+                CatalogDiagnosticStatus::Usable => "",
+                CatalogDiagnosticStatus::VersionAbnormal => "从官方来源安装清单声明的版本",
+                CatalogDiagnosticStatus::PermissionAbnormal => "先修复二进制执行权限",
+                _ => "先修复工具二进制路径",
+            },
+            match version_status {
+                CatalogDiagnosticStatus::Usable => "",
+                CatalogDiagnosticStatus::VersionAbnormal => &install_fix,
+                CatalogDiagnosticStatus::PermissionAbnormal => &permission_copy,
+                _ => &path_repair_copy,
+            },
+        ));
+
+        let runtime_status = if tool.installation.runtime.trim().is_empty() {
+            CatalogDiagnosticStatus::VersionAbnormal
+        } else if resolved.is_ok() {
+            CatalogDiagnosticStatus::Usable
+        } else {
+            missing_status
+        };
+        checks.push(catalog_diagnostic_check(
+            "runtime",
+            "运行时",
+            runtime_status,
+            if tool.installation.runtime.is_empty() {
+                "清单未声明运行时".to_owned()
+            } else {
+                tool.installation.runtime.clone()
+            },
+            &source,
+            match runtime_status {
+                CatalogDiagnosticStatus::Usable => "",
+                CatalogDiagnosticStatus::VersionAbnormal => "更新 Catalog 的运行时声明",
+                _ => "先修复工具二进制路径",
+            },
+            match runtime_status {
+                CatalogDiagnosticStatus::Usable => "",
+                CatalogDiagnosticStatus::VersionAbnormal => &install_fix,
+                _ => &path_repair_copy,
+            },
+        ));
+
+        let wordlist_field = tool
+            .form
+            .fields
+            .iter()
+            .find(|field| field.field_type == "wordlist");
+        let default_wordlist = wordlist_field.map_or("", |field| field.default.as_str());
+        let wordlist_source = if tool.installation.wordlist_source.trim().is_empty() {
+            format!("Catalog 清单 tools/{}.toml#默认字典", tool.id)
+        } else {
+            tool.installation.wordlist_source.clone()
+        };
+        let wordlist_repair_copy = if tool.installation.wordlist_install_command.trim().is_empty() {
+            format!("安装工具 {} 声明的默认字典 {}", tool.id, default_wordlist)
+        } else {
+            tool.installation.wordlist_install_command.clone()
+        };
+        let wordlist = catalog
+            .wordlist_views()
+            .into_iter()
+            .find(|entry| entry.id == default_wordlist);
+        let wordlist_status = if wordlist_field.is_none() {
+            CatalogDiagnosticStatus::Usable
+        } else if default_wordlist.is_empty() {
+            CatalogDiagnosticStatus::VersionAbnormal
+        } else if wordlist.as_ref().is_some_and(|entry| entry.available) {
+            CatalogDiagnosticStatus::Usable
+        } else {
+            CatalogDiagnosticStatus::Missing
+        };
+        checks.push(catalog_diagnostic_check(
+            "wordlist",
+            "默认字典",
+            wordlist_status,
+            wordlist.as_ref().map_or_else(
+                || {
+                    if wordlist_field.is_none() {
+                        "该工具无需默认字典".to_owned()
+                    } else {
+                        format!("未找到默认字典 {default_wordlist}")
+                    }
+                },
+                |entry| {
+                    if entry.available {
+                        format!("已找到 {}", entry.name)
+                    } else {
+                        format!("缺少 {}", entry.path)
+                    }
+                },
+            ),
+            &wordlist_source,
+            match wordlist_status {
+                CatalogDiagnosticStatus::Usable => "",
+                CatalogDiagnosticStatus::VersionAbnormal => "补全默认字典清单声明",
+                _ => "从声明来源安装默认字典",
+            },
+            match wordlist_status {
+                CatalogDiagnosticStatus::Usable => "",
+                _ => &wordlist_repair_copy,
+            },
+        ));
+
+        let status = checks
+            .iter()
+            .map(|check| check.status)
+            .max_by_key(|status| catalog_diagnostic_priority(*status))
+            .unwrap_or(CatalogDiagnosticStatus::Missing);
+        Ok(CatalogToolDiagnosticDto {
+            tool_id: request.tool_id.clone(),
+            status,
+            binary_path,
+            detected_version,
+            checks,
         })
     }
 
@@ -2085,6 +3079,92 @@ impl CoreService {
         })
     }
 
+    pub fn preview_catalog_tool(
+        &self,
+        request: PreviewCatalogToolRequest,
+    ) -> Result<CatalogRunPreview, CoreError> {
+        request
+            .project_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        if request.tool_id.is_empty() || request.tool_id.len() > 128 {
+            return Err(CoreError::InvalidRequest);
+        }
+        let catalog = ToolCatalog::load(self.catalog_paths.clone())
+            .map_err(|error| map_catalog_error(&error))?;
+        let tool = catalog
+            .tool(&request.tool_id)
+            .ok_or(CoreError::ToolUnavailable)?;
+        let mut form = request.form;
+        for field in &tool.form.fields {
+            if field.from == "target_url" && !request.target_url.is_empty() {
+                form.entry(field.id.clone())
+                    .or_insert_with(|| request.target_url.clone());
+            }
+            if !field.default.is_empty() {
+                form.entry(field.id.clone())
+                    .or_insert_with(|| field.default.clone());
+            }
+        }
+        let input_sources = form
+            .keys()
+            .map(|field_id| (field_id.clone(), ToolInputSource::Form))
+            .collect::<BTreeMap<_, _>>();
+        let scope_seed = form
+            .get("url")
+            .cloned()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                form.get("target")
+                    .cloned()
+                    .filter(|value| !value.is_empty())
+            })
+            .or_else(|| form.get("host").cloned().filter(|value| !value.is_empty()))
+            .or_else(|| (!request.target_url.is_empty()).then_some(request.target_url));
+        let (preview_scope_id, scope_summary) = if let Some(seed) = scope_seed.as_deref() {
+            (ScopeId::new(), normalize_scope_base_url(seed)?)
+        } else {
+            let store = self.project_store(&request.project_id, true)?;
+            store.list_target_scopes()?.into_iter().next().map_or_else(
+                || (ScopeId::new(), "http://127.0.0.1/".to_owned()),
+                |scope| (scope.scope_id.clone(), summarize_target_scope(&scope)),
+            )
+        };
+        let rate_per_second = form
+            .get("rate")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let estimated_request_count = form.get("wordlist").and_then(|value| {
+            let direct = PathBuf::from(value);
+            let path = if direct.is_file() {
+                Some(direct)
+            } else {
+                catalog.resolve_wordlist_path(value).ok()
+            }?;
+            count_wordlist_entries(&path).ok()
+        });
+        let store = self.project_store(&request.project_id, true)?;
+        let preview_directory = create_job_directory(&store.layout().tmp, &JobId::new())?;
+        let prepared = prepare_catalog_preview_with_sources(
+            &catalog,
+            &request.tool_id,
+            &preview_scope_id,
+            &form,
+            &input_sources,
+            &preview_directory,
+        )
+        .map_err(|error| map_catalog_error(&error));
+        let _ = fs::remove_dir_all(&preview_directory);
+        let prepared = prepared?;
+        Ok(CatalogRunPreview {
+            command_preview: format_command_preview(&prepared.spec),
+            scope: scope_summary,
+            rate_per_second,
+            estimated_request_count,
+            risk_level: prepared.spec.risk_level,
+        })
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     pub fn start_catalog_tool(
         self: &Arc<Self>,
@@ -2097,20 +3177,90 @@ impl CoreService {
         if request.tool_id.is_empty() || request.tool_id.len() > 128 {
             return Err(CoreError::InvalidRequest);
         }
-        let catalog = ToolCatalog::load_default().map_err(|e| map_catalog_error(&e))?;
+        if let Some(source_job_id) = &request.source_job_id {
+            source_job_id
+                .validate()
+                .map_err(|_| CoreError::InvalidRequest)?;
+            if request
+                .source_result_id
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 256)
+            {
+                return Err(CoreError::InvalidRequest);
+            }
+            self.with_active(&request.project_id, |store| {
+                let _source = store.job(source_job_id)?;
+                if let Some(artifact_id) = &request.source_artifact_id {
+                    artifact_id
+                        .validate()
+                        .map_err(|_| CoreError::InvalidRequest)?;
+                    let artifact = store.artifact(artifact_id)?;
+                    if artifact.source_job_id.as_ref() != Some(source_job_id) {
+                        return Err(CoreError::InvalidRequest);
+                    }
+                }
+                Ok(())
+            })?;
+        } else if request.source_result_id.is_some() || request.source_artifact_id.is_some() {
+            return Err(CoreError::InvalidRequest);
+        }
+        let catalog =
+            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
         let tool = catalog
             .tool(&request.tool_id)
             .ok_or(CoreError::ToolUnavailable)?;
 
+        let has_sensitive_argv = tool.form.fields.iter().any(|field| {
+            field.sensitive
+                && request
+                    .form
+                    .get(&field.id)
+                    .is_some_and(|value| !value.is_empty())
+        });
+        if has_sensitive_argv && !request.confirm_sensitive_argv {
+            return Err(CoreError::InvalidRequest);
+        }
+
         let mut form = request.form.clone();
+        let mut input_sources = request
+            .form
+            .iter()
+            .map(|(field_id, value)| {
+                let source = tool
+                    .form
+                    .fields
+                    .iter()
+                    .find(|field| field.id == *field_id)
+                    .map_or(ToolInputSource::Form, |field| {
+                        if field.from == "target_url"
+                            && !request.target_url.is_empty()
+                            && value == &request.target_url
+                        {
+                            ToolInputSource::TargetContext
+                        } else if !field.default.is_empty() && value == &field.default {
+                            ToolInputSource::CatalogDefault
+                        } else {
+                            ToolInputSource::Form
+                        }
+                    });
+                (field_id.clone(), source)
+            })
+            .collect::<BTreeMap<_, _>>();
         for field in &tool.form.fields {
-            if field.from == "target_url" && !request.target_url.is_empty() {
-                form.entry(field.id.clone())
-                    .or_insert_with(|| request.target_url.clone());
+            if field.from == "target_url"
+                && !request.target_url.is_empty()
+                && let std::collections::btree_map::Entry::Vacant(entry) =
+                    form.entry(field.id.clone())
+            {
+                entry.insert(request.target_url.clone());
+                input_sources.insert(field.id.clone(), ToolInputSource::TargetContext);
             }
-            if !field.default.is_empty() {
-                form.entry(field.id.clone())
-                    .or_insert_with(|| field.default.clone());
+            if !field.default.is_empty()
+                && let std::collections::btree_map::Entry::Vacant(entry) =
+                    form.entry(field.id.clone())
+            {
+                entry.insert(field.default.clone());
+                input_sources.insert(field.id.clone(), ToolInputSource::CatalogDefault);
             }
         }
 
@@ -2148,24 +3298,59 @@ impl CoreService {
         let (store, run_guard) = self.begin_run(&request.project_id)?;
         let job_id = JobId::new();
         let job_directory = create_job_directory(store.layout().scans.as_path(), &job_id)?;
-        let prepared = prepare_catalog_command(
+        let prepared = prepare_catalog_command_with_sources(
             &catalog,
             &request.tool_id,
             &scope.scope_id,
             &form,
+            &input_sources,
             &job_directory,
         )
         .map_err(|e| map_catalog_error(&e))?;
 
         let command = prepared.spec;
+        let expected_l3_confirmation = format!("RUN CATALOG {}", request.tool_id);
+        let confirmed = match command.risk_level {
+            flagdeck_domain::RiskLevel::L3 => {
+                request.l3_confirmation.as_deref() == Some(expected_l3_confirmation.as_str())
+            }
+            flagdeck_domain::RiskLevel::L2 => request.confirm_l2,
+            flagdeck_domain::RiskLevel::L0 | flagdeck_domain::RiskLevel::L1 => true,
+        };
+        store.save_audit_event(&flagdeck_domain::AuditEvent {
+            audit_event_id: flagdeck_domain::AuditEventId::new(),
+            project_id: request.project_id.clone(),
+            adapter_id: Some(format!("catalog.{}", request.tool_id)),
+            action: "catalog.run".to_owned(),
+            risk_level: command.risk_level,
+            outcome: if confirmed { "allowed" } else { "denied" }.to_owned(),
+            target_summary: summarize_target_scope(&scope),
+            details_json: serde_json::json!({
+                "tool_id": request.tool_id,
+                "scope_id": scope.scope_id.0,
+                "command_preview": format_command_preview(&command),
+            })
+            .to_string(),
+            created_at: Timestamp::now(),
+        })?;
+        if !confirmed {
+            let _ = fs::remove_dir_all(&job_directory);
+            return Err(CoreError::CatalogConfirmationRequired(command.risk_level));
+        }
         store.save_command_spec(&command)?;
 
+        let has_parser_identity =
+            !prepared.parser_id.is_empty() && !prepared.parser_version.is_empty();
         let job = Job {
             job_id: job_id.clone(),
             parent_job_id: None,
             command_spec_id: command.command_spec_id.clone(),
             execution_status: ExecutionStatus::Queued,
-            import_status: ImportStatus::Skipped,
+            import_status: if has_parser_identity {
+                ImportStatus::Pending
+            } else {
+                ImportStatus::Skipped
+            },
             created_at: Timestamp::now(),
             started_at: None,
             stopped_at: None,
@@ -2185,9 +3370,25 @@ impl CoreService {
             stdout_artifact_id: None,
             stderr_artifact_id: None,
             retry_count: 0,
-            source_job_id: None,
+            source_job_id: request.source_job_id.clone(),
         };
         store.save_job(&job)?;
+        if has_parser_identity {
+            store.write_import_state(
+                &job,
+                &JobImportRecord {
+                    job_id: job.job_id.clone(),
+                    parser_id: prepared.parser_id.clone(),
+                    parser_version: prepared.parser_version.clone(),
+                    import_status: ImportStatus::Pending,
+                    discovery_count: 0,
+                    http_message_count: 0,
+                    source_artifact_ids: Vec::new(),
+                    error_summary: None,
+                    completed_at: None,
+                },
+            )?;
+        }
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
         self.active_executions
             .lock()
@@ -2734,6 +3935,717 @@ fn is_safe_job_sidecar_filename(filename: &str) -> bool {
         && filename.contains('.')
 }
 
+fn sanitize_export_basename(logical_name: &str) -> String {
+    let base = Path::new(logical_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("artifact.bin");
+    let sanitized: String = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." || sanitized.starts_with('.') {
+        "artifact.bin".to_owned()
+    } else {
+        sanitized.chars().take(128).collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpDiscoveryAdapter {
+    FfufJson,
+    GobusterText,
+    ArjunJson,
+    CurlHeaders,
+    Wafw00fJson,
+    DdddJsonl,
+    FscanJson,
+    GenericJson,
+}
+
+fn structured_result_kind(
+    io: &ToolRunIo,
+    parser_id: Option<&str>,
+    tool_id: &str,
+) -> StructuredResultKind {
+    if matches!(
+        select_http_discovery_adapter(parser_id, tool_id, None),
+        HttpDiscoveryAdapter::FfufJson
+            | HttpDiscoveryAdapter::GobusterText
+            | HttpDiscoveryAdapter::ArjunJson
+            | HttpDiscoveryAdapter::CurlHeaders
+            | HttpDiscoveryAdapter::Wafw00fJson
+            | HttpDiscoveryAdapter::DdddJsonl
+            | HttpDiscoveryAdapter::FscanJson
+    ) || io
+        .outputs
+        .iter()
+        .any(|output| output.kind == ToolIoKind::HttpDiscovery)
+    {
+        StructuredResultKind::HttpDiscovery
+    } else if io
+        .outputs
+        .iter()
+        .any(|output| output.kind == ToolIoKind::RawArtifact)
+    {
+        StructuredResultKind::RawOnly
+    } else {
+        StructuredResultKind::Unknown
+    }
+}
+
+fn select_http_discovery_adapter(
+    parser_id: Option<&str>,
+    _tool_id: &str,
+    logical_name: Option<&str>,
+) -> HttpDiscoveryAdapter {
+    if let Some(id) = parser_id {
+        if id == "flagdeck.ffuf-json" || id.ends_with(".ffuf-json") || id.contains("ffuf") {
+            return HttpDiscoveryAdapter::FfufJson;
+        }
+        if id == "flagdeck.gobuster-text"
+            || id.ends_with(".gobuster-text")
+            || id.contains("gobuster")
+        {
+            return HttpDiscoveryAdapter::GobusterText;
+        }
+        if id == "flagdeck.arjun-json" || id.ends_with(".arjun-json") || id.contains("arjun") {
+            return HttpDiscoveryAdapter::ArjunJson;
+        }
+        if id == "flagdeck.curl-headers" || id.ends_with(".curl-headers") || id.contains("curl") {
+            return HttpDiscoveryAdapter::CurlHeaders;
+        }
+        if id == "flagdeck.wafw00f-json" || id.ends_with(".wafw00f-json") || id.contains("wafw00f")
+        {
+            return HttpDiscoveryAdapter::Wafw00fJson;
+        }
+        if id == "flagdeck.dddd-jsonl" || id.ends_with(".dddd-jsonl") || id.contains("dddd") {
+            return HttpDiscoveryAdapter::DdddJsonl;
+        }
+        if id == "flagdeck.fscan-json" || id.ends_with(".fscan-json") || id.contains("fscan") {
+            return HttpDiscoveryAdapter::FscanJson;
+        }
+    }
+    if logical_name.is_some_and(|name| name.contains("gobuster")) {
+        return HttpDiscoveryAdapter::GobusterText;
+    }
+    if logical_name.is_some_and(|name| name.contains("arjun")) {
+        return HttpDiscoveryAdapter::ArjunJson;
+    }
+    if logical_name.is_some_and(|name| name.contains("headers") || name.contains("curl")) {
+        return HttpDiscoveryAdapter::CurlHeaders;
+    }
+    if logical_name.is_some_and(|name| name.contains("wafw00f")) {
+        return HttpDiscoveryAdapter::Wafw00fJson;
+    }
+    if logical_name.is_some_and(|name| name.contains("dddd")) {
+        return HttpDiscoveryAdapter::DdddJsonl;
+    }
+    if logical_name.is_some_and(|name| name.contains("fscan")) {
+        return HttpDiscoveryAdapter::FscanJson;
+    }
+    if logical_name.is_some_and(|name| name.contains("ffuf")) {
+        return HttpDiscoveryAdapter::FfufJson;
+    }
+    HttpDiscoveryAdapter::GenericJson
+}
+
+fn http_discovery_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "path".to_owned(),
+            label: "路径".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "status".to_owned(),
+            label: "状态".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "length".to_owned(),
+            label: "长度".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_ffuf_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let records = if let Some(results) = value.get("results").and_then(|item| item.as_array()) {
+        results.clone()
+    } else if let Some(results) = value.as_array() {
+        results.clone()
+    } else {
+        return Err(CoreError::InvalidRequest);
+    };
+    let mut rows = Vec::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let url = record
+            .get("url")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let path = record
+            .get("input")
+            .and_then(|item| item.get("FUZZ"))
+            .and_then(|item| item.as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+                url::Url::parse(&url)
+                    .ok()
+                    .map(|parsed| parsed.path().to_owned())
+            })
+            .unwrap_or_default();
+        let status = record
+            .get("status")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let length = record
+            .get("length")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let mut cells = BTreeMap::new();
+        cells.insert("url".to_owned(), url);
+        cells.insert("path".to_owned(), path);
+        cells.insert("status".to_owned(), status);
+        cells.insert("length".to_owned(), length);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    Ok(rows)
+}
+
+fn arjun_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "param".to_owned(),
+            label: "参数".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_gobuster_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let mut rows = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with('=')
+            || trimmed.starts_with("Gobuster")
+            || trimmed.starts_with('[')
+        {
+            continue;
+        }
+        // e.g. /admin              (Status: 200) [Size: 14]
+        let Some(captures) = regex_lite_gobuster_line(trimmed) else {
+            continue;
+        };
+        let mut cells = BTreeMap::new();
+        cells.insert("path".to_owned(), captures.0);
+        cells.insert("status".to_owned(), captures.1);
+        cells.insert("length".to_owned(), captures.2);
+        cells.insert("url".to_owned(), String::new());
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
+}
+
+fn regex_lite_gobuster_line(line: &str) -> Option<(String, String, String)> {
+    let path_end = line.find(" (Status:")?;
+    let path = line[..path_end].trim().to_owned();
+    let after = &line[path_end + " (Status:".len()..];
+    let status_end = after.find(')')?;
+    let status = after[..status_end].trim().to_owned();
+    let length = after
+        .find("[Size:")
+        .and_then(|start| {
+            let rest = &after[start + "[Size:".len()..];
+            rest.find(']').map(|end| rest[..end].trim().to_owned())
+        })
+        .unwrap_or_default();
+    Some((path, status, length))
+}
+
+fn curl_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "status".to_owned(),
+            label: "状态".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "content_type".to_owned(),
+            label: "类型".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "length".to_owned(),
+            label: "长度".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn wafw00f_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "detected".to_owned(),
+            label: "检出".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "firewall".to_owned(),
+            label: "WAF".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "manufacturer".to_owned(),
+            label: "厂商".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_curl_headers_structured_rows(
+    bytes: &[u8],
+) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let mut status = String::new();
+    let mut content_type = String::new();
+    let mut length = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.to_ascii_uppercase().starts_with("HTTP/") {
+            // HTTP/1.1 200 OK
+            let parts: Vec<_> = trimmed.split_whitespace().collect();
+            if parts.len() >= 2 {
+                parts[1].clone_into(&mut status);
+            }
+            continue;
+        }
+        if let Some(value) = trimmed
+            .split_once(':')
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.trim().to_owned())
+        {
+            content_type = value;
+        }
+        if let Some(value) = trimmed
+            .split_once(':')
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map(|(_, value)| value.trim().to_owned())
+        {
+            length = value;
+        }
+    }
+    if status.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    let mut cells = BTreeMap::new();
+    cells.insert("status".to_owned(), status);
+    cells.insert("url".to_owned(), String::new());
+    cells.insert("content_type".to_owned(), content_type);
+    cells.insert("length".to_owned(), length);
+    cells.insert("source_job".to_owned(), String::new());
+    cells.insert("source_artifact".to_owned(), String::new());
+    Ok(vec![StructuredResultRowDto {
+        result_id: "row:0".to_owned(),
+        cells,
+        source_job_id: JobId::new(),
+        source_artifact_id: None,
+    }])
+}
+
+fn host_service_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "host".to_owned(),
+            label: "主机".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "port".to_owned(),
+            label: "端口".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "service".to_owned(),
+            label: "服务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "status".to_owned(),
+            label: "状态".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_dddd_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let mut rows = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(trimmed).map_err(|_| CoreError::InvalidRequest)?;
+        let url = value
+            .get("uri")
+            .or_else(|| value.get("url"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let host = value
+            .get("ip")
+            .or_else(|| value.get("host"))
+            .and_then(|item| item.as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+                url::Url::parse(&url)
+                    .ok()
+                    .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            })
+            .unwrap_or_default();
+        let port = value
+            .get("port")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let service = value
+            .get("type")
+            .or_else(|| value.get("service"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let status = value
+            .pointer("/web/status")
+            .or_else(|| value.get("status"))
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let mut cells = BTreeMap::new();
+        cells.insert("host".to_owned(), host);
+        cells.insert("port".to_owned(), port);
+        cells.insert("service".to_owned(), service);
+        cells.insert("url".to_owned(), url);
+        cells.insert("status".to_owned(), status);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
+}
+
+fn parse_fscan_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let records = if let Some(array) = value.as_array() {
+        array.clone()
+    } else if value.is_object() {
+        vec![value]
+    } else {
+        return Err(CoreError::InvalidRequest);
+    };
+    let mut rows = Vec::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let host = record
+            .get("host")
+            .or_else(|| record.get("ip"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let port = record
+            .get("port")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let service = record
+            .get("service")
+            .or_else(|| record.get("protocol"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let url = record
+            .get("url")
+            .and_then(|item| item.as_str())
+            .map_or_else(
+                || {
+                    if !host.is_empty() && !port.is_empty() {
+                        format!("http://{host}:{port}/")
+                    } else {
+                        String::new()
+                    }
+                },
+                str::to_owned,
+            );
+        let status = record
+            .get("info")
+            .or_else(|| record.get("status"))
+            .map(|item| match item {
+                serde_json::Value::String(text) => text.clone(),
+                serde_json::Value::Number(number) => number.to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let mut cells = BTreeMap::new();
+        cells.insert("host".to_owned(), host);
+        cells.insert("port".to_owned(), port);
+        cells.insert("service".to_owned(), service);
+        cells.insert("url".to_owned(), url);
+        cells.insert("status".to_owned(), status);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
+}
+
+fn parse_wafw00f_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let records = if let Some(array) = value.as_array() {
+        array.clone()
+    } else if value.is_object() {
+        vec![value]
+    } else {
+        return Err(CoreError::InvalidRequest);
+    };
+    let mut rows = Vec::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let url = record
+            .get("url")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let detected = record
+            .get("detected")
+            .map(|item| match item {
+                serde_json::Value::Bool(flag) => flag.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let firewall = record
+            .get("firewall")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let manufacturer = record
+            .get("manufacturer")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let mut cells = BTreeMap::new();
+        cells.insert("url".to_owned(), url);
+        cells.insert("detected".to_owned(), detected);
+        cells.insert("firewall".to_owned(), firewall);
+        cells.insert("manufacturer".to_owned(), manufacturer);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
+}
+
+fn parse_arjun_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let object = value.as_object().ok_or(CoreError::InvalidRequest)?;
+    let mut rows = Vec::new();
+    let mut index = 0_usize;
+    for (url, params) in object {
+        if url == "headers" || url == "method" {
+            continue;
+        }
+        let param_list = if let Some(map) = params.as_object() {
+            // Shape: { "http://x": { "params": ["a","b"] } } or nested values
+            if let Some(list) = map.get("params").and_then(|item| item.as_array()) {
+                list.iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            } else {
+                map.keys().cloned().collect()
+            }
+        } else if let Some(list) = params.as_array() {
+            list.iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        } else if let Some(text) = params.as_str() {
+            vec![text.to_owned()]
+        } else {
+            continue;
+        };
+        for param in param_list {
+            let mut cells = BTreeMap::new();
+            cells.insert("url".to_owned(), url.clone());
+            cells.insert("param".to_owned(), param);
+            cells.insert("source_job".to_owned(), String::new());
+            cells.insert("source_artifact".to_owned(), String::new());
+            rows.push(StructuredResultRowDto {
+                result_id: format!("row:{index}"),
+                cells,
+                source_job_id: JobId::new(),
+                source_artifact_id: None,
+            });
+            index += 1;
+        }
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
+}
+
+fn unique_export_basename(
+    exports_dir: &Path,
+    logical_name: &str,
+    artifact_id: &str,
+) -> Result<String, CoreError> {
+    let base = sanitize_export_basename(logical_name);
+    let candidate = base.clone();
+    if !exports_dir.join(&candidate).exists() {
+        return Ok(candidate);
+    }
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, Some(ext)),
+        _ => (base.as_str(), None),
+    };
+    let short_id: String = artifact_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    for index in 0..1_000 {
+        let candidate = match ext {
+            Some(ext) if index == 0 => format!("{stem}-{short_id}.{ext}"),
+            Some(ext) => format!("{stem}-{short_id}-{index}.{ext}"),
+            None if index == 0 => format!("{stem}-{short_id}"),
+            None => format!("{stem}-{short_id}-{index}"),
+        };
+        if !exports_dir.join(&candidate).exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(CoreError::InvalidRequest)
+}
+
 fn is_active_execution_status(status: ExecutionStatus) -> bool {
     matches!(
         status,
@@ -2742,6 +4654,70 @@ fn is_active_execution_status(status: ExecutionStatus) -> bool {
             | ExecutionStatus::Running
             | ExecutionStatus::Stopping
     )
+}
+
+fn valid_personal_preset_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("user:") else {
+        return false;
+    };
+    let mut parts = rest.split(':');
+    let Some(tool_id) = parts.next() else {
+        return false;
+    };
+    let Some(preset_id) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none()
+        && valid_personal_preset_id_part(tool_id)
+        && valid_personal_preset_id_part(preset_id)
+}
+
+fn valid_personal_preset_id_part(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'_' | b'-'))
+        })
+}
+
+fn catalog_diagnostic_check(
+    id: &str,
+    label: &str,
+    status: CatalogDiagnosticStatus,
+    detail: impl Into<String>,
+    source: &str,
+    fix: &str,
+    copy_value: &str,
+) -> CatalogDiagnosticCheckDto {
+    CatalogDiagnosticCheckDto {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        status,
+        detail: detail.into(),
+        source: source.chars().take(512).collect(),
+        fix: fix.chars().take(512).collect(),
+        copy_value: copy_value.chars().take(1024).collect(),
+    }
+}
+
+fn catalog_diagnostic_priority(status: CatalogDiagnosticStatus) -> u8 {
+    match status {
+        CatalogDiagnosticStatus::Usable => 0,
+        CatalogDiagnosticStatus::VersionAbnormal => 1,
+        CatalogDiagnosticStatus::Missing => 2,
+        CatalogDiagnosticStatus::PathAbnormal => 3,
+        CatalogDiagnosticStatus::PermissionAbnormal => 4,
+    }
+}
+
+fn bounded_diagnostic_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(512)])
+        .split_whitespace()
+        .take(32)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn append_job_log(path: &Path, text: &str) -> Result<(), CoreError> {
@@ -2766,7 +4742,7 @@ fn write_launch_banner(
     command: &CommandSpec,
     detach_gui: bool,
 ) -> Result<(), CoreError> {
-    let argv = command.argv_exec.join(" ");
+    let argv = command.argv_redacted.join(" ");
     let banner = format!(
         "=== FlagDeck launch ===\n\
          tool_id: {}\n\
@@ -2829,17 +4805,18 @@ fn spawn_catalog_process(
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
+    let validated = flagdeck_exec::validate_command(command)?;
     let stdout = open_job_log_file(stdout_path)?;
     let stderr = open_job_log_file(stderr_path)?;
-    let mut process = Command::new(&command.program);
+    let mut process = Command::new(&validated.canonical_program);
     process
-        .args(&command.argv_exec)
-        .current_dir(&command.cwd)
+        .args(&validated.argv)
+        .current_dir(&validated.cwd)
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    for (key, value) in &command.env_exec {
+    for (key, value) in &validated.environment {
         process.env(key, value);
     }
     process.process_group(0);
@@ -2847,151 +4824,48 @@ fn spawn_catalog_process(
 }
 
 async fn run_catalog_cli(queued: &mut PreparedExternalRun) -> Result<(), CoreError> {
+    let execution =
+        match start_managed(&queued.command, &queued.stdout_path, &queued.stderr_path).await {
+            Ok(execution) => execution,
+            Err(error) => {
+                let detail = format!("[flagdeck] managed CLI launch rejected: {error}\n");
+                append_job_log(&queued.stderr_path, &detail)?;
+                append_job_log(&queued.stdout_path, &detail)?;
+                queued.job.exit_reason = Some("managed_execution_policy_error".to_owned());
+                queued.job.stopped_at = Some(Timestamp::now());
+                queued
+                    .job
+                    .transition(ExecutionStatus::Failed)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+                queued.store.save_job(&queued.job)?;
+                return Ok(());
+            }
+        };
+
+    let identity = execution.identity().clone();
+    set_active_identity(&queued.control, &identity)?;
+    apply_process_identity(&mut queued.job, &identity);
     queued
         .job
         .transition(ExecutionStatus::Running)
         .map_err(|_| CoreError::InvalidRequest)?;
     queued.store.save_job(&queued.job)?;
 
-    let mut child =
-        match spawn_catalog_process(&queued.command, &queued.stdout_path, &queued.stderr_path) {
-            Ok(child) => child,
-            Err(error) => {
-                let detail = format!("[flagdeck] cli spawn failed: {error}\n");
-                append_job_log(&queued.stderr_path, &detail)?;
-                append_job_log(&queued.stdout_path, &detail)?;
-                queued.job.exit_reason = Some(format!("cli_spawn_failed:{error}"));
-                queued.job.stopped_at = Some(Timestamp::now());
-                queued
-                    .job
-                    .transition(ExecutionStatus::Failed)
-                    .map_err(|_| CoreError::InvalidRequest)?;
-                return Ok(());
-            }
-        };
-
-    let pid = i32::try_from(child.id()).unwrap_or_default();
-    // Required by cancel_pgid ownership checks on Linux.
-    let start_ticks = process_start_ticks(pid);
-    queued.job.pid = Some(pid);
-    queued.job.process_group_id = Some(pid);
-    queued.job.process_start_ticks = start_ticks;
-    queued.job.ownership_verified = true;
-    queued.job.supervisor_backend = Some(SupervisorBackend::PgidFallback);
-    let identity = ManagedProcessIdentity {
-        supervisor_backend: SupervisorBackend::PgidFallback,
-        wrapper_pid: pid,
-        pid: Some(pid),
-        process_group_id: Some(pid),
-        process_start_ticks: start_ticks,
-        systemd_unit: None,
-        cgroup_path: None,
-        invocation_id: None,
-        target_program: queued.command.program.clone(),
-        ownership_verified: true,
-    };
-    set_active_identity(&queued.control, &identity)?;
-    queued.store.save_job(&queued.job)?;
+    let result = execution.wait().await?;
+    let cancelled = queued.control.cancel_requested.load(Ordering::SeqCst);
+    apply_execution_result(
+        &mut queued.job,
+        &result,
+        cancelled,
+        result.cancellation.as_ref(),
+    )?;
     append_job_log(
         &queued.stdout_path,
-        &format!("[flagdeck] process started pid={pid} start_ticks={start_ticks:?}\n"),
+        &format!(
+            "\n[flagdeck] managed execution finished backend={:?} exit={:?}\n",
+            result.supervisor_backend, result.exit_code
+        ),
     )?;
-
-    let timeout = Duration::from_millis(queued.command.timeout_millis.max(1_000));
-    let wait_result =
-        tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || child.wait())).await;
-    let cancelled = queued.control.cancel_requested.load(Ordering::SeqCst);
-
-    match wait_result {
-        Ok(Ok(Ok(status))) => {
-            let code = status.code();
-            append_job_log(
-                &queued.stdout_path,
-                &format!("\n[flagdeck] finished exit={code:?} status={status}\n"),
-            )?;
-            queued.job.exit_code = code;
-            queued.job.exit_reason = Some(if cancelled {
-                format!("cancelled:exit:{status}")
-            } else {
-                format!("exit:{status}")
-            });
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued.job.cleanup_verified = true;
-            let terminal = if cancelled {
-                ExecutionStatus::Cancelled
-            } else if status.success() {
-                ExecutionStatus::Succeeded
-            } else {
-                ExecutionStatus::Failed
-            };
-            queued
-                .job
-                .transition(terminal)
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-        Ok(Ok(Err(error))) => {
-            append_job_log(
-                &queued.stderr_path,
-                &format!("[flagdeck] wait failed: {error}\n"),
-            )?;
-            queued.job.exit_reason = Some(if cancelled {
-                format!("cancelled:wait_failed:{error}")
-            } else {
-                format!("wait_failed:{error}")
-            });
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued
-                .job
-                .transition(if cancelled {
-                    ExecutionStatus::Cancelled
-                } else {
-                    ExecutionStatus::Failed
-                })
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-        Ok(Err(_)) => {
-            append_job_log(
-                &queued.stderr_path,
-                "[flagdeck] internal join error while waiting for process\n",
-            )?;
-            queued.job.exit_reason = Some(if cancelled {
-                "cancelled:wait_join_error".to_owned()
-            } else {
-                "wait_join_error".to_owned()
-            });
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued
-                .job
-                .transition(if cancelled {
-                    ExecutionStatus::Cancelled
-                } else {
-                    ExecutionStatus::Failed
-                })
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-        Err(_) => {
-            append_job_log(
-                &queued.stdout_path,
-                &format!(
-                    "\n[flagdeck] timed out after {} ms; sending SIGKILL to process group\n",
-                    timeout.as_millis()
-                ),
-            )?;
-            if pid > 1 {
-                let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
-            }
-            queued.job.exit_reason = Some(format!("timeout_ms:{}", timeout.as_millis()));
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued.job.cleanup_verified = true;
-            queued
-                .job
-                .transition(ExecutionStatus::TimedOut)
-                .map_err(|_| CoreError::InvalidRequest)?;
-        }
-    }
     queued.store.save_job(&queued.job)?;
     Ok(())
 }
@@ -3094,7 +4968,8 @@ async fn run_detached_gui(queued: &mut PreparedExternalRun) -> Result<(), CoreEr
     Ok(())
 }
 
-/// Accept full http(s) URL or bare host/IP/CIDR-ish target for scope registration.
+/// Accept a full HTTP(S) URL or one bare host/IP for scope registration.
+/// Multi-target CIDRs and target files require a dedicated typed scope contract.
 fn normalize_scope_base_url(value: &str) -> Result<String, CoreError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -3104,13 +4979,10 @@ fn normalize_scope_base_url(value: &str) -> Result<String, CoreError> {
         let _ = parse_http_url(trimmed)?;
         return Ok(trimmed.to_owned());
     }
-    // Strip path-like noise: "1.2.3.4/24" is ok for display scope host side;
-    // create_scope expects a URL — wrap as http://host/
-    let host = trimmed.split('/').next().unwrap_or(trimmed);
-    if host.is_empty() || host.contains(' ') {
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(char::is_whitespace) {
         return Err(CoreError::InvalidRequest);
     }
-    let synthesized = format!("http://{host}/");
+    let synthesized = format!("http://{trimmed}/");
     let _ = parse_http_url(&synthesized)?;
     Ok(synthesized)
 }
@@ -3222,6 +5094,31 @@ fn create_job_directory(scans: &Path, job_id: &JobId) -> Result<PathBuf, CoreErr
         fs::set_permissions(child, fs::Permissions::from_mode(0o700))?;
     }
     Ok(fs::canonicalize(directory)?)
+}
+
+fn count_wordlist_entries(path: &Path) -> Result<u32, std::io::Error> {
+    BufReader::new(File::open(path)?)
+        .lines()
+        .try_fold(0_u32, |count, line| {
+            let line = line?;
+            Ok(count.saturating_add(u32::from(!line.trim().is_empty())))
+        })
+}
+
+fn summarize_target_scope(scope: &TargetScope) -> String {
+    let scheme = scope.schemes.first().map_or("http", String::as_str);
+    let host = scope
+        .exact_hosts
+        .first()
+        .or_else(|| scope.cidrs.first())
+        .map_or("127.0.0.1", String::as_str);
+    let port = scope.ports.first().map(|range| range.start);
+    match port {
+        Some(80) if scheme == "http" => format!("{scheme}://{host}/"),
+        Some(443) if scheme == "https" => format!("{scheme}://{host}/"),
+        Some(port) => format!("{scheme}://{host}:{port}/"),
+        None => format!("{scheme}://{host}/"),
+    }
 }
 
 fn alpha_tool_from_id(value: &str) -> Result<AlphaTool, CoreError> {
@@ -3756,6 +5653,15 @@ pub fn typescript_declarations() -> String {
         declaration!(ArtifactPreview),
         declaration!(ArtifactPageRequest),
         declaration!(ArtifactPage),
+        declaration!(JobArtifactPageRequest),
+        declaration!(ExportJobArtifactRequest),
+        declaration!(ExportJobArtifactResult),
+        declaration!(StructuredResultStatus),
+        declaration!(StructuredResultKind),
+        declaration!(StructuredResultColumnDto),
+        declaration!(StructuredResultRowDto),
+        declaration!(ListStructuredResultsRequest),
+        declaration!(StructuredResultPage),
         declaration!(CreateScopeRequest),
         declaration!(ProjectContextRequest),
         declaration!(ScopePage),
@@ -3819,11 +5725,20 @@ pub fn typescript_declarations() -> String {
         declaration!(AlphaTool),
         declaration!(RunToolRequest),
         declaration!(CatalogCategoryDto),
+        declaration!(CatalogFieldGroupDto),
         declaration!(CatalogFormFieldDto),
+        declaration!(CatalogInstallationDto),
+        declaration!(CatalogDiagnosticStatus),
+        declaration!(CatalogDiagnosticCheckDto),
+        declaration!(CatalogToolDiagnosticDto),
+        declaration!(DiagnoseCatalogToolRequest),
+        declaration!(CatalogPresetDto),
+        declaration!(CatalogRunPreview),
         declaration!(CatalogToolDto),
         declaration!(WordlistDto),
         declaration!(CatalogSnapshot),
         declaration!(RunCatalogToolRequest),
+        declaration!(PreviewCatalogToolRequest),
         declaration!(EnsureTargetRequest),
         declaration!(JobView),
         declaration!(JobPageRequest),
@@ -3859,6 +5774,9 @@ pub fn typescript_declarations() -> String {
         declaration!(StorageHealthDto),
         declaration!(SecurityBaselineDto),
         declaration!(AppStatus),
+        declaration!(PersonalPresetDto),
+        declaration!(PersonalPresetStoreDto),
+        declaration!(SavePersonalPresetsRequest),
         declaration!(CoreEvent),
     ]
     .join("\n\n")
@@ -3881,6 +5799,22 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let service = CoreService::new(temporary.path().join("workspaces"));
         (temporary, service)
+    }
+
+    #[test]
+    fn structured_result_adapter_is_selected_by_parser_id() {
+        assert!(matches!(
+            select_http_discovery_adapter(
+                Some("flagdeck.ffuf-json"),
+                "renamed-content-discovery",
+                None
+            ),
+            HttpDiscoveryAdapter::FfufJson
+        ));
+        assert!(matches!(
+            select_http_discovery_adapter(None, "ffuf", None),
+            HttpDiscoveryAdapter::GenericJson
+        ));
     }
 
     #[test]
@@ -3907,6 +5841,17 @@ mod tests {
             .unwrap();
         assert!(opened.read_only);
         assert!(core.status().unwrap().storage.unwrap().query_only);
+    }
+
+    #[test]
+    fn catalog_scope_requires_one_explicit_target() {
+        assert_eq!(
+            normalize_scope_base_url("example.test:8080").unwrap(),
+            "http://example.test:8080/"
+        );
+        assert!(normalize_scope_base_url("192.0.2.0/24").is_err());
+        assert!(normalize_scope_base_url("/tmp/targets.txt").is_err());
+        assert!(normalize_scope_base_url("host-a host-b").is_err());
     }
 
     #[test]
@@ -4024,11 +5969,27 @@ mod tests {
         let declarations = typescript_declarations();
         for name in [
             "AppStatus",
+            "PersonalPresetDto",
+            "PersonalPresetStoreDto",
+            "SavePersonalPresetsRequest",
+            "CatalogDiagnosticStatus",
+            "CatalogDiagnosticCheckDto",
+            "CatalogToolDiagnosticDto",
+            "DiagnoseCatalogToolRequest",
             "CreateProjectRequest",
             "OpenProjectRequest",
             "CreateNoteRequest",
             "PreviewArtifactRequest",
             "ArtifactPageRequest",
+            "JobArtifactPageRequest",
+            "ExportJobArtifactRequest",
+            "ExportJobArtifactResult",
+            "StructuredResultStatus",
+            "StructuredResultKind",
+            "StructuredResultColumnDto",
+            "StructuredResultRowDto",
+            "ListStructuredResultsRequest",
+            "StructuredResultPage",
             "CommandError",
             "CreateScopeRequest",
             "ExternalLauncherHealthDto",
@@ -4051,6 +6012,73 @@ mod tests {
         ] {
             assert!(declarations.contains(name));
         }
+    }
+
+    #[test]
+    fn personal_presets_persist_privately_and_reject_sensitive_fields() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspaces = temporary.path().join("workspaces");
+        let catalog_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+        let core = CoreService::with_bundled_resources(
+            &workspaces,
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root.clone()),
+        );
+        let preset = PersonalPresetDto {
+            id: "user:ffuf:local".to_owned(),
+            tool_id: "ffuf".to_owned(),
+            name: "本地快速扫描".to_owned(),
+            base_preset_id: "retired-built-in-id".to_owned(),
+            values: BTreeMap::from([("threads".to_owned(), "60".to_owned())]),
+            created_at: "2026-07-25T00:00:00.000Z".to_owned(),
+            updated_at: "2026-07-25T00:00:00.000Z".to_owned(),
+        };
+        let store = PersonalPresetStoreDto {
+            schema_version: 1,
+            presets: vec![preset],
+            default_by_tool: BTreeMap::from([("ffuf".to_owned(), "user:ffuf:local".to_owned())]),
+        };
+
+        assert_eq!(
+            core.save_personal_presets(SavePersonalPresetsRequest {
+                store: store.clone(),
+            })
+            .unwrap(),
+            store
+        );
+        let restarted = CoreService::with_bundled_resources(
+            &workspaces,
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root),
+        );
+        assert_eq!(restarted.load_personal_presets().unwrap(), store);
+        let metadata = fs::metadata(workspaces.join(".personal-presets-v1.json")).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o077, 0);
+
+        let mut sensitive = store.clone();
+        sensitive.presets[0]
+            .values
+            .insert("headers".to_owned(), "Authorization: secret".to_owned());
+        assert!(matches!(
+            restarted.save_personal_presets(SavePersonalPresetsRequest { store: sensitive }),
+            Err(CoreError::CredentialPersistenceDenied)
+        ));
+
+        let mut unknown = store;
+        unknown.presets[0]
+            .values
+            .insert("future_field".to_owned(), "value".to_owned());
+        assert!(matches!(
+            restarted.save_personal_presets(SavePersonalPresetsRequest { store: unknown }),
+            Err(CoreError::InvalidRequest)
+        ));
     }
 
     #[test]
@@ -4717,6 +6745,1194 @@ mod tests {
         assert!(!error.message.contains("/private"));
     }
 
+    fn seed_job(
+        store: &ProjectStore,
+        execution_status: ExecutionStatus,
+        created_at: &Timestamp,
+        stdout_body: &[u8],
+        stderr_body: &[u8],
+        sidecar: Option<(&str, &[u8])>,
+    ) -> JobId {
+        let job_id = JobId::new();
+        let directory = create_job_directory(&store.layout().scans, &job_id).unwrap();
+        fs::write(directory.join("stdout.log"), stdout_body).unwrap();
+        fs::write(directory.join("stderr.log"), stderr_body).unwrap();
+        if let Some((name, body)) = sidecar {
+            fs::write(directory.join(name), body).unwrap();
+        }
+        let command_spec = CommandSpec {
+            command_spec_id: flagdeck_domain::CommandSpecId::new(),
+            tool_id: "ffuf".to_owned(),
+            tool_version: "test".to_owned(),
+            tool_sha256: "a".repeat(64),
+            program: "/usr/bin/true".to_owned(),
+            argv_exec: vec!["-u".to_owned(), "http://127.0.0.1/".to_owned()],
+            argv_redacted: vec!["-u".to_owned(), "http://127.0.0.1/".to_owned()],
+            env_exec: BTreeMap::new(),
+            env_redacted: BTreeMap::new(),
+            secret_transport: flagdeck_domain::SecretTransport::None,
+            secret_inputs: Vec::new(),
+            cwd: directory.to_string_lossy().into_owned(),
+            environment_allowlist: Vec::new(),
+            timeout_millis: 1_000,
+            stop_grace_millis: 100,
+            expected_outputs: Vec::new(),
+            io: ToolRunIo::default(),
+            risk_level: flagdeck_domain::RiskLevel::L1,
+            scope_id: None,
+            sandbox_profile: "none".to_owned(),
+            resource_limits: flagdeck_domain::ResourceLimits::default(),
+            network_isolation: "test".to_owned(),
+        };
+        store.save_command_spec(&command_spec).unwrap();
+        let stopped = !is_active_execution_status(execution_status);
+        let job = Job {
+            job_id: job_id.clone(),
+            parent_job_id: None,
+            command_spec_id: command_spec.command_spec_id.clone(),
+            execution_status,
+            import_status: if stopped {
+                ImportStatus::Imported
+            } else {
+                ImportStatus::Pending
+            },
+            created_at: created_at.clone(),
+            started_at: Some(created_at.clone()),
+            stopped_at: stopped.then(|| created_at.clone()),
+            pid: None,
+            process_group_id: None,
+            process_start_ticks: None,
+            exit_code: stopped.then_some(i32::from(execution_status == ExecutionStatus::Failed)),
+            exit_reason: stopped.then(|| match execution_status {
+                ExecutionStatus::Failed => "exit_code:1".to_owned(),
+                _ => "exit_code:0".to_owned(),
+            }),
+            systemd_unit: None,
+            cgroup_path: None,
+            invocation_id: None,
+            supervisor_backend: None,
+            ownership_verified: true,
+            cleanup_verified: true,
+            residual_processes: 0,
+            cancel_duration_millis: None,
+            stdout_artifact_id: None,
+            stderr_artifact_id: None,
+            retry_count: 0,
+            source_job_id: None,
+        };
+        store.save_job(&job).unwrap();
+        job_id
+    }
+
+    #[test]
+    fn job_history_pages_past_fifty_in_stable_order() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Job history pages".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let total = 75_usize;
+        let mut expected = Vec::with_capacity(total);
+        for index in 0..total {
+            let created_at = Timestamp::from_unix_millis(1_700_000_000_000 + index as u128);
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"ok\n",
+                b"",
+                None,
+            );
+            expected.push((created_at.0, job_id.0));
+        }
+        expected.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
+
+        let mut collected = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = core
+                .list_jobs(&JobPageRequest {
+                    project_id: project.project_id.clone(),
+                    cursor,
+                    limit: 20,
+                })
+                .unwrap();
+            assert!(page.items.len() <= 20);
+            for item in &page.items {
+                collected.push((item.job.created_at.0.clone(), item.job.job_id.0.clone()));
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(collected.len(), total);
+        assert_eq!(collected, expected);
+        let ids: BTreeSet<_> = collected.iter().map(|(_, id)| id.clone()).collect();
+        assert_eq!(ids.len(), total);
+        assert!(collected.len() > 50);
+        for window in collected.windows(2) {
+            assert!(
+                window[0].0 > window[1].0
+                    || (window[0].0 == window[1].0 && window[0].1 > window[1].1)
+            );
+        }
+    }
+
+    #[test]
+    fn long_job_log_reads_every_page_with_bounded_preview() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Long job log".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let body = "abcdefghijklmnopqrstuvwxyz012345\n".repeat(8_000);
+        assert!(body.len() > MAX_JOB_LOG_PREVIEW_BYTES * 3);
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            body.as_bytes(),
+            b"stderr tail\n",
+            None,
+        );
+
+        let mut offset = 0_u64;
+        let mut reconstructed = String::new();
+        let mut pages = 0_usize;
+        loop {
+            let page = core
+                .preview_job_log(&PreviewJobLogRequest {
+                    project_id: project.project_id.clone(),
+                    job_id: job_id.clone(),
+                    stream: JobLogStream::Stdout,
+                    offset,
+                    limit: MAX_JOB_LOG_PREVIEW_BYTES,
+                })
+                .unwrap();
+            assert!(page.bytes_returned <= MAX_JOB_LOG_PREVIEW_BYTES);
+            reconstructed.push_str(&page.content);
+            offset = page.next_offset;
+            pages += 1;
+            if page.eof {
+                break;
+            }
+            assert!(page.bytes_returned > 0);
+        }
+        assert!(pages >= 3);
+        assert_eq!(reconstructed, body);
+        assert_eq!(offset, body.len() as u64);
+    }
+
+    #[test]
+    fn empty_stdout_surfaces_stderr_for_failed_job() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Failed empty stdout".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Failed,
+            &created_at,
+            b"",
+            b"connection refused\n",
+            None,
+        );
+        let stdout = core
+            .preview_job_log(&PreviewJobLogRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                stream: JobLogStream::Stdout,
+                offset: 0,
+                limit: MAX_JOB_LOG_PREVIEW_BYTES,
+            })
+            .unwrap();
+        assert_eq!(stdout.content, "");
+        assert!(stdout.eof);
+        assert_eq!(stdout.bytes_returned, 0);
+        let stderr = core
+            .preview_job_log(&PreviewJobLogRequest {
+                project_id: project.project_id.clone(),
+                job_id,
+                stream: JobLogStream::Stderr,
+                offset: 0,
+                limit: MAX_JOB_LOG_PREVIEW_BYTES,
+            })
+            .unwrap();
+        assert_eq!(stderr.content, "connection refused\n");
+        assert!(stderr.eof);
+        assert!(stderr.bytes_returned > 0);
+    }
+
+    #[test]
+    fn recovered_job_retains_history_status_and_log_access() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspaces = temporary.path().join("workspaces");
+        let core = CoreService::new(&workspaces);
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Recovered job".to_owned(),
+            })
+            .unwrap();
+        let job_id = {
+            let store = core.project_store(&project.project_id, true).unwrap();
+            let created_at = Timestamp::now();
+            seed_job(
+                &store,
+                ExecutionStatus::Running,
+                &created_at,
+                b"partial stdout before crash\n",
+                b"still running\n",
+                Some((
+                    "ffuf-output.json",
+                    br#"{"results":[{"url":"http://x/a","status":200}]}"#,
+                )),
+            )
+        };
+        core.close_project().unwrap();
+        drop(core);
+
+        let restarted = CoreService::new(&workspaces);
+        restarted
+            .open_project(&OpenProjectRequest {
+                project_id: project.project_id.clone(),
+                mode: ProjectOpenMode::ReadWrite,
+            })
+            .unwrap();
+        let jobs = restarted
+            .list_jobs(&JobPageRequest {
+                project_id: project.project_id.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        let recovered = jobs
+            .items
+            .into_iter()
+            .find(|item| item.job.job_id == job_id)
+            .expect("recovered job visible in history");
+        assert_eq!(recovered.job.execution_status, ExecutionStatus::Interrupted);
+        let log = restarted
+            .preview_job_log(&PreviewJobLogRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                stream: JobLogStream::Stdout,
+                offset: 0,
+                limit: MAX_JOB_LOG_PREVIEW_BYTES,
+            })
+            .unwrap();
+        assert!(log.content.contains("partial stdout before crash"));
+        assert!(log.eof);
+        let file = restarted
+            .preview_job_file(&PreviewJobFileRequest {
+                project_id: project.project_id,
+                job_id,
+                filename: "ffuf-output.json".to_owned(),
+                limit: 4096,
+            })
+            .unwrap();
+        assert!(file.found);
+        assert!(file.content.contains("http://x/a"));
+    }
+
+    #[test]
+    fn exported_job_evidence_preserves_artifact_contract() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Job evidence export".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            b"stdout body\n",
+            b"stderr body\n",
+            Some((
+                "ffuf-output.json",
+                br#"{"results":[{"url":"http://x/admin","status":200,"length":12}]}"#,
+            )),
+        );
+        let directory = store.layout().scans.join(&job_id.0);
+        let stdout = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-stdout.log".to_owned(),
+                    mime: "text/plain; charset=utf-8".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: Some(fs::metadata(directory.join("stdout.log")).unwrap().len()),
+                    expected_sha256: None,
+                },
+                File::open(directory.join("stdout.log")).unwrap(),
+            )
+            .unwrap();
+        let raw = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-output.json".to_owned(),
+                    mime: "application/json".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: Some(
+                        fs::metadata(directory.join("ffuf-output.json"))
+                            .unwrap()
+                            .len(),
+                    ),
+                    expected_sha256: None,
+                },
+                File::open(directory.join("ffuf-output.json")).unwrap(),
+            )
+            .unwrap();
+        let excluded = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "runtime.tmp".to_owned(),
+                    mime: "application/octet-stream".to_owned(),
+                    sensitivity: Sensitivity::Normal,
+                    export_policy: ExportPolicy::ExcludeRuntime,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: Some(3),
+                    expected_sha256: None,
+                },
+                b"tmp".as_slice(),
+            )
+            .unwrap();
+        let foreign = core
+            .create_note(CreateNoteRequest {
+                project_id: project.project_id.clone(),
+                logical_name: "note.txt".to_owned(),
+                content: "unrelated".to_owned(),
+                sensitivity: Sensitivity::Normal,
+            })
+            .unwrap();
+
+        let page = core
+            .list_job_artifacts(&JobArtifactPageRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        let ids: BTreeSet<_> = page
+            .items
+            .iter()
+            .map(|item| item.artifact_id.0.clone())
+            .collect();
+        assert!(ids.contains(&stdout.artifact_id.0));
+        assert!(ids.contains(&raw.artifact_id.0));
+        assert!(ids.contains(&excluded.artifact_id.0));
+        assert!(!ids.contains(&foreign.artifact_id.0));
+        assert!(
+            page.items
+                .iter()
+                .all(|item| item.source_job_id.as_ref() == Some(&job_id))
+        );
+
+        assert!(matches!(
+            core.export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: raw.artifact_id.clone(),
+                confirm_sensitive: false,
+            }),
+            Err(CoreError::Storage(
+                StorageError::SensitiveExportConfirmationRequired
+            ))
+        ));
+        assert!(matches!(
+            core.export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: excluded.artifact_id.clone(),
+                confirm_sensitive: true,
+            }),
+            Err(CoreError::InvalidRequest)
+        ));
+        assert!(matches!(
+            core.export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: foreign.artifact_id.clone(),
+                confirm_sensitive: true,
+            }),
+            Err(CoreError::InvalidRequest)
+        ));
+
+        let exported = core
+            .export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: raw.artifact_id.clone(),
+                confirm_sensitive: true,
+            })
+            .unwrap();
+        assert_eq!(exported.logical_name, "ffuf-output.json");
+        assert_eq!(exported.size, raw.size.unwrap());
+        assert_eq!(exported.sha256, raw.sha256.as_deref().unwrap());
+        assert_eq!(exported.sensitivity, Sensitivity::SensitiveEvidence);
+        assert_eq!(exported.export_policy, ExportPolicy::ConfirmSensitive);
+        assert_eq!(exported.job_id, job_id);
+        let export_path = store.layout().exports.join(&exported.export_name);
+        let bytes = fs::read(&export_path).unwrap();
+        assert_eq!(bytes.len() as u64, exported.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), exported.sha256);
+        assert_eq!(
+            fs::metadata(&export_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!export_path.to_string_lossy().contains(".."));
+        assert_eq!(
+            Path::new(&exported.export_name).file_name().unwrap(),
+            exported.export_name.as_str()
+        );
+    }
+
+    #[test]
+    fn output_type_and_parser_select_ffuf_result_adapter() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Structured adapter".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            b"",
+            b"",
+            Some((
+                "ffuf-output.json",
+                br#"{"results":[{"url":"http://x/admin","input":{"FUZZ":"admin"},"status":200,"length":12}]}"#,
+            )),
+        );
+        // Rewrite command_spec IO + import parser without using tool_id branching in the API under test.
+        let mut stored = store.job(&job_id).unwrap();
+        stored.command_spec.io = ToolRunIo {
+            schema_version: 1,
+            inputs: Vec::new(),
+            outputs: vec![
+                flagdeck_domain::ToolOutputSpec {
+                    id: "discoveries".to_owned(),
+                    kind: ToolIoKind::HttpDiscovery,
+                },
+                flagdeck_domain::ToolOutputSpec {
+                    id: "raw".to_owned(),
+                    kind: ToolIoKind::RawArtifact,
+                },
+            ],
+        };
+        stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+        stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+        store.save_command_spec(&stored.command_spec).unwrap();
+        store.save_job(&stored.job).unwrap();
+        let raw = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-output.json".to_owned(),
+                    mime: "application/json".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: None,
+                    expected_sha256: None,
+                },
+                File::open(
+                    store
+                        .layout()
+                        .scans
+                        .join(&job_id.0)
+                        .join("ffuf-output.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .complete_import(
+                &stored.job,
+                &JobImportRecord {
+                    job_id: job_id.clone(),
+                    parser_id: "flagdeck.ffuf-json".to_owned(),
+                    parser_version: "1".to_owned(),
+                    import_status: ImportStatus::Imported,
+                    discovery_count: 0,
+                    http_message_count: 0,
+                    source_artifact_ids: vec![raw.artifact_id.clone()],
+                    error_summary: None,
+                    completed_at: Some(Timestamp::now()),
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(page.status, StructuredResultStatus::Ready);
+        assert_eq!(page.kind, StructuredResultKind::HttpDiscovery);
+        assert_eq!(page.parser_id.as_deref(), Some("flagdeck.ffuf-json"));
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://x/admin")
+        );
+        assert_eq!(
+            page.rows[0].cells.get("path").map(String::as_str),
+            Some("admin")
+        );
+        assert_eq!(
+            page.rows[0].cells.get("status").map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            page.rows[0].cells.get("length").map(String::as_str),
+            Some("12")
+        );
+        assert_eq!(page.rows[0].source_job_id, job_id);
+        assert_eq!(
+            page.rows[0].source_artifact_id.as_ref(),
+            Some(&raw.artifact_id)
+        );
+    }
+
+    #[test]
+    fn parse_failure_keeps_raw_artifact_and_diagnostic_status() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Parse failure results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            b"",
+            b"parser boom\n",
+            Some(("ffuf-output.json", b"{corrupted")),
+        );
+        let mut stored = store.job(&job_id).unwrap();
+        stored.command_spec.io = ToolRunIo {
+            schema_version: 1,
+            inputs: Vec::new(),
+            outputs: vec![flagdeck_domain::ToolOutputSpec {
+                id: "discoveries".to_owned(),
+                kind: ToolIoKind::HttpDiscovery,
+            }],
+        };
+        stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+        stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+        store.save_command_spec(&stored.command_spec).unwrap();
+        let raw = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-output.json".to_owned(),
+                    mime: "application/json".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: None,
+                    expected_sha256: None,
+                },
+                File::open(
+                    store
+                        .layout()
+                        .scans
+                        .join(&job_id.0)
+                        .join("ffuf-output.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        stored.job.import_status = ImportStatus::ParserFailed;
+        store.save_job(&stored.job).unwrap();
+        store
+            .complete_import(
+                &stored.job,
+                &JobImportRecord {
+                    job_id: job_id.clone(),
+                    parser_id: "flagdeck.ffuf-json".to_owned(),
+                    parser_version: "1".to_owned(),
+                    import_status: ImportStatus::ParserFailed,
+                    discovery_count: 0,
+                    http_message_count: 0,
+                    source_artifact_ids: vec![raw.artifact_id.clone()],
+                    error_summary: Some("invalid json".to_owned()),
+                    completed_at: Some(Timestamp::now()),
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        let page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(page.status, StructuredResultStatus::ParseFailed);
+        assert!(
+            page.parser_error
+                .as_deref()
+                .is_some_and(|value| value.contains("invalid"))
+        );
+        assert!(page.source_artifact_ids.contains(&raw.artifact_id));
+        assert!(page.rows.is_empty());
+        let evidence = core
+            .list_job_artifacts(&JobArtifactPageRequest {
+                project_id: project.project_id,
+                job_id,
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert!(
+            evidence
+                .items
+                .iter()
+                .any(|item| item.artifact_id == raw.artifact_id)
+        );
+    }
+
+    #[test]
+    fn gobuster_and_arjun_structured_results_expose_rows_and_provenance() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Gobuster arjun results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+
+        // Gobuster text artifact
+        let gobuster_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "gobuster-output.txt",
+                    b"/admin              (Status: 200) [Size: 14]\n/api                (Status: 403) [Size: 9]\n",
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "gobuster".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "gobuster-output.txt".to_owned(),
+                        mime: "text/plain; charset=utf-8".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("gobuster-output.txt"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+
+        let gobuster_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: gobuster_job.0.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(gobuster_page.status, StructuredResultStatus::Ready);
+        assert_eq!(gobuster_page.rows.len(), 2);
+        assert_eq!(
+            gobuster_page.rows[0].cells.get("path").map(String::as_str),
+            Some("/admin")
+        );
+        assert_eq!(
+            gobuster_page.rows[0]
+                .cells
+                .get("status")
+                .map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            gobuster_page.rows[0].source_artifact_id.as_ref(),
+            Some(&gobuster_job.1.artifact_id)
+        );
+
+        // Arjun JSON artifact
+        let arjun_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "arjun-output.json",
+                    br#"{"http://x/search":{"params":["id","q"]}}"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "arjun".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "arjun-output.json".to_owned(),
+                        mime: "application/json".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("arjun-output.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+
+        let arjun_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id,
+                job_id: arjun_job.0.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(arjun_page.status, StructuredResultStatus::Ready);
+        assert_eq!(arjun_page.rows.len(), 2);
+        assert_eq!(
+            arjun_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://x/search")
+        );
+        assert!(
+            arjun_page
+                .rows
+                .iter()
+                .any(|row| row.cells.get("param").map(String::as_str) == Some("id"))
+        );
+        assert_eq!(arjun_page.rows[0].source_job_id, arjun_job.0);
+        assert_eq!(
+            arjun_page.rows[0].source_artifact_id.as_ref(),
+            Some(&arjun_job.1.artifact_id)
+        );
+    }
+
+    #[test]
+    fn curl_and_wafw00f_structured_results_expose_rows() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Curl waf results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+
+        let curl_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "headers.txt",
+                    b"HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: 12\n\n",
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "curl".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "http_message".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "headers.txt".to_owned(),
+                        mime: "text/plain; charset=utf-8".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(store.layout().scans.join(&job_id.0).join("headers.txt")).unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let curl_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: curl_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(curl_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            curl_page.rows[0].cells.get("status").map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            curl_page.rows[0]
+                .cells
+                .get("content_type")
+                .map(String::as_str),
+            Some("text/html")
+        );
+
+        let waf_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "wafw00f.json",
+                    br#"[{"detected":false,"firewall":"None","manufacturer":"None","url":"http://x/"}]"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "wafw00f".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "waf".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "wafw00f.json".to_owned(),
+                        mime: "application/json".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(store.layout().scans.join(&job_id.0).join("wafw00f.json")).unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let waf_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id,
+                job_id: waf_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(waf_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            waf_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://x/")
+        );
+        assert_eq!(
+            waf_page.rows[0].cells.get("detected").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            waf_page.rows[0].source_artifact_id.as_ref(),
+            Some(&waf_job.1.artifact_id)
+        );
+    }
+
+    #[test]
+    fn dddd_and_fscan_structured_results_expose_hosts_and_urls() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Dddd fscan results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+
+        let dddd_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "dddd-output.jsonl",
+                    br#"{"type":"Web","web":{"status":"200"},"uri":"http://127.0.0.1:80"}"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "dddd".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "dddd-output.jsonl".to_owned(),
+                        mime: "application/x-ndjson".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("dddd-output.jsonl"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let dddd_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: dddd_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(dddd_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            dddd_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://127.0.0.1:80")
+        );
+
+        let fscan_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "fscan-output.json",
+                    br#"[{"host":"127.0.0.1","port":80,"service":"http","url":"http://127.0.0.1:80/","info":"ok"}]"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "fscan".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "fscan-output.json".to_owned(),
+                        mime: "application/json".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("fscan-output.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let fscan_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id,
+                job_id: fscan_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(fscan_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            fscan_page.rows[0].cells.get("host").map(String::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            fscan_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://127.0.0.1:80/")
+        );
+        assert_eq!(
+            fscan_page.rows[0].source_artifact_id.as_ref(),
+            Some(&fscan_job.1.artifact_id)
+        );
+    }
+
     struct LoopbackFixture {
         port: u16,
         connections: Arc<AtomicUsize>,
@@ -4974,6 +8190,184 @@ mod tests {
         }));
         assert_eq!(core.active_runs.load(Ordering::SeqCst), 0);
         assert!(core.active_executions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn catalog_l2_confirmation_records_denied_and_allowed_audit_outcomes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let catalog_root = temporary.path().join("catalog");
+        let tools_dir = catalog_root.join("tools");
+        fs::create_dir_all(&tools_dir).unwrap();
+        fs::write(
+            tools_dir.join("ffuf.toml"),
+            r#"
+id = "ffuf"
+name = "ffuf"
+category = "content_discovery"
+mode = "embedded_cli"
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标"
+required = true
+from = "target_url"
+
+[argv]
+template = ["--", "{url}"]
+"#,
+        )
+        .unwrap();
+        let core = Arc::new(CoreService::with_bundled_resources(
+            temporary.path().join("workspaces"),
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root),
+        ));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "catalog-l2-audit".to_owned(),
+            })
+            .unwrap();
+        let denied = RunCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "ffuf".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([("url".to_owned(), "http://127.0.0.1:9/".to_owned())]),
+            confirm_sensitive_argv: false,
+            confirm_l2: false,
+            l3_confirmation: None,
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
+        };
+
+        assert!(matches!(
+            core.start_catalog_tool(denied.clone()),
+            Err(CoreError::CatalogConfirmationRequired(
+                flagdeck_domain::RiskLevel::L2
+            ))
+        ));
+        core.start_catalog_tool(RunCatalogToolRequest {
+            confirm_l2: true,
+            ..denied
+        })
+        .unwrap();
+
+        let audit = core.audit_events_for_test(10);
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "denied"
+                && event.risk_level == flagdeck_domain::RiskLevel::L2
+                && event.adapter_id.as_deref() == Some("catalog.ffuf")
+        }));
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "allowed"
+                && event.risk_level == flagdeck_domain::RiskLevel::L2
+                && event.adapter_id.as_deref() == Some("catalog.ffuf")
+        }));
+    }
+
+    #[tokio::test]
+    async fn catalog_l3_requires_exact_phrase_and_audits_redacted_outcomes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let catalog_root = temporary.path().join("catalog");
+        let tools_dir = catalog_root.join("tools");
+        fs::create_dir_all(&tools_dir).unwrap();
+        fs::write(
+            tools_dir.join("ffuf.toml"),
+            r#"
+id = "ffuf"
+name = "ffuf"
+category = "content_discovery"
+mode = "embedded_cli"
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标"
+required = true
+from = "target_url"
+
+[[form.fields]]
+id = "secret"
+type = "text"
+label = "令牌"
+sensitive = true
+
+[argv]
+template = ["--", "{url}", "{secret}"]
+"#,
+        )
+        .unwrap();
+        let core = Arc::new(CoreService::with_bundled_resources(
+            temporary.path().join("workspaces"),
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root),
+        ));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "catalog-l3-audit".to_owned(),
+            })
+            .unwrap();
+        let denied = RunCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "ffuf".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/".to_owned()),
+                ("secret".to_owned(), "top-secret-token".to_owned()),
+            ]),
+            confirm_sensitive_argv: true,
+            confirm_l2: false,
+            l3_confirmation: Some("RUN CATALOG FFUF".to_owned()),
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
+        };
+
+        assert!(matches!(
+            core.start_catalog_tool(denied.clone()),
+            Err(CoreError::CatalogConfirmationRequired(
+                flagdeck_domain::RiskLevel::L3
+            ))
+        ));
+        core.start_catalog_tool(RunCatalogToolRequest {
+            l3_confirmation: Some("RUN CATALOG ffuf".to_owned()),
+            ..denied
+        })
+        .expect("the exact L3 phrase should allow the catalog run");
+
+        let audit = core.audit_events_for_test(10);
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "denied"
+                && event.risk_level == flagdeck_domain::RiskLevel::L3
+        }));
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "allowed"
+                && event.risk_level == flagdeck_domain::RiskLevel::L3
+        }));
+        assert!(
+            audit
+                .iter()
+                .all(|event| !event.details_json.contains("top-secret-token"))
+        );
     }
 
     #[test]

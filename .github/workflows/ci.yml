@@ -37,7 +37,7 @@ jobs:
           cache: true
 
       - name: Sync dependencies
-        run: mise run sync
+        run: mise run sync-all
 
       - name: Prepare generated release resources
         run: |
@@ -45,4 +45,7 @@ jobs:
           mise run r7-sbom
 
       - name: Run checks
-        run: mise run test
+        run: mise run test-all
+
+      - name: Audit production dependencies
+        run: mise run r7-audits

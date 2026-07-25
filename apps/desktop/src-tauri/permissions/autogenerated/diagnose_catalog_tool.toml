@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-diagnose-catalog-tool"
+description = "Enables the diagnose_catalog_tool command without any pre-configured scope."
+commands.allow = ["diagnose_catalog_tool"]
+
+[[permission]]
+identifier = "deny-diagnose-catalog-tool"
+description = "Denies the diagnose_catalog_tool command without any pre-configured scope."
+commands.deny = ["diagnose_catalog_tool"]

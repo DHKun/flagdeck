@@ -1,21 +1,107 @@
 id = "curl"
 name = "curl"
 category = "http"
+tier = "tier_1"
+capabilities = ["http_request", "response_evidence"]
+aliases = ["HTTP 请求", "发请求", "curl", "探测"]
+risk_level = "l1"
 summary = "发送 HTTP 请求，把响应头和正文写入任务目录"
 
 usage = """
 【FlagDeck 表单】
 • 必填：URL、方法、超时
 • 可选：头、Cookie、UA、Referer、POST 体、代理、证书、压缩、HTTP 版本
-
-【实际调用】
-curl -X METHOD --max-time N [选项]
-  --dump-header headers.txt --output body.bin URL
+• 输出：任务目录 headers.txt / body.bin
 
 完整帮助：curl --help all
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "quick_get"
+name = "快速 GET"
+core_fields = ["url", "method", "max_time"]
+
+[presets.defaults]
+method = "GET"
+max_time = "30"
+follow = "yes"
+insecure = "no"
+compressed = "no"
+http_version = "auto"
+
+[[presets]]
+id = "post_json"
+name = "POST JSON"
+core_fields = ["url", "method", "max_time", "headers", "data"]
+
+[presets.defaults]
+method = "POST"
+max_time = "30"
+headers = "Content-Type: application/json"
+follow = "yes"
+insecure = "no"
+compressed = "no"
+http_version = "auto"
+
+[[presets]]
+id = "via_proxy"
+name = "经代理请求"
+core_fields = ["url", "method", "max_time", "proxy", "insecure"]
+
+[presets.defaults]
+method = "GET"
+max_time = "30"
+proxy = "http://127.0.0.1:8080"
+insecure = "yes"
+follow = "yes"
+compressed = "no"
+http_version = "auto"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url", "method"]
+
+[[field_groups]]
+id = "request"
+name = "请求"
+fields = ["headers", "cookie", "user_agent", "referer", "data", "proxy"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["max_time", "connect_timeout", "insecure", "follow", "compressed", "http_version"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.outputs]]
+id = "http_message"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "system"
+license = "curl"
+homepage = "https://curl.se/"
+version = "8.18.0"
+health_strategy = "safe-version-command"
+runtime = "system curl"
+version_args = ["--version"]
+install_command = "sudo dnf install -y curl"
+path_fix = "export PATH=\"$PATH:/usr/bin\""
+wordlist_source = ""
+wordlist_install_command = ""
 
 [binary]
 command = "curl"
@@ -62,6 +148,7 @@ hint = "仅限制 TCP/TLS 建连时间（秒）；留空则用 curl 默认"
 [[form.fields]]
 id = "headers"
 type = "text"
+sensitive = true
 label = "请求头 -H（可选）"
 default = ""
 required = false
@@ -70,6 +157,7 @@ hint = "单条自定义头，例 Authorization: Bearer xxx 或 Content-Type: app
 [[form.fields]]
 id = "cookie"
 type = "text"
+sensitive = true
 label = "Cookie -b（可选）"
 default = ""
 required = false
@@ -94,6 +182,7 @@ hint = "来源页 URL，部分站点校验 Referer 时使用"
 [[form.fields]]
 id = "data"
 type = "text"
+sensitive = true
 label = "请求体 -d（可选）"
 default = ""
 required = false
@@ -102,6 +191,7 @@ hint = "POST/PUT 体：表单 a=1&b=2 或 JSON 字符串（JSON 时请配合 Con
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "代理 -x（可选）"
 default = ""
 required = false
@@ -217,7 +307,9 @@ equals = "2"
 args = ["--http2"]
 
 [parser]
-kind = "none"
+kind = "curl-headers"
+id = "flagdeck.curl-headers"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 120000

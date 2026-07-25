@@ -1,18 +1,111 @@
 id = "fscan"
 name = "fscan"
 category = "fingerprint"
+tier = "tier_1"
+capabilities = ["host_discovery", "service_discovery", "web_fingerprint"]
+aliases = ["内网扫描", "主机发现", "端口扫描", "fscan"]
+risk_level = "l2"
 summary = "主机/端口/服务扫描（Active/fscan）"
 
 usage = """
 【FlagDeck 表单】
 • 必填：主机 -h、端口 -p、模式 -m
 • 可选：禁 ping/POC/爆破、Cookie、排除主机/端口、代理、线程、超时
+• 输出：任务目录 fscan-output.json
 
 完整帮助：fscan -help
 仅限授权内网/靶场。
 """
 mode = "embedded_cli"
 featured = true
+platforms = ["linux"]
+
+[[presets]]
+id = "web_ports"
+name = "Web 端口扫描"
+core_fields = ["host", "ports", "mode"]
+
+[presets.defaults]
+ports = "80,443,8080,8000,8443"
+mode = "all"
+output_format = "json"
+no_ping = "no"
+no_poc = "yes"
+no_brute = "yes"
+global_timeout = "3"
+
+[[presets]]
+id = "alive_only"
+name = "仅存活探测"
+core_fields = ["host", "ports", "mode", "alive_only"]
+
+[presets.defaults]
+ports = "80,443"
+mode = "icmp"
+output_format = "json"
+alive_only = "yes"
+no_poc = "yes"
+no_brute = "yes"
+global_timeout = "3"
+
+[[presets]]
+id = "full_service"
+name = "完整服务扫描"
+core_fields = ["host", "ports", "mode", "module_threads"]
+
+[presets.defaults]
+ports = "22,80,443,3389,3306,6379,8080,8000,8443"
+mode = "all"
+output_format = "json"
+no_ping = "no"
+no_poc = "no"
+no_brute = "yes"
+module_threads = "100"
+global_timeout = "5"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["host", "ports", "mode", "exclude_hosts", "exclude_ports"]
+
+[[field_groups]]
+id = "request"
+name = "请求"
+fields = ["cookie", "proxy", "domain", "iface"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["no_ping", "alive_only", "no_poc", "no_brute", "full_poc", "module_threads", "global_timeout", "output_format"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "host"
+
+[[io.outputs]]
+id = "discoveries"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "GPL-3.0"
+homepage = "https://github.com/shadow1ng/fscan"
+version = "2.1.3"
+health_strategy = "safe-version-command"
+runtime = "standalone Go binary"
+version_args = ["-h"]
+install_command = "下载 Active/fscan 发布包到 tools root"
+path_fix = "export PATH=\"$PATH:/data/CTF/Tools/Active/fscan\""
+wordlist_source = ""
+wordlist_install_command = ""
 
 [binary]
 command = "fscan"
@@ -96,6 +189,7 @@ hint = "yes=跑全量 POC，更慢更吵；默认关"
 [[form.fields]]
 id = "cookie"
 type = "text"
+sensitive = true
 label = "HTTP Cookie（可选）"
 default = ""
 required = false
@@ -145,6 +239,7 @@ hint = "整次任务超时上限"
 [[form.fields]]
 id = "proxy"
 type = "text"
+sensitive = true
 label = "HTTP 代理 -proxy（可选）"
 default = ""
 required = false
@@ -238,7 +333,9 @@ field = "domain"
 args = ["-domain", "{domain}"]
 
 [parser]
-kind = "none"
+kind = "fscan-json"
+id = "flagdeck.fscan-json"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 600000
