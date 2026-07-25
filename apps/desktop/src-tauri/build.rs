@@ -30,6 +30,8 @@ fn main() {
             "run_tool",
             "preview_job_log",
             "preview_job_file",
+            "list_job_artifacts",
+            "export_job_artifact",
             "cancel_job",
             "cancel_all_jobs",
             "list_jobs",

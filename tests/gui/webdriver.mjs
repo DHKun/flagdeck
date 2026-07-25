@@ -678,6 +678,20 @@ async function main() {
   const status = await invokeMain("app_status");
   const projectId = status.active_project?.project_id;
   if (!projectId) throw new Error("automatic workspace is unavailable");
+  await click('[data-testid="nav-jobs"]');
+  const jobHistoryUi = await waitFor("job history evidence UI", async () => {
+    const value = await execute(
+      "return { count: document.querySelector('[data-testid=job-history-count]')?.textContent.trim(), loadMore: document.querySelector('[data-testid=load-more-jobs]')?.textContent.trim(), logBound: document.body.textContent.includes('界面仅保留有界日志窗口') };",
+    );
+    return value.count?.includes("已加载") &&
+      (value.loadMore === "已加载全部" ||
+        value.loadMore === "加载更多历史" ||
+        value.loadMore === "加载中…") &&
+      value.logBound
+      ? value
+      : undefined;
+  });
+  await click('[data-testid="nav-tools"]');
   const artifact = await invokeMain("create_note", {
     request: {
       project_id: projectId,
@@ -825,6 +839,7 @@ async function main() {
       ffufPersonalPresetExport,
       ffufRunPreview,
       ffufV2Metadata,
+      jobHistoryUi,
       preferenceEvidence,
       workspaceUi,
       artifactCount,

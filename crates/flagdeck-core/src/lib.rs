@@ -65,6 +65,7 @@ use flagdeck_storage::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::Notify;
 use ts_rs::TS;
@@ -170,6 +171,10 @@ impl From<CoreError> for CommandError {
             CoreError::CredentialPersistenceDenied => (
                 "credential_persistence_denied",
                 "Credential persistence is disabled",
+            ),
+            CoreError::Storage(StorageError::SensitiveExportConfirmationRequired) => (
+                "sensitive_export_confirmation_required",
+                "Exporting sensitive artifacts requires confirmation",
             ),
             CoreError::StateLock => ("state_lock", "Core state is temporarily unavailable"),
             CoreError::Http(_) => ("http_workbench_error", "HTTP workbench operation failed"),
@@ -334,6 +339,35 @@ pub struct ArtifactPageRequest {
 pub struct ArtifactPage {
     pub items: Vec<Artifact>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct JobArtifactPageRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+    pub cursor: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ExportJobArtifactRequest {
+    pub project_id: ProjectId,
+    pub job_id: JobId,
+    pub artifact_id: ArtifactId,
+    pub confirm_sensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ExportJobArtifactResult {
+    pub artifact_id: ArtifactId,
+    pub job_id: JobId,
+    pub logical_name: String,
+    pub export_name: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    pub sha256: String,
+    pub sensitivity: Sensitivity,
+    pub export_policy: ExportPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -1255,6 +1289,151 @@ impl CoreService {
             let (items, next_cursor) =
                 store.list_artifacts(request.limit, request.cursor.as_deref())?;
             Ok(ArtifactPage { items, next_cursor })
+        })
+    }
+
+    pub fn list_job_artifacts(
+        &self,
+        request: &JobArtifactPageRequest,
+    ) -> Result<ArtifactPage, CoreError> {
+        if request.limit == 0 || request.limit > 100 {
+            return Err(CoreError::InvalidRequest);
+        }
+        request
+            .job_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        self.with_active(&request.project_id, |store| {
+            let _job = store.job(&request.job_id)?;
+            let (items, next_cursor) = store.list_job_artifacts(
+                &request.job_id,
+                request.limit,
+                request.cursor.as_deref(),
+            )?;
+            Ok(ArtifactPage { items, next_cursor })
+        })
+    }
+
+    pub fn export_job_artifact(
+        &self,
+        request: &ExportJobArtifactRequest,
+    ) -> Result<ExportJobArtifactResult, CoreError> {
+        request
+            .job_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        request
+            .artifact_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        self.with_active(&request.project_id, |store| {
+            let _job = store.job(&request.job_id)?;
+            let artifact = store.artifact(&request.artifact_id)?;
+            if artifact.state != flagdeck_domain::ArtifactState::Committed {
+                return Err(CoreError::InvalidRequest);
+            }
+            if artifact.source_job_id.as_ref() != Some(&request.job_id) {
+                return Err(CoreError::InvalidRequest);
+            }
+            match artifact.export_policy {
+                ExportPolicy::Include => {}
+                ExportPolicy::ConfirmSensitive => {
+                    if !request.confirm_sensitive {
+                        return Err(CoreError::Storage(
+                            StorageError::SensitiveExportConfirmationRequired,
+                        ));
+                    }
+                }
+                ExportPolicy::ExcludeCredential | ExportPolicy::ExcludeRuntime => {
+                    return Err(CoreError::InvalidRequest);
+                }
+            }
+            let blob_relative = artifact
+                .blob_relative_path
+                .as_ref()
+                .ok_or(CoreError::InvalidRequest)?;
+            let blob_path = store.layout().root.join(blob_relative);
+            let expected_size = artifact.size.ok_or(CoreError::InvalidRequest)?;
+            let expected_sha = artifact
+                .sha256
+                .as_deref()
+                .ok_or(CoreError::InvalidRequest)?;
+            let metadata = fs::metadata(&blob_path)?;
+            if !metadata.is_file() || metadata.len() != expected_size {
+                return Err(CoreError::Storage(StorageError::HashMismatch));
+            }
+            let mut hasher = Sha256::new();
+            let mut source = File::options()
+                .read(true)
+                .custom_flags(nix::libc::O_NOFOLLOW)
+                .open(&blob_path)?;
+            let mut buffer = vec![0_u8; 64 * 1024];
+            let mut copied = 0_u64;
+            loop {
+                let read = source.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                copied = copied
+                    .checked_add(u64::try_from(read).map_err(|_| CoreError::InvalidRequest)?)
+                    .ok_or(CoreError::InvalidRequest)?;
+            }
+            let actual_sha = format!("{:x}", hasher.finalize());
+            if copied != expected_size || actual_sha != expected_sha {
+                return Err(CoreError::Storage(StorageError::HashMismatch));
+            }
+            let export_name = unique_export_basename(
+                &store.layout().exports,
+                &artifact.logical_name,
+                &artifact.artifact_id.0,
+            )?;
+            let final_path = store.layout().exports.join(&export_name);
+            let temporary = store
+                .layout()
+                .exports
+                .join(format!(".{export_name}.partial"));
+            {
+                let mut destination = File::options()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&temporary)?;
+                source.seek(SeekFrom::Start(0))?;
+                std::io::copy(&mut source, &mut destination)?;
+                destination.sync_all()?;
+            }
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+            let written_size = fs::metadata(&temporary)?.len();
+            let written_sha = {
+                let mut verify = File::open(&temporary)?;
+                let mut hasher = Sha256::new();
+                let mut buffer = vec![0_u8; 64 * 1024];
+                loop {
+                    let read = verify.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+                format!("{:x}", hasher.finalize())
+            };
+            if written_size != expected_size || written_sha != expected_sha {
+                let _ = fs::remove_file(&temporary);
+                return Err(CoreError::Storage(StorageError::HashMismatch));
+            }
+            fs::rename(&temporary, &final_path)?;
+            fs::set_permissions(&final_path, fs::Permissions::from_mode(0o600))?;
+            Ok(ExportJobArtifactResult {
+                artifact_id: artifact.artifact_id,
+                job_id: request.job_id.clone(),
+                logical_name: artifact.logical_name,
+                export_name,
+                size: expected_size,
+                sha256: expected_sha.to_owned(),
+                sensitivity: artifact.sensitivity,
+                export_policy: artifact.export_policy,
+            })
         })
     }
 
@@ -3428,6 +3607,61 @@ fn is_safe_job_sidecar_filename(filename: &str) -> bool {
         && filename.contains('.')
 }
 
+fn sanitize_export_basename(logical_name: &str) -> String {
+    let base = Path::new(logical_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("artifact.bin");
+    let sanitized: String = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." || sanitized.starts_with('.') {
+        "artifact.bin".to_owned()
+    } else {
+        sanitized.chars().take(128).collect()
+    }
+}
+
+fn unique_export_basename(
+    exports_dir: &Path,
+    logical_name: &str,
+    artifact_id: &str,
+) -> Result<String, CoreError> {
+    let base = sanitize_export_basename(logical_name);
+    let candidate = base.clone();
+    if !exports_dir.join(&candidate).exists() {
+        return Ok(candidate);
+    }
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, Some(ext)),
+        _ => (base.as_str(), None),
+    };
+    let short_id: String = artifact_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    for index in 0..1_000 {
+        let candidate = match ext {
+            Some(ext) if index == 0 => format!("{stem}-{short_id}.{ext}"),
+            Some(ext) => format!("{stem}-{short_id}-{index}.{ext}"),
+            None if index == 0 => format!("{stem}-{short_id}"),
+            None => format!("{stem}-{short_id}-{index}"),
+        };
+        if !exports_dir.join(&candidate).exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(CoreError::InvalidRequest)
+}
+
 fn is_active_execution_status(status: ExecutionStatus) -> bool {
     matches!(
         status,
@@ -4435,6 +4669,9 @@ pub fn typescript_declarations() -> String {
         declaration!(ArtifactPreview),
         declaration!(ArtifactPageRequest),
         declaration!(ArtifactPage),
+        declaration!(JobArtifactPageRequest),
+        declaration!(ExportJobArtifactRequest),
+        declaration!(ExportJobArtifactResult),
         declaration!(CreateScopeRequest),
         declaration!(ProjectContextRequest),
         declaration!(ScopePage),
@@ -4738,6 +4975,9 @@ mod tests {
             "CreateNoteRequest",
             "PreviewArtifactRequest",
             "ArtifactPageRequest",
+            "JobArtifactPageRequest",
+            "ExportJobArtifactRequest",
+            "ExportJobArtifactResult",
             "CommandError",
             "CreateScopeRequest",
             "ExternalLauncherHealthDto",
@@ -5491,6 +5731,471 @@ mod tests {
         assert_eq!(error.code, "storage_error");
         assert_eq!(error.message, "Storage operation failed");
         assert!(!error.message.contains("/private"));
+    }
+
+    fn seed_job(
+        store: &ProjectStore,
+        execution_status: ExecutionStatus,
+        created_at: &Timestamp,
+        stdout_body: &[u8],
+        stderr_body: &[u8],
+        sidecar: Option<(&str, &[u8])>,
+    ) -> JobId {
+        let job_id = JobId::new();
+        let directory = create_job_directory(&store.layout().scans, &job_id).unwrap();
+        fs::write(directory.join("stdout.log"), stdout_body).unwrap();
+        fs::write(directory.join("stderr.log"), stderr_body).unwrap();
+        if let Some((name, body)) = sidecar {
+            fs::write(directory.join(name), body).unwrap();
+        }
+        let command_spec = CommandSpec {
+            command_spec_id: flagdeck_domain::CommandSpecId::new(),
+            tool_id: "ffuf".to_owned(),
+            tool_version: "test".to_owned(),
+            tool_sha256: "a".repeat(64),
+            program: "/usr/bin/true".to_owned(),
+            argv_exec: vec!["-u".to_owned(), "http://127.0.0.1/".to_owned()],
+            argv_redacted: vec!["-u".to_owned(), "http://127.0.0.1/".to_owned()],
+            env_exec: BTreeMap::new(),
+            env_redacted: BTreeMap::new(),
+            secret_transport: flagdeck_domain::SecretTransport::None,
+            secret_inputs: Vec::new(),
+            cwd: directory.to_string_lossy().into_owned(),
+            environment_allowlist: Vec::new(),
+            timeout_millis: 1_000,
+            stop_grace_millis: 100,
+            expected_outputs: Vec::new(),
+            io: ToolRunIo::default(),
+            risk_level: flagdeck_domain::RiskLevel::L1,
+            scope_id: None,
+            sandbox_profile: "none".to_owned(),
+            resource_limits: flagdeck_domain::ResourceLimits::default(),
+            network_isolation: "test".to_owned(),
+        };
+        store.save_command_spec(&command_spec).unwrap();
+        let stopped = !is_active_execution_status(execution_status);
+        let job = Job {
+            job_id: job_id.clone(),
+            parent_job_id: None,
+            command_spec_id: command_spec.command_spec_id.clone(),
+            execution_status,
+            import_status: if stopped {
+                ImportStatus::Imported
+            } else {
+                ImportStatus::Pending
+            },
+            created_at: created_at.clone(),
+            started_at: Some(created_at.clone()),
+            stopped_at: stopped.then(|| created_at.clone()),
+            pid: None,
+            process_group_id: None,
+            process_start_ticks: None,
+            exit_code: stopped.then_some(i32::from(execution_status == ExecutionStatus::Failed)),
+            exit_reason: stopped.then(|| match execution_status {
+                ExecutionStatus::Failed => "exit_code:1".to_owned(),
+                _ => "exit_code:0".to_owned(),
+            }),
+            systemd_unit: None,
+            cgroup_path: None,
+            invocation_id: None,
+            supervisor_backend: None,
+            ownership_verified: true,
+            cleanup_verified: true,
+            residual_processes: 0,
+            cancel_duration_millis: None,
+            stdout_artifact_id: None,
+            stderr_artifact_id: None,
+            retry_count: 0,
+            source_job_id: None,
+        };
+        store.save_job(&job).unwrap();
+        job_id
+    }
+
+    #[test]
+    fn job_history_pages_past_fifty_in_stable_order() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Job history pages".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let total = 75_usize;
+        let mut expected = Vec::with_capacity(total);
+        for index in 0..total {
+            let created_at = Timestamp::from_unix_millis(1_700_000_000_000 + index as u128);
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"ok\n",
+                b"",
+                None,
+            );
+            expected.push((created_at.0, job_id.0));
+        }
+        expected.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
+
+        let mut collected = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = core
+                .list_jobs(&JobPageRequest {
+                    project_id: project.project_id.clone(),
+                    cursor,
+                    limit: 20,
+                })
+                .unwrap();
+            assert!(page.items.len() <= 20);
+            for item in &page.items {
+                collected.push((item.job.created_at.0.clone(), item.job.job_id.0.clone()));
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(collected.len(), total);
+        assert_eq!(collected, expected);
+        let ids: BTreeSet<_> = collected.iter().map(|(_, id)| id.clone()).collect();
+        assert_eq!(ids.len(), total);
+        assert!(collected.len() > 50);
+        for window in collected.windows(2) {
+            assert!(
+                window[0].0 > window[1].0
+                    || (window[0].0 == window[1].0 && window[0].1 > window[1].1)
+            );
+        }
+    }
+
+    #[test]
+    fn long_job_log_reads_every_page_with_bounded_preview() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Long job log".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let body = "abcdefghijklmnopqrstuvwxyz012345\n".repeat(8_000);
+        assert!(body.len() > MAX_JOB_LOG_PREVIEW_BYTES * 3);
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            body.as_bytes(),
+            b"stderr tail\n",
+            None,
+        );
+
+        let mut offset = 0_u64;
+        let mut reconstructed = String::new();
+        let mut pages = 0_usize;
+        loop {
+            let page = core
+                .preview_job_log(&PreviewJobLogRequest {
+                    project_id: project.project_id.clone(),
+                    job_id: job_id.clone(),
+                    stream: JobLogStream::Stdout,
+                    offset,
+                    limit: MAX_JOB_LOG_PREVIEW_BYTES,
+                })
+                .unwrap();
+            assert!(page.bytes_returned <= MAX_JOB_LOG_PREVIEW_BYTES);
+            reconstructed.push_str(&page.content);
+            offset = page.next_offset;
+            pages += 1;
+            if page.eof {
+                break;
+            }
+            assert!(page.bytes_returned > 0);
+        }
+        assert!(pages >= 3);
+        assert_eq!(reconstructed, body);
+        assert_eq!(offset, body.len() as u64);
+    }
+
+    #[test]
+    fn empty_stdout_surfaces_stderr_for_failed_job() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Failed empty stdout".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Failed,
+            &created_at,
+            b"",
+            b"connection refused\n",
+            None,
+        );
+        let stdout = core
+            .preview_job_log(&PreviewJobLogRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                stream: JobLogStream::Stdout,
+                offset: 0,
+                limit: MAX_JOB_LOG_PREVIEW_BYTES,
+            })
+            .unwrap();
+        assert_eq!(stdout.content, "");
+        assert!(stdout.eof);
+        assert_eq!(stdout.bytes_returned, 0);
+        let stderr = core
+            .preview_job_log(&PreviewJobLogRequest {
+                project_id: project.project_id.clone(),
+                job_id,
+                stream: JobLogStream::Stderr,
+                offset: 0,
+                limit: MAX_JOB_LOG_PREVIEW_BYTES,
+            })
+            .unwrap();
+        assert_eq!(stderr.content, "connection refused\n");
+        assert!(stderr.eof);
+        assert!(stderr.bytes_returned > 0);
+    }
+
+    #[test]
+    fn recovered_job_retains_history_status_and_log_access() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspaces = temporary.path().join("workspaces");
+        let core = CoreService::new(&workspaces);
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Recovered job".to_owned(),
+            })
+            .unwrap();
+        let job_id = {
+            let store = core.project_store(&project.project_id, true).unwrap();
+            let created_at = Timestamp::now();
+            seed_job(
+                &store,
+                ExecutionStatus::Running,
+                &created_at,
+                b"partial stdout before crash\n",
+                b"still running\n",
+                Some((
+                    "ffuf-output.json",
+                    br#"{"results":[{"url":"http://x/a","status":200}]}"#,
+                )),
+            )
+        };
+        core.close_project().unwrap();
+        drop(core);
+
+        let restarted = CoreService::new(&workspaces);
+        restarted
+            .open_project(&OpenProjectRequest {
+                project_id: project.project_id.clone(),
+                mode: ProjectOpenMode::ReadWrite,
+            })
+            .unwrap();
+        let jobs = restarted
+            .list_jobs(&JobPageRequest {
+                project_id: project.project_id.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        let recovered = jobs
+            .items
+            .into_iter()
+            .find(|item| item.job.job_id == job_id)
+            .expect("recovered job visible in history");
+        assert_eq!(recovered.job.execution_status, ExecutionStatus::Interrupted);
+        let log = restarted
+            .preview_job_log(&PreviewJobLogRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                stream: JobLogStream::Stdout,
+                offset: 0,
+                limit: MAX_JOB_LOG_PREVIEW_BYTES,
+            })
+            .unwrap();
+        assert!(log.content.contains("partial stdout before crash"));
+        assert!(log.eof);
+        let file = restarted
+            .preview_job_file(&PreviewJobFileRequest {
+                project_id: project.project_id,
+                job_id,
+                filename: "ffuf-output.json".to_owned(),
+                limit: 4096,
+            })
+            .unwrap();
+        assert!(file.found);
+        assert!(file.content.contains("http://x/a"));
+    }
+
+    #[test]
+    fn exported_job_evidence_preserves_artifact_contract() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Job evidence export".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+        let created_at = Timestamp::now();
+        let job_id = seed_job(
+            &store,
+            ExecutionStatus::Succeeded,
+            &created_at,
+            b"stdout body\n",
+            b"stderr body\n",
+            Some((
+                "ffuf-output.json",
+                br#"{"results":[{"url":"http://x/admin","status":200,"length":12}]}"#,
+            )),
+        );
+        let directory = store.layout().scans.join(&job_id.0);
+        let stdout = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-stdout.log".to_owned(),
+                    mime: "text/plain; charset=utf-8".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: Some(fs::metadata(directory.join("stdout.log")).unwrap().len()),
+                    expected_sha256: None,
+                },
+                File::open(directory.join("stdout.log")).unwrap(),
+            )
+            .unwrap();
+        let raw = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "ffuf-output.json".to_owned(),
+                    mime: "application/json".to_owned(),
+                    sensitivity: Sensitivity::SensitiveEvidence,
+                    export_policy: ExportPolicy::ConfirmSensitive,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: Some(
+                        fs::metadata(directory.join("ffuf-output.json"))
+                            .unwrap()
+                            .len(),
+                    ),
+                    expected_sha256: None,
+                },
+                File::open(directory.join("ffuf-output.json")).unwrap(),
+            )
+            .unwrap();
+        let excluded = store
+            .commit_artifact(
+                &ArtifactWriteRequest {
+                    logical_name: "runtime.tmp".to_owned(),
+                    mime: "application/octet-stream".to_owned(),
+                    sensitivity: Sensitivity::Normal,
+                    export_policy: ExportPolicy::ExcludeRuntime,
+                    source_job_id: Some(job_id.clone()),
+                    source_message_id: None,
+                    expected_size: Some(3),
+                    expected_sha256: None,
+                },
+                b"tmp".as_slice(),
+            )
+            .unwrap();
+        let foreign = core
+            .create_note(CreateNoteRequest {
+                project_id: project.project_id.clone(),
+                logical_name: "note.txt".to_owned(),
+                content: "unrelated".to_owned(),
+                sensitivity: Sensitivity::Normal,
+            })
+            .unwrap();
+
+        let page = core
+            .list_job_artifacts(&JobArtifactPageRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                cursor: None,
+                limit: 50,
+            })
+            .unwrap();
+        let ids: BTreeSet<_> = page
+            .items
+            .iter()
+            .map(|item| item.artifact_id.0.clone())
+            .collect();
+        assert!(ids.contains(&stdout.artifact_id.0));
+        assert!(ids.contains(&raw.artifact_id.0));
+        assert!(ids.contains(&excluded.artifact_id.0));
+        assert!(!ids.contains(&foreign.artifact_id.0));
+        assert!(
+            page.items
+                .iter()
+                .all(|item| item.source_job_id.as_ref() == Some(&job_id))
+        );
+
+        assert!(matches!(
+            core.export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: raw.artifact_id.clone(),
+                confirm_sensitive: false,
+            }),
+            Err(CoreError::Storage(
+                StorageError::SensitiveExportConfirmationRequired
+            ))
+        ));
+        assert!(matches!(
+            core.export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: excluded.artifact_id.clone(),
+                confirm_sensitive: true,
+            }),
+            Err(CoreError::InvalidRequest)
+        ));
+        assert!(matches!(
+            core.export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: foreign.artifact_id.clone(),
+                confirm_sensitive: true,
+            }),
+            Err(CoreError::InvalidRequest)
+        ));
+
+        let exported = core
+            .export_job_artifact(&ExportJobArtifactRequest {
+                project_id: project.project_id.clone(),
+                job_id: job_id.clone(),
+                artifact_id: raw.artifact_id.clone(),
+                confirm_sensitive: true,
+            })
+            .unwrap();
+        assert_eq!(exported.logical_name, "ffuf-output.json");
+        assert_eq!(exported.size, raw.size.unwrap());
+        assert_eq!(exported.sha256, raw.sha256.as_deref().unwrap());
+        assert_eq!(exported.sensitivity, Sensitivity::SensitiveEvidence);
+        assert_eq!(exported.export_policy, ExportPolicy::ConfirmSensitive);
+        assert_eq!(exported.job_id, job_id);
+        let export_path = store.layout().exports.join(&exported.export_name);
+        let bytes = fs::read(&export_path).unwrap();
+        assert_eq!(bytes.len() as u64, exported.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), exported.sha256);
+        assert_eq!(
+            fs::metadata(&export_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!export_path.to_string_lossy().contains(".."));
+        assert_eq!(
+            Path::new(&exported.export_name).file_name().unwrap(),
+            exported.export_name.as_str()
+        );
     }
 
     struct LoopbackFixture {

@@ -1,7 +1,11 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import type { TargetScope, ToolIoKind } from "./generated/contracts";
+  import type {
+    Artifact,
+    TargetScope,
+    ToolIoKind,
+  } from "./generated/contracts";
   import type {
     AppStatus,
     CatalogDiagnosticStatus,
@@ -9,11 +13,18 @@
     CatalogSnapshot,
     CatalogToolDiagnosticDto,
     CatalogToolDto,
+    ExportJobArtifactResult,
     JobLogStream,
     JobView,
     WordlistDto,
   } from "./generated/ipc";
   import { commandErrorMessage, ipc } from "./lib/ipc";
+  import {
+    applyJobLogPage,
+    jobLogRangeLabel,
+    mergeJobHistoryPage,
+    type JobLogWindow,
+  } from "./lib/jobHistory";
   import {
     parseJobResult,
     resultCandidatesForTool,
@@ -47,7 +58,7 @@
   } from "./lib/personalPresets";
 
   type NavId = "home" | "tools" | "jobs" | "settings";
-  type OutputTab = "log" | "result";
+  type OutputTab = "log" | "result" | "evidence";
 
   type Scenario = {
     id: string;
@@ -109,9 +120,13 @@
   let noticeKind: "info" | "success" | "error" = "info";
   let selectedLogJobId = "";
   let selectedLogStream: JobLogStream = "stdout";
-  let jobLogContent = "";
-  let jobLogOffset = 0;
-  let jobLogEof = false;
+  let jobLogWindow: JobLogWindow | null = null;
+  let jobLogLoading = false;
+  let jobNextCursor: string | null = null;
+  let jobHistoryLoading = false;
+  let jobArtifacts: Artifact[] = [];
+  let jobEvidenceNotice = "";
+  let lastJobExport: ExportJobArtifactResult | null = null;
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let toolQuery = "";
   let categoryFilter = "";
@@ -183,6 +198,8 @@
     ? jobs.filter((item) => item.tool_id === jobFilterToolId)
     : jobs;
   $: jobToolOptions = [...new Set(jobs.map((item) => item.tool_id))].sort();
+  $: jobLogContent = jobLogWindow?.content ?? "";
+  $: jobLogRange = jobLogRangeLabel(jobLogWindow);
   $: resultRows = parsedResult
     ? parsedResult.rows.filter((row) => {
         if (!resultFilter.trim()) return true;
@@ -597,6 +614,7 @@
       personalPresetStoreLoaded = true;
     }
     jobs = nextJobs.items;
+    jobNextCursor = nextJobs.next_cursor;
     scopes = nextScopes.items;
 
     if (!selectedToolId) {
@@ -636,49 +654,157 @@
     }
   }
 
-  async function loadJobLog(reset: boolean): Promise<void> {
-    if (!status?.active_project || !selectedLogJobId) return;
-    const offset = reset ? 0 : jobLogOffset;
-    const preview = await ipc.previewJobLog({
-      project_id: status.active_project.project_id,
-      job_id: selectedLogJobId,
-      stream: selectedLogStream,
-      offset,
-      limit: 65536,
-    });
-    let combined = reset
-      ? preview.content
-      : `${jobLogContent}${preview.content}`;
-
-    // If stdout is empty after finish, automatically surface stderr so failures are visible.
-    if (
-      reset &&
-      selectedLogStream === "stdout" &&
-      combined.trim().length === 0
-    ) {
-      const err = await ipc.previewJobLog({
+  async function loadJobLog(options: {
+    mode: "reset" | "append" | "page";
+    offset?: number;
+  }): Promise<void> {
+    if (!status?.active_project || !selectedLogJobId || jobLogLoading) return;
+    jobLogLoading = true;
+    try {
+      const offset =
+        options.mode === "reset"
+          ? 0
+          : (options.offset ??
+            (options.mode === "append"
+              ? (jobLogWindow?.nextOffset ?? 0)
+              : (jobLogWindow?.offset ?? 0)));
+      const preview = await ipc.previewJobLog({
         project_id: status.active_project.project_id,
         job_id: selectedLogJobId,
-        stream: "stderr",
-        offset: 0,
+        stream: selectedLogStream,
+        offset,
         limit: 65536,
       });
-      if (err.content.trim().length > 0) {
-        selectedLogStream = "stderr";
-        combined = err.content;
-        jobLogOffset = err.next_offset;
-        jobLogEof = err.eof;
-        jobLogContent = combined.slice(-262144);
-        return;
-      }
-    }
 
-    jobLogContent = combined.slice(-262144);
-    jobLogOffset = preview.next_offset;
-    jobLogEof = preview.eof;
-    if (autoScrollLog) {
-      await tick();
-      if (logPaneEl) logPaneEl.scrollTop = logPaneEl.scrollHeight;
+      // Empty stdout on a finished job: surface stderr so failures stay visible.
+      if (
+        options.mode === "reset" &&
+        selectedLogStream === "stdout" &&
+        preview.content.trim().length === 0 &&
+        preview.eof
+      ) {
+        const err = await ipc.previewJobLog({
+          project_id: status.active_project.project_id,
+          job_id: selectedLogJobId,
+          stream: "stderr",
+          offset: 0,
+          limit: 65536,
+        });
+        if (err.content.trim().length > 0) {
+          selectedLogStream = "stderr";
+          jobLogWindow = applyJobLogPage({
+            previous: null,
+            content: err.content,
+            offset: 0,
+            nextOffset: err.next_offset,
+            eof: err.eof,
+          });
+          return;
+        }
+      }
+
+      jobLogWindow = applyJobLogPage({
+        previous: options.mode === "append" ? jobLogWindow : null,
+        content: preview.content,
+        offset,
+        nextOffset: preview.next_offset,
+        eof: preview.eof,
+      });
+      if (
+        autoScrollLog &&
+        (options.mode === "append" || options.mode === "reset")
+      ) {
+        await tick();
+        if (logPaneEl) logPaneEl.scrollTop = logPaneEl.scrollHeight;
+      }
+    } finally {
+      jobLogLoading = false;
+    }
+  }
+
+  async function loadMoreJobs(): Promise<void> {
+    if (!status?.active_project || !jobNextCursor || jobHistoryLoading) return;
+    jobHistoryLoading = true;
+    try {
+      const page = await ipc.listJobs({
+        project_id: status.active_project.project_id,
+        cursor: jobNextCursor,
+        limit: 50,
+      });
+      jobs = mergeJobHistoryPage({
+        loaded: jobs,
+        page: page.items,
+        mode: "append",
+      });
+      jobNextCursor = page.next_cursor;
+    } catch (error) {
+      reportError(error);
+    } finally {
+      jobHistoryLoading = false;
+    }
+  }
+
+  async function loadJobEvidence(): Promise<void> {
+    jobArtifacts = [];
+    jobEvidenceNotice = "";
+    lastJobExport = null;
+    if (!status?.active_project || !selectedLogJobId) return;
+    try {
+      const page = await ipc.listJobArtifacts({
+        project_id: status.active_project.project_id,
+        job_id: selectedLogJobId,
+        cursor: null,
+        limit: 100,
+      });
+      jobArtifacts = page.items;
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
+  async function exportJobEvidence(artifact: Artifact): Promise<void> {
+    if (!status?.active_project || !selectedLogJobId) return;
+    const needsConfirm = artifact.export_policy === "confirm_sensitive";
+    if (
+      needsConfirm &&
+      !window.confirm(
+        `导出敏感证据「${artifact.logical_name}」？大小 ${artifact.size ?? "?"} 字节，SHA-256 ${artifact.sha256 ?? "?"}。`,
+      )
+    ) {
+      return;
+    }
+    busy = true;
+    try {
+      const result = await ipc.exportJobArtifact({
+        project_id: status.active_project.project_id,
+        job_id: selectedLogJobId,
+        artifact_id: artifact.artifact_id,
+        confirm_sensitive: needsConfirm,
+      });
+      lastJobExport = result;
+      jobEvidenceNotice = `已导出 ${result.export_name} · ${result.size} 字节 · ${result.sha256.slice(0, 12)}…`;
+      notice = jobEvidenceNotice;
+      noticeKind = "success";
+    } catch (error) {
+      reportError(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function previewJobEvidence(artifact: Artifact): Promise<void> {
+    if (!status?.active_project) return;
+    try {
+      const preview = await ipc.previewArtifact({
+        project_id: status.active_project.project_id,
+        artifact_id: artifact.artifact_id,
+        offset: 0,
+        limit: 4096,
+        mode: "text",
+      });
+      jobEvidenceNotice = `预览 ${artifact.logical_name}（${preview.bytes_returned} 字节${preview.eof ? " · eof" : ""}）\n${preview.content}`;
+    } catch (error) {
+      reportError(error);
     }
   }
 
@@ -751,14 +877,16 @@
     if (selectedLogJobId !== item.job.job_id) {
       selectedLogJobId = item.job.job_id;
       selectedLogStream = "stdout";
-      jobLogContent = "";
-      jobLogOffset = 0;
-      jobLogEof = false;
+      jobLogWindow = null;
       parsedResult = null;
+      jobArtifacts = [];
+      lastJobExport = null;
+      jobEvidenceNotice = "";
       outputTab = "log";
     }
-    await loadJobLog(true);
+    await loadJobLog({ mode: "reset" });
     await loadJobResult();
+    await loadJobEvidence();
   }
 
   function scheduleJobPoll(): void {
@@ -777,11 +905,22 @@
         cursor: null,
         limit: 50,
       });
-      jobs = page.items;
-      await loadJobLog(false);
+      jobs = mergeJobHistoryPage({
+        loaded: jobs,
+        page: page.items,
+        mode: "refresh",
+      });
+      // Keep next_cursor from deeper pages; only replace when history is still the first page.
+      if (!jobNextCursor || jobs.length <= page.items.length) {
+        jobNextCursor = page.next_cursor;
+      }
       const current = selectedJob();
-      if (current && !jobIsActive(current)) {
+      if (current && jobIsActive(current)) {
+        await loadJobLog({ mode: "append" });
+      } else {
+        await loadJobLog({ mode: "reset" });
         await loadJobResult();
+        await loadJobEvidence();
       }
     } catch (error) {
       reportError(error);
@@ -894,14 +1033,16 @@
       });
       selectedLogJobId = job.job.job_id;
       selectedLogStream = "stdout";
-      jobLogContent = "";
-      jobLogOffset = 0;
-      jobLogEof = false;
+      jobLogWindow = null;
       parsedResult = null;
+      jobArtifacts = [];
+      lastJobExport = null;
+      jobEvidenceNotice = "";
       outputTab = "log";
       await refresh();
-      await loadJobLog(true);
+      await loadJobLog({ mode: "reset" });
       await loadJobResult();
+      await loadJobEvidence();
       scheduleJobPoll();
       activeNav = "tools";
     }, `${selectedTool.name} 已开始运行`);
@@ -915,7 +1056,7 @@
         job_id: selectedLogJobId,
       });
       await refresh();
-      await loadJobLog(true);
+      await loadJobLog({ mode: "reset" });
     }, "已请求取消任务");
   }
 
@@ -928,9 +1069,10 @@
       });
       if (selectedLogJobId === jobId) {
         selectedLogJobId = "";
-        jobLogContent = "";
-        jobLogOffset = 0;
-        jobLogEof = false;
+        jobLogWindow = null;
+        jobArtifacts = [];
+        lastJobExport = null;
+        jobEvidenceNotice = "";
       }
       await refresh();
       if (!selectedLogJobId && jobs.length > 0) {
@@ -951,9 +1093,10 @@
         project_id: status!.active_project!.project_id,
       });
       selectedLogJobId = "";
-      jobLogContent = "";
-      jobLogOffset = 0;
-      jobLogEof = false;
+      jobLogWindow = null;
+      jobArtifacts = [];
+      lastJobExport = null;
+      jobEvidenceNotice = "";
       await refresh();
       notice = `已清空 ${result.deleted} 个任务`;
     }, "任务列表已清空");
@@ -1907,40 +2050,95 @@
               >
                 结果{parsedResult ? ` · ${parsedResult.rows.length}` : ""}
               </button>
+              <button
+                type="button"
+                class="chip"
+                class:active={outputTab === "evidence"}
+                data-testid="output-tab-evidence"
+                onclick={() => {
+                  outputTab = "evidence";
+                  void loadJobEvidence();
+                }}
+              >
+                证据{jobArtifacts.length ? ` · ${jobArtifacts.length}` : ""}
+              </button>
             </div>
 
             {#if outputTab === "log"}
               <div class="actions" style="margin: 10px 0">
                 <span class="pill muted">{jobStatusLabel(selectedJob())}</span>
+                <span class="pill muted" data-testid="job-log-range"
+                  >{jobLogRange}</span
+                >
                 <button
                   class="btn btn-secondary"
                   type="button"
-                  disabled={!selectedLogJobId}
+                  disabled={!selectedLogJobId || jobLogLoading}
                   onclick={() => {
                     selectedLogStream = "stdout";
-                    void loadJobLog(true);
+                    void loadJobLog({ mode: "reset" });
                   }}>stdout</button
                 >
                 <button
                   class="btn btn-secondary"
                   type="button"
-                  disabled={!selectedLogJobId}
+                  disabled={!selectedLogJobId || jobLogLoading}
                   onclick={() => {
                     selectedLogStream = "stderr";
-                    void loadJobLog(true);
+                    void loadJobLog({ mode: "reset" });
                   }}>stderr</button
                 >
                 <button
                   class="btn btn-secondary"
                   type="button"
-                  disabled={!selectedLogJobId}
-                  onclick={() => void loadJobLog(true)}>刷新</button
+                  data-testid="job-log-head"
+                  disabled={!selectedLogJobId || jobLogLoading}
+                  onclick={() => void loadJobLog({ mode: "page", offset: 0 })}
+                  >从头</button
+                >
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="job-log-prev"
+                  disabled={!selectedLogJobId ||
+                    jobLogLoading ||
+                    !jobLogWindow ||
+                    jobLogWindow.windowStart <= 0}
+                  onclick={() =>
+                    void loadJobLog({
+                      mode: "page",
+                      offset: Math.max(
+                        0,
+                        (jobLogWindow?.windowStart ?? 0) - 65536,
+                      ),
+                    })}>上一段</button
+                >
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="job-log-next"
+                  disabled={!selectedLogJobId ||
+                    jobLogLoading ||
+                    !jobLogWindow ||
+                    jobLogWindow.eof}
+                  onclick={() =>
+                    void loadJobLog({
+                      mode: "page",
+                      offset: jobLogWindow?.nextOffset ?? 0,
+                    })}>下一段</button
+                >
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  disabled={!selectedLogJobId || jobLogLoading}
+                  onclick={() => void loadJobLog({ mode: "reset" })}
+                  >刷新</button
                 >
                 <button
                   class="btn btn-secondary"
                   type="button"
                   disabled={!jobLogContent}
-                  onclick={() => void copyJobLog()}>复制</button
+                  onclick={() => void copyJobLog()}>复制窗口</button
                 >
                 <label class="check-inline">
                   <input
@@ -1961,8 +2159,82 @@
                   </button>
                 {/if}
               </div>
+              <p class="sub" data-testid="job-log-bound-hint">
+                界面仅保留有界窗口（当前 stream：{selectedLogStream}）。完整日志与原始输出请在「证据」导出。
+              </p>
               <pre class="log-pane" bind:this={logPaneEl}>{jobLogContent ||
                   "运行后日志会显示在这里。用上方标签切换不同任务的输出。"}</pre>
+            {:else if outputTab === "evidence"}
+              <div class="actions" style="margin: 10px 0">
+                <span class="pill muted">任务证据 Artifact</span>
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="refresh-job-evidence"
+                  disabled={!selectedLogJobId || busy}
+                  onclick={() => void loadJobEvidence()}>刷新</button
+                >
+              </div>
+              {#if !selectedLogJobId}
+                <div class="empty">
+                  选择任务后查看 stdout、stderr 与原始输出证据。
+                </div>
+              {:else if jobArtifacts.length === 0}
+                <div class="empty" data-testid="job-evidence-empty">
+                  当前任务尚无已提交
+                  Artifact。失败或解析错误时日志仍可分页查看。
+                </div>
+              {:else}
+                <div class="job-evidence-list" data-testid="job-evidence-list">
+                  {#each jobArtifacts as artifact}
+                    <div
+                      class="job-evidence-item"
+                      data-testid={`job-evidence-${artifact.logical_name}`}
+                    >
+                      <div>
+                        <strong>{artifact.logical_name}</strong>
+                        <small>
+                          {artifact.size ?? "?"} 字节 · {artifact.sensitivity} ·
+                          {artifact.export_policy}
+                        </small>
+                        <small class="mono"
+                          >{artifact.sha256 ?? "哈希待提交"}</small
+                        >
+                      </div>
+                      <div class="actions" style="margin: 0">
+                        <button
+                          class="btn btn-secondary"
+                          type="button"
+                          disabled={busy}
+                          onclick={() => void previewJobEvidence(artifact)}
+                          >有界预览</button
+                        >
+                        <button
+                          class="btn btn-primary"
+                          type="button"
+                          data-testid={`export-job-evidence-${artifact.logical_name}`}
+                          disabled={busy ||
+                            artifact.export_policy === "exclude_credential" ||
+                            artifact.export_policy === "exclude_runtime"}
+                          onclick={() => void exportJobEvidence(artifact)}
+                          >导出</button
+                        >
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              {#if jobEvidenceNotice}
+                <pre
+                  class="log-pane"
+                  data-testid="job-evidence-notice">{jobEvidenceNotice}</pre>
+              {/if}
+              {#if lastJobExport}
+                <p class="sub" data-testid="job-export-result">
+                  导出文件 {lastJobExport.export_name} · {lastJobExport.size} 字节
+                  · SHA-256 {lastJobExport.sha256}
+                </p>
+              {/if}
             {:else}
               <div class="actions" style="margin: 10px 0">
                 <span class="pill muted"
@@ -2031,9 +2303,14 @@
             <div class="card-head">
               <div>
                 <h2>任务列表</h2>
-                <p class="sub">
-                  共 {filteredJobs.length}
+                <p class="sub" data-testid="job-history-count">
+                  已加载 {filteredJobs.length}
                   {jobFilterToolId ? ` / ${jobs.length}` : ""} 条
+                  {jobNextCursor
+                    ? " · 可继续加载"
+                    : jobs.length
+                      ? " · 已加载全部"
+                      : ""}
                 </p>
               </div>
               <div class="actions" style="margin: 0">
@@ -2052,6 +2329,19 @@
                 <button
                   class="btn btn-secondary"
                   type="button"
+                  data-testid="load-more-jobs"
+                  disabled={busy || jobHistoryLoading || !jobNextCursor}
+                  onclick={() => void loadMoreJobs()}
+                >
+                  {jobHistoryLoading
+                    ? "加载中…"
+                    : jobNextCursor
+                      ? "加载更多历史"
+                      : "已加载全部"}
+                </button>
+                <button
+                  class="btn btn-secondary"
+                  type="button"
                   disabled={busy || jobs.length === 0 || jobs.some(jobIsActive)}
                   onclick={() => void clearAllJobs()}
                 >
@@ -2062,7 +2352,7 @@
             {#if filteredJobs.length === 0}
               <div class="empty">暂无任务。</div>
             {:else}
-              <div class="job-list">
+              <div class="job-list" data-testid="job-history-list">
                 {#each filteredJobs as item}
                   <div
                     class="job-item-row"
@@ -2112,36 +2402,101 @@
           <section class="card">
             <div class="card-head">
               <div>
-                <h2>日志</h2>
+                <h2>日志 / 证据</h2>
                 <p class="sub">{selectedLogJobId || "未选择任务"}</p>
               </div>
             </div>
             <div class="actions" style="margin-bottom: 12px">
+              <span class="pill muted" data-testid="job-log-range-jobs"
+                >{jobLogRange}</span
+              >
               <button
                 class="btn btn-secondary"
                 type="button"
+                disabled={!selectedLogJobId || jobLogLoading}
                 onclick={() => {
                   selectedLogStream = "stdout";
-                  void loadJobLog(true);
+                  void loadJobLog({ mode: "reset" });
                 }}>stdout</button
               >
               <button
                 class="btn btn-secondary"
                 type="button"
+                disabled={!selectedLogJobId || jobLogLoading}
                 onclick={() => {
                   selectedLogStream = "stderr";
-                  void loadJobLog(true);
+                  void loadJobLog({ mode: "reset" });
                 }}>stderr</button
               >
               <button
                 class="btn btn-secondary"
                 type="button"
+                disabled={!selectedLogJobId ||
+                  jobLogLoading ||
+                  !jobLogWindow ||
+                  jobLogWindow.windowStart <= 0}
+                onclick={() =>
+                  void loadJobLog({
+                    mode: "page",
+                    offset: Math.max(
+                      0,
+                      (jobLogWindow?.windowStart ?? 0) - 65536,
+                    ),
+                  })}>上一段</button
+              >
+              <button
+                class="btn btn-secondary"
+                type="button"
+                disabled={!selectedLogJobId ||
+                  jobLogLoading ||
+                  !jobLogWindow ||
+                  jobLogWindow.eof}
+                onclick={() =>
+                  void loadJobLog({
+                    mode: "page",
+                    offset: jobLogWindow?.nextOffset ?? 0,
+                  })}>下一段</button
+              >
+              <button
+                class="btn btn-secondary"
+                type="button"
                 disabled={!jobLogContent}
-                onclick={() => void copyJobLog()}>复制</button
+                onclick={() => void copyJobLog()}>复制窗口</button
+              >
+              <button
+                class="btn btn-secondary"
+                type="button"
+                disabled={!selectedLogJobId}
+                onclick={() => {
+                  outputTab = "evidence";
+                  void loadJobEvidence();
+                }}>打开证据</button
               >
             </div>
+            <p class="sub">界面仅保留有界日志窗口。完整文件请导出 Artifact。</p>
             <pre class="log-pane" bind:this={logPaneEl}>{jobLogContent ||
                 "选择任务后显示日志。"}</pre>
+            {#if jobArtifacts.length > 0}
+              <div class="job-evidence-list" style="margin-top: 12px">
+                {#each jobArtifacts as artifact}
+                  <div class="job-evidence-item">
+                    <div>
+                      <strong>{artifact.logical_name}</strong>
+                      <small
+                        >{artifact.size ?? "?"} · {artifact.export_policy}</small
+                      >
+                    </div>
+                    <button
+                      class="btn btn-primary"
+                      type="button"
+                      disabled={busy}
+                      onclick={() => void exportJobEvidence(artifact)}
+                      >导出</button
+                    >
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </section>
         </div>
       {:else}

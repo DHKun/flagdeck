@@ -34,6 +34,8 @@
     "list_jobs",
     "preview_job_log",
     "preview_job_file",
+    "list_job_artifacts",
+    "export_job_artifact",
     "list_discoveries",
     "create_dictionary",
     "list_dictionaries",
@@ -458,6 +460,21 @@
           Number.isSafeInteger(request.limit) &&
           request.limit >= 1 &&
           request.limit <= 1_048_576;
+        break;
+      case "list_job_artifacts":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id) &&
+          page(request);
+        break;
+      case "export_job_artifact":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          projectId(request.job_id) &&
+          projectId(request.artifact_id) &&
+          typeof request.confirm_sensitive === "boolean";
         break;
       case "create_dictionary":
         valid =

@@ -30,6 +30,8 @@ import type {
   DiffHttpMessagesRequest,
   DiscoveryPage,
   DiscoveryPageRequest,
+  ExportJobArtifactRequest,
+  ExportJobArtifactResult,
   ExportProjectRequest,
   ExportProjectResult,
   ExternalLauncherHealthDto,
@@ -40,6 +42,7 @@ import type {
   HttpHistoryPage,
   HttpHistoryPageRequest,
   HttpMessageDiff,
+  JobArtifactPageRequest,
   JobPage,
   JobPageRequest,
   JobFilePreview,
@@ -183,6 +186,12 @@ export const ipc = {
     invoke("preview_job_log", { request }),
   previewJobFile: (request: PreviewJobFileRequest): Promise<JobFilePreview> =>
     invoke("preview_job_file", { request }),
+  listJobArtifacts: (request: JobArtifactPageRequest): Promise<ArtifactPage> =>
+    invoke("list_job_artifacts", { request }),
+  exportJobArtifact: (
+    request: ExportJobArtifactRequest,
+  ): Promise<ExportJobArtifactResult> =>
+    invoke("export_job_artifact", { request }),
   listDiscoveries: (request: DiscoveryPageRequest): Promise<DiscoveryPage> =>
     invoke("list_discoveries", { request }),
   createDictionary: (

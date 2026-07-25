@@ -959,6 +959,40 @@ button {
   background: rgba(0, 113, 227, 0.04);
 }
 
+.job-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.job-evidence-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.job-evidence-item strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.job-evidence-item small {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.job-evidence-item .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
 @media (max-width: 1180px) {
   .hero,
   .workspace,

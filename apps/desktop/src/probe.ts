@@ -227,6 +227,28 @@ const attempts = [
     },
   ],
   [
+    "list_job_artifacts",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+        cursor: null,
+        limit: 20,
+      },
+    },
+  ],
+  [
+    "export_job_artifact",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        job_id: "00000000-0000-0000-0000-000000000000",
+        artifact_id: "00000000-0000-0000-0000-000000000000",
+        confirm_sensitive: false,
+      },
+    },
+  ],
+  [
     "list_discoveries",
     {
       request: {

@@ -279,6 +279,12 @@
           "markdownDescription": "Enables the execute_metasploit_module command without any pre-configured scope."
         },
         {
+          "description": "Enables the export_job_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-job-artifact",
+          "markdownDescription": "Enables the export_job_artifact command without any pre-configured scope."
+        },
+        {
           "description": "Enables the export_project command without any pre-configured scope.",
           "type": "string",
           "const": "allow-export-project",
@@ -367,6 +373,12 @@
           "type": "string",
           "const": "allow-list-intruder-campaigns",
           "markdownDescription": "Enables the list_intruder_campaigns command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_job_artifacts command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-job-artifacts",
+          "markdownDescription": "Enables the list_job_artifacts command without any pre-configured scope."
         },
         {
           "description": "Enables the list_jobs command without any pre-configured scope.",
@@ -681,6 +693,12 @@
           "markdownDescription": "Denies the execute_metasploit_module command without any pre-configured scope."
         },
         {
+          "description": "Denies the export_job_artifact command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-job-artifact",
+          "markdownDescription": "Denies the export_job_artifact command without any pre-configured scope."
+        },
+        {
           "description": "Denies the export_project command without any pre-configured scope.",
           "type": "string",
           "const": "deny-export-project",
@@ -769,6 +787,12 @@
           "type": "string",
           "const": "deny-list-intruder-campaigns",
           "markdownDescription": "Denies the list_intruder_campaigns command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_job_artifacts command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-job-artifacts",
+          "markdownDescription": "Denies the list_job_artifacts command without any pre-configured scope."
         },
         {
           "description": "Denies the list_jobs command without any pre-configured scope.",

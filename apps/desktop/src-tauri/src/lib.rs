@@ -17,24 +17,24 @@ use flagdeck_core::{
     CreateScopeRequest, CreateSqlmapRequestFileRequest, DeleteJobRequest, DeleteJobResult,
     DiagnoseCatalogToolRequest, DictionaryPage, DictionarySearchResult, DiffHttpMessagesRequest,
     DiscoveryPage, DiscoveryPageRequest, EnsureTargetRequest, ExecuteMetasploitModuleRequest,
-    ExportProjectRequest, ExportProjectResult, ExternalLauncherHealthDto, GetHttpMessageRequest,
-    GetMetasploitOptionsRequest, HttpHistoryPage, HttpHistoryPageRequest, HttpMessageDiff,
-    ImportPackagePage, ImportProjectRequest, ImportProjectResult, IntruderAttemptPage,
-    IntruderAttemptPageRequest, IntruderCampaignPage, JobFilePreview, JobLogPreview, JobPage,
-    JobPageRequest, JobView, LaunchExternalRequest, ListIntruderCampaignsRequest,
-    ListPayloadsRequest, MetasploitConsoleCommandRequest, MetasploitEntityPage,
-    MetasploitExecutionResult, MetasploitModuleOption, MetasploitModuleSummary,
-    MetasploitSessionCommandRequest, MetasploitStatus, MetasploitTranscriptResult,
-    OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult, OpenProjectRequest,
-    ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
-    PersonalPresetStoreDto, PreviewArtifactRequest, PreviewCatalogToolRequest,
-    PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest, ProjectContextRequest,
-    ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest,
-    RunToolRequest, SavePersonalPresetsRequest, ScopePage, SearchDictionaryRequest,
-    SearchMetasploitModulesRequest, SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest,
-    StartMetasploitRequest, StartProxyRequest, StartUploadCampaignRequest,
-    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, ToolHealthDto,
-    ToolPackHealthDto,
+    ExportJobArtifactRequest, ExportJobArtifactResult, ExportProjectRequest, ExportProjectResult,
+    ExternalLauncherHealthDto, GetHttpMessageRequest, GetMetasploitOptionsRequest, HttpHistoryPage,
+    HttpHistoryPageRequest, HttpMessageDiff, ImportPackagePage, ImportProjectRequest,
+    ImportProjectResult, IntruderAttemptPage, IntruderAttemptPageRequest, IntruderCampaignPage,
+    JobArtifactPageRequest, JobFilePreview, JobLogPreview, JobPage, JobPageRequest, JobView,
+    LaunchExternalRequest, ListIntruderCampaignsRequest, ListPayloadsRequest,
+    MetasploitConsoleCommandRequest, MetasploitEntityPage, MetasploitExecutionResult,
+    MetasploitModuleOption, MetasploitModuleSummary, MetasploitSessionCommandRequest,
+    MetasploitStatus, MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest,
+    OpenHttpBrowserPreviewResult, OpenProjectRequest, ParseMultipartRequest, PayloadPage,
+    PayloadPreview, PayloadSourceHealthDto, PersonalPresetStoreDto, PreviewArtifactRequest,
+    PreviewCatalogToolRequest, PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest,
+    ProjectContextRequest, ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult,
+    RunCatalogToolRequest, RunToolRequest, SavePersonalPresetsRequest, ScopePage,
+    SearchDictionaryRequest, SearchMetasploitModulesRequest, SendRawHttp1Request,
+    SendRawHttp1Result, StartIntruderRequest, StartMetasploitRequest, StartProxyRequest,
+    StartUploadCampaignRequest, StopMetasploitEntityRequest, StopMetasploitRequest,
+    StopProxyRequest, ToolHealthDto, ToolPackHealthDto,
 };
 use flagdeck_domain::{
     AdapterEntity, Artifact, DictionaryIndex, HttpMessage, IntruderCampaign, MultipartDocument,
@@ -323,6 +323,24 @@ async fn preview_job_file(
 ) -> Result<JobFilePreview, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.preview_job_file(&request)).await
+}
+
+#[tauri::command]
+async fn list_job_artifacts(
+    state: State<'_, Arc<CoreService>>,
+    request: JobArtifactPageRequest,
+) -> Result<ArtifactPage, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.list_job_artifacts(&request)).await
+}
+
+#[tauri::command]
+async fn export_job_artifact(
+    state: State<'_, Arc<CoreService>>,
+    request: ExportJobArtifactRequest,
+) -> Result<ExportJobArtifactResult, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.export_job_artifact(&request)).await
 }
 
 #[tauri::command]
@@ -1080,6 +1098,8 @@ pub fn run() {
             run_tool,
             preview_job_log,
             preview_job_file,
+            list_job_artifacts,
+            export_job_artifact,
             cancel_job,
             cancel_all_jobs,
             list_jobs,
