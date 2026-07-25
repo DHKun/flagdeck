@@ -66,6 +66,21 @@ class FirstStableGateTests(unittest.TestCase):
         )
         self.assertEqual(validate_runner, build_runner)
 
+    def test_desktop_memory_gate_runs_on_the_release_target_platform(self) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+        validate_job = workflow[workflow.index("  validate-and-publish:") :]
+        step = validate_job[
+            validate_job.index("- name: Run signed desktop memory gate") :
+        ]
+        step = step[: step.index("\n      - ")]
+
+        self.assertIn("podman run", step)
+        self.assertIn("registry.fedoraproject.org/fedora:44", step)
+        self.assertIn("desktop-memory-gate.mjs", step)
+        self.assertIn("FLAGDECK_R7_MEMORY_RUNS=10", step)
+
     def test_package_structure_check_reads_listings_without_broken_pipes(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
