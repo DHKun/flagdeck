@@ -1,6 +1,10 @@
 id = "php-filter-chain"
 name = "PHP Filter Chain"
 category = "web_exploit"
+tier = "tier_1"
+capabilities = ["payload_generation", "lfi", "php_filter_chain"]
+aliases = ["PHP 过滤器链", "LFI 转 RCE", "过滤器链生成", "PHP filter chain"]
+risk_level = "l1"
 summary = "LFI → RCE 用 PHP filter 链生成（Scripts）"
 
 usage = """
@@ -14,6 +18,68 @@ usage = """
 mode = "embedded_cli"
 featured = true
 cwd = "Scripts/sec-import/php_filter_chain_generator"
+
+[[presets]]
+id = "phpinfo_chain"
+name = "生成 phpinfo 链"
+core_fields = ["chain"]
+
+[presets.defaults]
+chain = "<?php phpinfo(); ?>  "
+rawbase64 = ""
+
+[[presets]]
+id = "command_chain"
+name = "生成命令执行链"
+core_fields = ["chain"]
+
+[presets.defaults]
+chain = "<?php system($_GET['cmd']); ?>  "
+rawbase64 = ""
+
+[[presets]]
+id = "raw_base64_debug"
+name = "调试 Base64 中间态"
+core_fields = ["chain", "rawbase64"]
+
+[presets.defaults]
+chain = "<?php phpinfo(); ?>  "
+rawbase64 = ""
+
+[[field_groups]]
+id = "payload"
+name = "PHP 载荷"
+fields = ["chain"]
+
+[[field_groups]]
+id = "debug"
+name = "调试"
+fields = ["rawbase64"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "payload"
+kind = "raw_artifact"
+field = "chain"
+
+[[io.outputs]]
+id = "filter_chain"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "NOASSERTION"
+homepage = "https://github.com/synacktiv/php_filter_chain_generator"
+version = "Python 3"
+health_strategy = "safe-version-command"
+runtime = "Python 3"
+version_args = ["--version"]
+install_command = "git clone https://github.com/synacktiv/php_filter_chain_generator Scripts/sec-import/php_filter_chain_generator"
+path_fix = "确保 python3 已加入 PATH"
+wordlist_source = ""
+wordlist_install_command = ""
 
 [binary]
 command = "python3"
@@ -52,7 +118,9 @@ field = "rawbase64"
 args = ["--rawbase64", "{rawbase64}"]
 
 [parser]
-kind = "none"
+kind = "php-filter-chain-text"
+id = "flagdeck.php-filter-chain-text"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 120000

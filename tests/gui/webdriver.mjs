@@ -42,6 +42,18 @@ if (
 const temporaryRoot = await mkdtemp(join(tmpdir(), "flagdeck-r7-gui-"));
 const workspacesRoot = join(temporaryRoot, "workspaces");
 const forbiddenCredential = "should-never-persist-r7";
+const tier1ToolQueries = [
+  { id: "arjun", query: "参数发现" },
+  { id: "curl", query: "HTTP 请求" },
+  { id: "dddd", query: "资产发现" },
+  { id: "ffuf", query: "扫目录" },
+  { id: "fscan", query: "内网扫描" },
+  { id: "githacker", query: "Git 泄露" },
+  { id: "gobuster", query: "目录枚举" },
+  { id: "php-filter-chain", query: "PHP 过滤器链" },
+  { id: "sqlmap", query: "SQL 注入" },
+  { id: "wafw00f", query: "WAF 识别" },
+];
 const hostileFixture = [
   "Authorization: Bearer flagdeck-secret-value",
   "Cookie: session=flagdeck-cookie-value",
@@ -493,6 +505,93 @@ async function main() {
     );
   }
   const catalogSnapshot = await invokeMain("list_catalog");
+  const tier1ToolIds = catalogSnapshot.tools
+    .filter((tool) => tool.tier === "tier_1")
+    .map((tool) => tool.id)
+    .sort();
+  const expectedTier1ToolIds = tier1ToolQueries.map(({ id }) => id).sort();
+  if (JSON.stringify(tier1ToolIds) !== JSON.stringify(expectedTier1ToolIds)) {
+    throw new Error(
+      `unexpected Tier 1 Catalog: ${JSON.stringify(tier1ToolIds)}`,
+    );
+  }
+  const tier1Toolbox = [];
+  for (const { id, query } of tier1ToolQueries) {
+    const catalogTool = catalogSnapshot.tools.find((tool) => tool.id === id);
+    if (
+      !catalogTool ||
+      catalogTool.presets.length < 3 ||
+      catalogTool.field_groups.length === 0 ||
+      catalogTool.fields.length === 0 ||
+      catalogTool.io.schema_version !== 1 ||
+      catalogTool.aliases.length === 0 ||
+      catalogTool.capabilities.length === 0 ||
+      !catalogTool.installation.homepage ||
+      !catalogTool.installation.install_command
+    ) {
+      throw new Error(
+        `incomplete Tier 1 Catalog contract for ${id}: ${JSON.stringify(catalogTool)}`,
+      );
+    }
+
+    const locateStarted = performance.now();
+    await setValue("#tool-query", query);
+    await waitFor(
+      `${id} Chinese capability search`,
+      async () =>
+        execute(
+          "return Boolean(document.querySelector(arguments[0]));",
+          [`[data-testid=tool-${id}]`],
+        ),
+      10_000,
+    );
+    const locateMillis = Math.round(performance.now() - locateStarted);
+
+    const formStarted = performance.now();
+    await click(`[data-testid="tool-${id}"]`);
+    const form = await waitFor(
+      `${id} progressive form`,
+      async () => {
+        const value = await execute(
+          "const runner = document.querySelector('[data-testid=tool-runner]'); const selected = runner?.querySelector('h2')?.textContent.trim(); const fieldCount = runner?.querySelectorAll('[id^=field-]').length ?? 0; const presetCount = runner?.querySelector('[data-testid=tool-preset]')?.options.length ?? 0; const diagnosticStatus = runner?.querySelector('[data-testid=tool-diagnostic-status]')?.textContent.trim(); const runButton = runner?.querySelector('[data-testid=run-selected-tool]'); return { selected, fieldCount, presetCount, diagnosticStatus, runButton: Boolean(runButton), runDisabled: Boolean(runButton?.disabled) };",
+        );
+        return value.selected === catalogTool.name &&
+          value.fieldCount > 0 &&
+          value.presetCount >= 3 &&
+          value.diagnosticStatus &&
+          value.runButton
+          ? value
+          : undefined;
+      },
+      30_000,
+    );
+    const formReadyMillis = Math.round(performance.now() - formStarted);
+    const diagnostic = await invokeMain("diagnose_catalog_tool", {
+      request: { tool_id: id },
+    });
+    if (
+      diagnostic.tool_id !== id ||
+      diagnostic.checks.length === 0 ||
+      diagnostic.checks
+        .filter((check) => check.status !== "usable")
+        .some((check) => !check.source || !check.fix || !check.copy_value)
+    ) {
+      throw new Error(
+        `Tier 1 diagnostic contract failed for ${id}: ${JSON.stringify(diagnostic)}`,
+      );
+    }
+    tier1Toolbox.push({
+      id,
+      query,
+      locateMillis,
+      formReadyMillis,
+      available: catalogTool.available,
+      diagnosticStatus: diagnostic.status,
+      fieldCount: form.fieldCount,
+      presetCount: form.presetCount,
+      runDisabled: form.runDisabled,
+    });
+  }
   const ffufCatalog = catalogSnapshot.tools.find((tool) => tool.id === "ffuf");
   if (
     !ffufCatalog?.aliases.includes("扫目录") ||
@@ -838,6 +937,8 @@ async function main() {
       redactedPreview: true,
       credentialPersistenceDenied: true,
       catalogWorkbench,
+      tier1Toolbox,
+      tier1ToolIds,
       ffufLocalSearch,
       ffufDiagnostic,
       ffufProgressiveForm,

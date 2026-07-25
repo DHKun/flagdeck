@@ -1986,3 +1986,270 @@ fn sqlmap_requires_l3_and_githacker_preview_works() {
         "githacker"
     );
 }
+
+#[test]
+fn workspace_catalog_exposes_php_filter_chain_as_tenth_tier1_tool() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let snapshot = core.list_catalog().expect("workspace catalog loads");
+    let mut tier1_ids = snapshot
+        .tools
+        .iter()
+        .filter(|tool| tool.tier == "tier_1")
+        .map(|tool| tool.id.as_str())
+        .collect::<Vec<_>>();
+    tier1_ids.sort_unstable();
+    assert_eq!(
+        tier1_ids,
+        [
+            "arjun",
+            "curl",
+            "dddd",
+            "ffuf",
+            "fscan",
+            "githacker",
+            "gobuster",
+            "php-filter-chain",
+            "sqlmap",
+            "wafw00f",
+        ]
+    );
+
+    let tool = snapshot
+        .tools
+        .iter()
+        .find(|tool| tool.id == "php-filter-chain")
+        .expect("php-filter-chain present");
+    assert_eq!(tool.risk_level, "l1");
+    assert!(tool.aliases.iter().any(|alias| alias.contains("过滤器链")));
+    assert!(
+        tool.capabilities
+            .iter()
+            .any(|item| item == "payload_generation")
+    );
+    assert!(tool.presets.len() >= 3);
+    assert!(!tool.field_groups.is_empty());
+    assert_eq!(tool.io.schema_version, 1);
+    assert!(
+        tool.io
+            .outputs
+            .iter()
+            .any(|output| output.kind == ToolIoKind::RawArtifact)
+    );
+    assert!(!tool.installation.homepage.is_empty());
+    assert!(!tool.installation.install_command.is_empty());
+}
+
+#[test]
+fn php_filter_chain_preview_is_l1_and_diagnostic_is_available() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "php-filter-chain".to_owned(),
+        })
+        .unwrap();
+
+    let preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "php-filter-chain".to_owned(),
+            target_url: String::new(),
+            form: BTreeMap::from([
+                (
+                    "chain".to_owned(),
+                    "<?php system($_GET['cmd']); ?>  ".to_owned(),
+                ),
+                ("rawbase64".to_owned(), String::new()),
+            ]),
+        })
+        .expect("php-filter-chain preview");
+    assert_eq!(preview.risk_level, RiskLevel::L1);
+    assert!(
+        preview
+            .command_preview
+            .contains("php_filter_chain_generator.py")
+    );
+    assert!(preview.command_preview.contains("--chain"));
+    assert!(preview.command_preview.contains("system"));
+
+    let diagnostic = core
+        .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "php-filter-chain".to_owned(),
+        })
+        .expect("php-filter-chain diagnostic");
+    assert_eq!(diagnostic.tool_id, "php-filter-chain");
+    assert!(!diagnostic.checks.is_empty());
+}
+
+#[tokio::test]
+async fn catalog_run_records_parser_identity_from_manifest() {
+    if !Path::new("/usr/bin/true").is_file() {
+        eprintln!("skip parser identity run: /usr/bin/true missing");
+        return;
+    }
+
+    let temporary = tempdir().unwrap();
+    let catalog_root = temporary.path().join("catalog");
+    let tools_dir = catalog_root.join("tools");
+    fs::create_dir_all(&tools_dir).unwrap();
+    fs::write(
+        tools_dir.join("renamed.toml"),
+        r#"
+id = "renamed-content-discovery"
+name = "renamed"
+category = "test"
+risk_level = "l1"
+mode = "embedded_cli"
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[argv]
+template = ["--version"]
+
+[parser]
+kind = "ffuf-json"
+id = "flagdeck.ffuf-json"
+version = "1.0.0"
+"#,
+    )
+    .unwrap();
+    let core = Arc::new(CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    ));
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "catalog-parser-identity".to_owned(),
+        })
+        .unwrap();
+
+    let job = core
+        .start_catalog_tool(RunCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "renamed-content-discovery".to_owned(),
+            target_url: String::new(),
+            form: BTreeMap::new(),
+            confirm_sensitive_argv: false,
+            confirm_l2: false,
+            l3_confirmation: None,
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
+        })
+        .unwrap();
+
+    assert_eq!(job.parser_id.as_deref(), Some("flagdeck.ffuf-json"));
+    assert_eq!(job.parser_version.as_deref(), Some("1.0.0"));
+}
+
+#[tokio::test]
+async fn php_filter_chain_run_exposes_raw_evidence_as_typed_result() {
+    if !Path::new("/usr/bin/printf").is_file() {
+        eprintln!("skip raw result run: /usr/bin/printf missing");
+        return;
+    }
+
+    let temporary = tempdir().unwrap();
+    let catalog_root = temporary.path().join("catalog");
+    let tools_dir = catalog_root.join("tools");
+    fs::create_dir_all(&tools_dir).unwrap();
+    fs::write(
+        tools_dir.join("php-filter-chain.toml"),
+        r#"
+id = "php-filter-chain"
+name = "PHP Filter Chain"
+category = "web_exploit"
+risk_level = "l1"
+mode = "embedded_cli"
+
+[io]
+schema_version = 1
+
+[[io.outputs]]
+id = "filter_chain"
+kind = "raw_artifact"
+
+[binary]
+path = "/usr/bin/printf"
+resolve = ["path"]
+
+[argv]
+template = ["php://filter/fixture"]
+
+[parser]
+kind = "php-filter-chain-text"
+id = "flagdeck.php-filter-chain-text"
+version = "1.0.0"
+"#,
+    )
+    .unwrap();
+    let core = Arc::new(CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    ));
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "php-filter-chain-raw-result".to_owned(),
+        })
+        .unwrap();
+    let job = core
+        .start_catalog_tool(RunCatalogToolRequest {
+            project_id: project.project_id.clone(),
+            tool_id: "php-filter-chain".to_owned(),
+            target_url: String::new(),
+            form: BTreeMap::new(),
+            confirm_sensitive_argv: false,
+            confirm_l2: false,
+            l3_confirmation: None,
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
+        })
+        .unwrap();
+
+    wait_terminal(&core, &project.project_id, &job.job.job_id).await;
+    let result = core
+        .list_structured_results(&flagdeck_core::ListStructuredResultsRequest {
+            project_id: project.project_id,
+            job_id: job.job.job_id,
+            cursor: None,
+            limit: 100,
+        })
+        .unwrap();
+
+    assert_eq!(result.kind, flagdeck_core::StructuredResultKind::RawOnly);
+    assert_eq!(
+        result.parser_id.as_deref(),
+        Some("flagdeck.php-filter-chain-text")
+    );
+    assert!(result.source_artifact_ids.len() >= 2);
+}

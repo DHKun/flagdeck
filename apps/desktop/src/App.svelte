@@ -1581,7 +1581,6 @@
                           data-testid={`tool-${tool.id}`}
                           class="tool-card-main"
                           type="button"
-                          disabled={!tool.available}
                           onclick={() => selectTool(tool)}
                         >
                           <div class="tool-card-title">

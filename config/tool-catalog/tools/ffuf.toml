@@ -374,7 +374,9 @@ field = "filter_regex"
 args = ["-fr", "{filter_regex}"]
 
 [parser]
-kind = "none"
+kind = "ffuf-json"
+id = "flagdeck.ffuf-json"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 600000

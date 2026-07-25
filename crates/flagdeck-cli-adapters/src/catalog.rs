@@ -485,7 +485,8 @@ impl ToolCatalog {
                     aliases: tool.aliases.clone(),
                     presets: tool.presets.clone(),
                     field_groups: tool.field_groups.clone(),
-                    risk_level: tool.risk_level.clone(),
+                    risk_level: catalog_risk_level_name(effective_catalog_risk_level(tool))
+                        .to_owned(),
                     installation: tool.installation.clone(),
                     io: tool.io.clone(),
                     summary: tool.summary.clone(),
@@ -554,8 +555,29 @@ fn default_tier() -> String {
 }
 
 fn default_catalog_risk_level() -> String {
-    // Embedded CLI tools default to L2 (requires confirmation); L3 tools set risk_level explicitly.
-    "l2".to_owned()
+    String::new()
+}
+
+fn effective_catalog_risk_level(tool: &CatalogToolManifest) -> RiskLevel {
+    match tool.risk_level.to_ascii_lowercase().as_str() {
+        "l0" => RiskLevel::L0,
+        "l1" => RiskLevel::L1,
+        "l2" => RiskLevel::L2,
+        "l3" => RiskLevel::L3,
+        _ => match tool.mode {
+            ToolMode::ExternalLaunch => RiskLevel::L3,
+            ToolMode::EmbeddedCli => RiskLevel::L2,
+        },
+    }
+}
+
+fn catalog_risk_level_name(risk_level: RiskLevel) -> &'static str {
+    match risk_level {
+        RiskLevel::L0 => "l0",
+        RiskLevel::L1 => "l1",
+        RiskLevel::L2 => "l2",
+        RiskLevel::L3 => "l3",
+    }
 }
 
 fn tool_needs_target(tool: &CatalogToolManifest) -> bool {
@@ -785,6 +807,8 @@ pub struct PreparedCatalogCommand {
     pub tool_id: String,
     pub tool_name: String,
     pub mode: ToolMode,
+    pub parser_id: String,
+    pub parser_version: String,
     /// See [`CatalogToolManifest::detach`].
     pub detach: bool,
     pub spec: CommandSpec,
@@ -1055,16 +1079,7 @@ fn prepare_catalog_command_with_sources_impl(
     let cwd = resolve_cwd(tool, &catalog.paths, &binary, job_directory)?;
     let environment = build_environment(tool, job_directory, &cwd);
 
-    let risk_level = match tool.risk_level.to_ascii_lowercase().as_str() {
-        "l0" => RiskLevel::L0,
-        "l1" => RiskLevel::L1,
-        "l2" => RiskLevel::L2,
-        "l3" => RiskLevel::L3,
-        _ => match tool.mode {
-            ToolMode::ExternalLaunch => RiskLevel::L3,
-            ToolMode::EmbeddedCli => RiskLevel::L2,
-        },
-    };
+    let risk_level = effective_catalog_risk_level(tool);
 
     let mut sensitive_values = tool
         .form
@@ -1171,6 +1186,8 @@ fn prepare_catalog_command_with_sources_impl(
         tool_id: tool.id.clone(),
         tool_name: tool.name.clone(),
         mode: tool.mode.clone(),
+        parser_id: tool.parser.id.clone(),
+        parser_version: tool.parser.version.clone(),
         detach,
         spec,
         stdout_path: job_directory.join("stdout.log"),
@@ -1483,6 +1500,31 @@ mod tests {
         assert!(!curl.io.outputs.is_empty());
         assert_eq!(curl.tier, "tier_1");
         assert!(curl.presets.len() >= 3);
+    }
+
+    #[test]
+    fn legacy_catalog_risk_defaults_follow_execution_mode() {
+        let embedded: CatalogToolManifest = toml::from_str(
+            r#"
+id = "embedded"
+name = "embedded"
+category = "test"
+mode = "embedded_cli"
+"#,
+        )
+        .unwrap();
+        let external: CatalogToolManifest = toml::from_str(
+            r#"
+id = "external"
+name = "external"
+category = "test"
+mode = "external_launch"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(effective_catalog_risk_level(&embedded), RiskLevel::L2);
+        assert_eq!(effective_catalog_risk_level(&external), RiskLevel::L3);
     }
 
     #[test]

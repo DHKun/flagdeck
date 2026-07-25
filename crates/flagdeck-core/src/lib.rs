@@ -2651,7 +2651,21 @@ impl CoreService {
                 )?;
             }
         }
-        queued.store.save_job(&queued.job)?;
+        if let Some(mut import) = queued.store.job(&job_id)?.import {
+            queued.job.import_status = ImportStatus::Skipped;
+            import.import_status = ImportStatus::Skipped;
+            import.source_artifact_ids = queued
+                .store
+                .list_job_artifacts(&job_id, 100, None)?
+                .0
+                .into_iter()
+                .map(|artifact| artifact.artifact_id)
+                .collect();
+            import.completed_at = Some(Timestamp::now());
+            queued.store.write_import_state(&queued.job, &import)?;
+        } else {
+            queued.store.save_job(&queued.job)?;
+        }
         Ok(())
     }
 
@@ -3325,12 +3339,18 @@ impl CoreService {
         }
         store.save_command_spec(&command)?;
 
+        let has_parser_identity =
+            !prepared.parser_id.is_empty() && !prepared.parser_version.is_empty();
         let job = Job {
             job_id: job_id.clone(),
             parent_job_id: None,
             command_spec_id: command.command_spec_id.clone(),
             execution_status: ExecutionStatus::Queued,
-            import_status: ImportStatus::Skipped,
+            import_status: if has_parser_identity {
+                ImportStatus::Pending
+            } else {
+                ImportStatus::Skipped
+            },
             created_at: Timestamp::now(),
             started_at: None,
             stopped_at: None,
@@ -3353,6 +3373,22 @@ impl CoreService {
             source_job_id: request.source_job_id.clone(),
         };
         store.save_job(&job)?;
+        if has_parser_identity {
+            store.write_import_state(
+                &job,
+                &JobImportRecord {
+                    job_id: job.job_id.clone(),
+                    parser_id: prepared.parser_id.clone(),
+                    parser_version: prepared.parser_version.clone(),
+                    import_status: ImportStatus::Pending,
+                    discovery_count: 0,
+                    http_message_count: 0,
+                    source_artifact_ids: Vec::new(),
+                    error_summary: None,
+                    completed_at: None,
+                },
+            )?;
+        }
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
         self.active_executions
             .lock()
@@ -3966,7 +4002,7 @@ fn structured_result_kind(
 
 fn select_http_discovery_adapter(
     parser_id: Option<&str>,
-    tool_id: &str,
+    _tool_id: &str,
     logical_name: Option<&str>,
 ) -> HttpDiscoveryAdapter {
     if let Some(id) = parser_id {
@@ -3996,27 +4032,25 @@ fn select_http_discovery_adapter(
             return HttpDiscoveryAdapter::FscanJson;
         }
     }
-    if tool_id == "gobuster" || logical_name.is_some_and(|name| name.contains("gobuster")) {
+    if logical_name.is_some_and(|name| name.contains("gobuster")) {
         return HttpDiscoveryAdapter::GobusterText;
     }
-    if tool_id == "arjun" || logical_name.is_some_and(|name| name.contains("arjun")) {
+    if logical_name.is_some_and(|name| name.contains("arjun")) {
         return HttpDiscoveryAdapter::ArjunJson;
     }
-    if tool_id == "curl"
-        || logical_name.is_some_and(|name| name.contains("headers") || name.contains("curl"))
-    {
+    if logical_name.is_some_and(|name| name.contains("headers") || name.contains("curl")) {
         return HttpDiscoveryAdapter::CurlHeaders;
     }
-    if tool_id == "wafw00f" || logical_name.is_some_and(|name| name.contains("wafw00f")) {
+    if logical_name.is_some_and(|name| name.contains("wafw00f")) {
         return HttpDiscoveryAdapter::Wafw00fJson;
     }
-    if tool_id == "dddd" || logical_name.is_some_and(|name| name.contains("dddd")) {
+    if logical_name.is_some_and(|name| name.contains("dddd")) {
         return HttpDiscoveryAdapter::DdddJsonl;
     }
-    if tool_id == "fscan" || logical_name.is_some_and(|name| name.contains("fscan")) {
+    if logical_name.is_some_and(|name| name.contains("fscan")) {
         return HttpDiscoveryAdapter::FscanJson;
     }
-    if tool_id == "ffuf" || logical_name.is_some_and(|name| name.contains("ffuf")) {
+    if logical_name.is_some_and(|name| name.contains("ffuf")) {
         return HttpDiscoveryAdapter::FfufJson;
     }
     HttpDiscoveryAdapter::GenericJson
@@ -5765,6 +5799,22 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let service = CoreService::new(temporary.path().join("workspaces"));
         (temporary, service)
+    }
+
+    #[test]
+    fn structured_result_adapter_is_selected_by_parser_id() {
+        assert!(matches!(
+            select_http_discovery_adapter(
+                Some("flagdeck.ffuf-json"),
+                "renamed-content-discovery",
+                None
+            ),
+            HttpDiscoveryAdapter::FfufJson
+        ));
+        assert!(matches!(
+            select_http_discovery_adapter(None, "ffuf", None),
+            HttpDiscoveryAdapter::GenericJson
+        ));
     }
 
     #[test]
