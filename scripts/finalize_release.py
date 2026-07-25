@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -60,6 +61,10 @@ FIRST_RELEASE_RECORDS = {
     "removeStable",
     "verifyRemoved",
 }
+HEADER_SIGNATURE_PATTERN = re.compile(
+    r"^\s*Header\b.*\bsignature\b.*:\s*OK\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 UPGRADE_RECORDS = {
     "baseEnvironment",
     "desktopValidator",
@@ -73,6 +78,17 @@ UPGRADE_RECORDS = {
     "removeStable",
     "verifyRemoved",
 }
+
+
+def header_signature_verified(verification: str) -> bool:
+    """Accept every supported rpm wording for a verified header signature.
+
+    rpm 4.17 and 4.18 report ``Header V4 RSA/SHA512 Signature, key ID ...: OK``
+    while rpm 6 reports ``Header OpenPGP V4 RSA/SHA512 signature, key
+    fingerprint: ...: OK``. Digest-only output from an unsigned package never
+    names a signature, so it stays rejected.
+    """
+    return HEADER_SIGNATURE_PATTERN.search(verification) is not None
 
 
 def sha256(path: Path) -> str:
@@ -186,7 +202,7 @@ def verify_rpm_signature(rpm: Path, public_key: Path) -> str:
             stderr=subprocess.PIPE,
             text=True,
         ).stdout.strip()
-    if "OpenPGP" not in verification or ": OK" not in verification:
+    if not header_signature_verified(verification):
         raise RuntimeError("independent RPM signature verification failed")
     return verification
 

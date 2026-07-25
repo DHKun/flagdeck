@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import string
 import shutil
 import subprocess
@@ -14,6 +15,23 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+HEADER_SIGNATURE_PATTERN = re.compile(
+    r"^\s*Header\b.*\bsignature\b.*:\s*OK\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def header_signature_verified(verification: str) -> bool:
+    """Accept every supported rpm wording for a verified header signature.
+
+    rpm 4.17 and 4.18 report ``Header V4 RSA/SHA512 Signature, key ID ...: OK``
+    while rpm 6 reports ``Header OpenPGP V4 RSA/SHA512 signature, key
+    fingerprint: ...: OK``. Digest-only output from an unsigned package never
+    names a signature, so it stays rejected.
+    """
+    return HEADER_SIGNATURE_PATTERN.search(verification) is not None
 
 
 def run(
@@ -240,7 +258,7 @@ def main() -> None:
             str(rpm),
         ]
     )
-    passed = "OpenPGP" in verification.stdout and ": OK" in verification.stdout
+    passed = header_signature_verified(verification.stdout)
     report = {
         "schema": "flagdeck.rpm-signature.v1",
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
