@@ -10,11 +10,44 @@ from scripts.finalize_release import (
     GUI_ASSERTIONS,
     public_key_fingerprint,
 )
+from scripts.finalize_release import (
+    header_signature_verified as finalizer_header_signature_verified,
+)
 from scripts.run_release_audits import (
     LOCKED_CARGO_TOOLS,
     ensure_locked_cargo_tool,
 )
-from scripts.sign_rpm import normalize_fingerprint, primary_fingerprints
+from scripts.sign_rpm import (
+    header_signature_verified,
+    normalize_fingerprint,
+    primary_fingerprints,
+)
+
+
+RPM_4_17_SIGNED = """/build/FlagDeck-1.0.0-1.x86_64.rpm:
+    Header V4 RSA/SHA512 Signature, key ID 45873de6: OK
+    Header SHA256 digest: OK
+    Header SHA1 digest: OK
+    Payload SHA256 digest: OK
+    MD5 digest: OK
+"""
+RPM_4_18_SIGNED = RPM_4_17_SIGNED
+RPM_6_SIGNED = """/build/FlagDeck-1.0.0-1.x86_64.rpm:
+    Header OpenPGP V4 RSA/SHA512 signature, key fingerprint: \
+18ad547a9abcbc8b633031213fb7c61845873de6: OK
+    Header SHA256 digest: OK
+    Payload SHA256 digest: OK
+"""
+RPM_UNSIGNED = """/build/FlagDeck-1.0.0-1.x86_64.rpm:
+    Header SHA256 digest: OK
+    Header SHA1 digest: OK
+    Payload SHA256 digest: OK
+    MD5 digest: OK
+"""
+RPM_SIGNATURE_NOT_OK = """/build/FlagDeck-1.0.0-1.x86_64.rpm:
+    Header V4 RSA/SHA512 Signature, key ID 45873de6: NOKEY
+    Header SHA256 digest: OK
+"""
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +81,26 @@ class SigningToolsTests(unittest.TestCase):
             primary_fingerprints(listing, "sec"),
             [APPROVED_SIGNING_FINGERPRINT],
         )
+
+    def test_header_signature_check_spans_supported_rpm_wordings(self) -> None:
+        accepted = {
+            "rpm 4.17 (ubuntu-22.04)": RPM_4_17_SIGNED,
+            "rpm 4.18 (ubuntu-24.04)": RPM_4_18_SIGNED,
+            "rpm 6.0 (fedora 44)": RPM_6_SIGNED,
+        }
+        rejected = {
+            "unsigned package": RPM_UNSIGNED,
+            "signature not verified": RPM_SIGNATURE_NOT_OK,
+            "empty output": "",
+        }
+        for name, verification in accepted.items():
+            with self.subTest(name=name):
+                self.assertTrue(header_signature_verified(verification))
+                self.assertTrue(finalizer_header_signature_verified(verification))
+        for name, verification in rejected.items():
+            with self.subTest(name=name):
+                self.assertFalse(header_signature_verified(verification))
+                self.assertFalse(finalizer_header_signature_verified(verification))
 
     def test_committed_public_key_matches_approved_identity(self) -> None:
         self.assertEqual(
