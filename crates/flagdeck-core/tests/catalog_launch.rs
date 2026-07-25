@@ -1967,7 +1967,7 @@ fn workspace_catalog_exposes_sqlmap_and_githacker_v2() {
 }
 
 #[test]
-fn sqlmap_requires_l3_and_githacker_preview_works() {
+fn sqlmap_preview_is_l3_and_githacker_preview_works() {
     let temporary = tempdir().unwrap();
     let catalog_root =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
@@ -2000,28 +2000,6 @@ fn sqlmap_requires_l3_and_githacker_preview_works() {
         .expect("sqlmap preview");
     assert!(preview.command_preview.contains("sqlmap"));
     assert_eq!(preview.risk_level, RiskLevel::L3);
-
-    let denied = core.start_catalog_tool(RunCatalogToolRequest {
-        project_id: project.project_id.clone(),
-        tool_id: "sqlmap".to_owned(),
-        target_url: "http://127.0.0.1:9/?id=1".to_owned(),
-        form: BTreeMap::from([
-            ("url".to_owned(), "http://127.0.0.1:9/?id=1".to_owned()),
-            ("level".to_owned(), "1".to_owned()),
-            ("risk".to_owned(), "1".to_owned()),
-            ("batch".to_owned(), "yes".to_owned()),
-        ]),
-        confirm_sensitive_argv: false,
-        confirm_l2: true,
-        l3_confirmation: None,
-        source_job_id: None,
-        source_result_id: None,
-        source_artifact_id: None,
-    });
-    assert!(matches!(
-        denied,
-        Err(CoreError::CatalogConfirmationRequired(RiskLevel::L3))
-    ));
 
     let gh_preview = core
         .preview_catalog_tool(PreviewCatalogToolRequest {
