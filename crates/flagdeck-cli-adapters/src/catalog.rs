@@ -548,6 +548,20 @@ impl ToolCatalog {
         }
         Err(CatalogError::InvalidInput)
     }
+
+    fn preview_wordlist_path(&self, value: &str) -> Result<PathBuf, CatalogError> {
+        if value.is_empty() {
+            return Err(CatalogError::InvalidInput);
+        }
+        if let Some(shortcut) = self.wordlists.iter().find(|entry| entry.id == value) {
+            return Ok(self.paths.wordlists_root.join(&shortcut.path));
+        }
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+        Ok(self.paths.wordlists_root.join(path))
+    }
 }
 
 fn default_tier() -> String {
@@ -952,7 +966,11 @@ fn prepare_catalog_command_with_sources_impl(
                 }
             })
             .ok_or(CatalogError::InvalidInput)?;
-        let path = catalog.resolve_wordlist_path(&raw)?;
+        let path = if require_available_binary {
+            catalog.resolve_wordlist_path(&raw)?
+        } else {
+            catalog.preview_wordlist_path(&raw)?
+        };
         values.insert(field.id.clone(), path.display().to_string());
         values.insert("wordlist".to_owned(), path.display().to_string());
     }
@@ -1076,7 +1094,13 @@ fn prepare_catalog_command_with_sources_impl(
         return Err(CatalogError::InvalidInput);
     }
 
-    let cwd = resolve_cwd(tool, &catalog.paths, &binary, job_directory)?;
+    let cwd = resolve_cwd(
+        tool,
+        &catalog.paths,
+        &binary,
+        job_directory,
+        require_available_binary,
+    )?;
     let environment = build_environment(tool, job_directory, &cwd);
 
     let risk_level = effective_catalog_risk_level(tool);
@@ -1292,6 +1316,7 @@ fn resolve_cwd(
     paths: &CatalogPaths,
     binary: &Path,
     job_directory: &Path,
+    require_existing: bool,
 ) -> Result<PathBuf, CatalogError> {
     if !tool.cwd.is_empty() {
         let cwd = if Path::new(&tool.cwd).is_absolute() {
@@ -1299,7 +1324,7 @@ fn resolve_cwd(
         } else {
             paths.tools_root.join(&tool.cwd)
         };
-        if cwd.is_dir() {
+        if cwd.is_dir() || !require_existing {
             return Ok(cwd);
         }
         return Err(CatalogError::InvalidInput);

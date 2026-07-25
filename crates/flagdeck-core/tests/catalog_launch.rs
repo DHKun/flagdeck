@@ -1003,7 +1003,11 @@ async fn catalog_curl_writes_visible_logs() {
 
 #[tokio::test]
 async fn catalog_gui_godzilla_detaches_or_logs_error() {
-    let launcher = Path::new("/data/CTF/Tools/Active/webshell-tools/Godzilla/start-godzilla.sh");
+    let tools_root = std::env::var_os("FLAGDECK_TOOLS_ROOT").map_or_else(
+        || std::path::PathBuf::from("/data/CTF/Tools"),
+        std::path::PathBuf::from,
+    );
+    let launcher = tools_root.join("Active/webshell-tools/Godzilla/start-godzilla.sh");
     if !launcher.is_file() {
         eprintln!("skip godzilla launch: local tools root unavailable");
         return;
@@ -1274,6 +1278,74 @@ template = ["-u", "{url}", "-w", "{wordlist}"]
             .command_preview
             .contains("flagdeck-test-missing-ffuf")
     );
+}
+
+#[test]
+fn catalog_preview_allows_missing_cwd_but_run_rejects_it() {
+    let temporary = tempdir().unwrap();
+    let catalog_root = temporary.path().join("catalog");
+    let tools_dir = catalog_root.join("tools");
+    fs::create_dir_all(&tools_dir).unwrap();
+    fs::write(
+        tools_dir.join("cwd-check.toml"),
+        r#"
+id = "cwd-check"
+name = "cwd-check"
+category = "test"
+mode = "embedded_cli"
+cwd = "missing-tool-directory"
+
+[binary]
+command = "/usr/bin/true"
+resolve = ["path"]
+
+[[form.fields]]
+id = "value"
+type = "text"
+label = "value"
+required = true
+
+[argv]
+template = ["{value}"]
+"#,
+    )
+    .unwrap();
+    let core = Arc::new(CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    ));
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "catalog-preview-missing-cwd".to_owned(),
+        })
+        .unwrap();
+    let form = BTreeMap::from([("value".to_owned(), "preview-me".to_owned())]);
+
+    core.preview_catalog_tool(PreviewCatalogToolRequest {
+        project_id: project.project_id.clone(),
+        tool_id: "cwd-check".to_owned(),
+        target_url: String::new(),
+        form: form.clone(),
+    })
+    .expect("preview should describe a command before the tool directory exists");
+
+    let run = core.start_catalog_tool(RunCatalogToolRequest {
+        project_id: project.project_id,
+        tool_id: "cwd-check".to_owned(),
+        target_url: String::new(),
+        form,
+        confirm_sensitive_argv: false,
+        confirm_l2: false,
+        l3_confirmation: None,
+        source_job_id: None,
+        source_result_id: None,
+        source_artifact_id: None,
+    });
+    assert!(matches!(run, Err(CoreError::InvalidRequest)));
 }
 
 #[tokio::test]
