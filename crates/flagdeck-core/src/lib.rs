@@ -1598,6 +1598,9 @@ impl CoreService {
                 HttpDiscoveryAdapter::ArjunJson => arjun_result_columns(),
                 HttpDiscoveryAdapter::Wafw00fJson => wafw00f_result_columns(),
                 HttpDiscoveryAdapter::CurlHeaders => curl_result_columns(),
+                HttpDiscoveryAdapter::DdddJsonl | HttpDiscoveryAdapter::FscanJson => {
+                    host_service_result_columns()
+                }
                 _ => http_discovery_columns(),
             };
             let parsed_rows = match adapter {
@@ -1608,6 +1611,8 @@ impl CoreService {
                 HttpDiscoveryAdapter::ArjunJson => parse_arjun_structured_rows(&bytes),
                 HttpDiscoveryAdapter::CurlHeaders => parse_curl_headers_structured_rows(&bytes),
                 HttpDiscoveryAdapter::Wafw00fJson => parse_wafw00f_structured_rows(&bytes),
+                HttpDiscoveryAdapter::DdddJsonl => parse_dddd_structured_rows(&bytes),
+                HttpDiscoveryAdapter::FscanJson => parse_fscan_structured_rows(&bytes),
             };
             let Ok(mut all_rows) = parsed_rows else {
                 return Ok(StructuredResultPage {
@@ -3923,6 +3928,8 @@ enum HttpDiscoveryAdapter {
     ArjunJson,
     CurlHeaders,
     Wafw00fJson,
+    DdddJsonl,
+    FscanJson,
     GenericJson,
 }
 
@@ -3938,6 +3945,8 @@ fn structured_result_kind(
             | HttpDiscoveryAdapter::ArjunJson
             | HttpDiscoveryAdapter::CurlHeaders
             | HttpDiscoveryAdapter::Wafw00fJson
+            | HttpDiscoveryAdapter::DdddJsonl
+            | HttpDiscoveryAdapter::FscanJson
     ) || io
         .outputs
         .iter()
@@ -3980,6 +3989,12 @@ fn select_http_discovery_adapter(
         {
             return HttpDiscoveryAdapter::Wafw00fJson;
         }
+        if id == "flagdeck.dddd-jsonl" || id.ends_with(".dddd-jsonl") || id.contains("dddd") {
+            return HttpDiscoveryAdapter::DdddJsonl;
+        }
+        if id == "flagdeck.fscan-json" || id.ends_with(".fscan-json") || id.contains("fscan") {
+            return HttpDiscoveryAdapter::FscanJson;
+        }
     }
     if tool_id == "gobuster" || logical_name.is_some_and(|name| name.contains("gobuster")) {
         return HttpDiscoveryAdapter::GobusterText;
@@ -3994,6 +4009,12 @@ fn select_http_discovery_adapter(
     }
     if tool_id == "wafw00f" || logical_name.is_some_and(|name| name.contains("wafw00f")) {
         return HttpDiscoveryAdapter::Wafw00fJson;
+    }
+    if tool_id == "dddd" || logical_name.is_some_and(|name| name.contains("dddd")) {
+        return HttpDiscoveryAdapter::DdddJsonl;
+    }
+    if tool_id == "fscan" || logical_name.is_some_and(|name| name.contains("fscan")) {
+        return HttpDiscoveryAdapter::FscanJson;
     }
     if tool_id == "ffuf" || logical_name.is_some_and(|name| name.contains("ffuf")) {
         return HttpDiscoveryAdapter::FfufJson;
@@ -4273,6 +4294,183 @@ fn parse_curl_headers_structured_rows(
         source_job_id: JobId::new(),
         source_artifact_id: None,
     }])
+}
+
+fn host_service_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "host".to_owned(),
+            label: "主机".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "port".to_owned(),
+            label: "端口".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "service".to_owned(),
+            label: "服务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "url".to_owned(),
+            label: "URL".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "status".to_owned(),
+            label: "状态".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_dddd_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let mut rows = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(trimmed).map_err(|_| CoreError::InvalidRequest)?;
+        let url = value
+            .get("uri")
+            .or_else(|| value.get("url"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let host = value
+            .get("ip")
+            .or_else(|| value.get("host"))
+            .and_then(|item| item.as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+                url::Url::parse(&url)
+                    .ok()
+                    .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            })
+            .unwrap_or_default();
+        let port = value
+            .get("port")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let service = value
+            .get("type")
+            .or_else(|| value.get("service"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let status = value
+            .pointer("/web/status")
+            .or_else(|| value.get("status"))
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let mut cells = BTreeMap::new();
+        cells.insert("host".to_owned(), host);
+        cells.insert("port".to_owned(), port);
+        cells.insert("service".to_owned(), service);
+        cells.insert("url".to_owned(), url);
+        cells.insert("status".to_owned(), status);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
+}
+
+fn parse_fscan_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let records = if let Some(array) = value.as_array() {
+        array.clone()
+    } else if value.is_object() {
+        vec![value]
+    } else {
+        return Err(CoreError::InvalidRequest);
+    };
+    let mut rows = Vec::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let host = record
+            .get("host")
+            .or_else(|| record.get("ip"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let port = record
+            .get("port")
+            .map(|item| match item {
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::String(text) => text.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let service = record
+            .get("service")
+            .or_else(|| record.get("protocol"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let url = record
+            .get("url")
+            .and_then(|item| item.as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                if !host.is_empty() && !port.is_empty() {
+                    format!("http://{host}:{port}/")
+                } else {
+                    String::new()
+                }
+            });
+        let status = record
+            .get("info")
+            .or_else(|| record.get("status"))
+            .map(|item| match item {
+                serde_json::Value::String(text) => text.clone(),
+                serde_json::Value::Number(number) => number.to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        let mut cells = BTreeMap::new();
+        cells.insert("host".to_owned(), host);
+        cells.insert("port".to_owned(), port);
+        cells.insert("service".to_owned(), service);
+        cells.insert("url".to_owned(), url);
+        cells.insert("status".to_owned(), status);
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{index}"),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(rows)
 }
 
 fn parse_wafw00f_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
@@ -7518,6 +7716,168 @@ mod tests {
         assert_eq!(
             waf_page.rows[0].source_artifact_id.as_ref(),
             Some(&waf_job.1.artifact_id)
+        );
+    }
+
+    #[test]
+    fn dddd_and_fscan_structured_results_expose_hosts_and_urls() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreService::new(temporary.path().join("workspaces"));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "Dddd fscan results".to_owned(),
+            })
+            .unwrap();
+        let store = core.project_store(&project.project_id, true).unwrap();
+
+        let dddd_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "dddd-output.jsonl",
+                    br#"{"type":"Web","web":{"status":"200"},"uri":"http://127.0.0.1:80"}"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "dddd".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "dddd-output.jsonl".to_owned(),
+                        mime: "application/x-ndjson".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("dddd-output.jsonl"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let dddd_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id.clone(),
+                job_id: dddd_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(dddd_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            dddd_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://127.0.0.1:80")
+        );
+
+        let fscan_job = {
+            let created_at = Timestamp::now();
+            let job_id = seed_job(
+                &store,
+                ExecutionStatus::Succeeded,
+                &created_at,
+                b"",
+                b"",
+                Some((
+                    "fscan-output.json",
+                    br#"[{"host":"127.0.0.1","port":80,"service":"http","url":"http://127.0.0.1:80/","info":"ok"}]"#,
+                )),
+            );
+            let mut stored = store.job(&job_id).unwrap();
+            stored.command_spec.tool_id = "fscan".to_owned();
+            stored.command_spec.io = ToolRunIo {
+                schema_version: 1,
+                inputs: Vec::new(),
+                outputs: vec![
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "discoveries".to_owned(),
+                        kind: ToolIoKind::HttpDiscovery,
+                    },
+                    flagdeck_domain::ToolOutputSpec {
+                        id: "raw".to_owned(),
+                        kind: ToolIoKind::RawArtifact,
+                    },
+                ],
+            };
+            stored.command_spec.argv_exec = stored.command_spec.argv_redacted.clone();
+            stored.command_spec.env_exec = stored.command_spec.env_redacted.clone();
+            store.save_command_spec(&stored.command_spec).unwrap();
+            store.save_job(&stored.job).unwrap();
+            let raw = store
+                .commit_artifact(
+                    &ArtifactWriteRequest {
+                        logical_name: "fscan-output.json".to_owned(),
+                        mime: "application/json".to_owned(),
+                        sensitivity: Sensitivity::SensitiveEvidence,
+                        export_policy: ExportPolicy::ConfirmSensitive,
+                        source_job_id: Some(job_id.clone()),
+                        source_message_id: None,
+                        expected_size: None,
+                        expected_sha256: None,
+                    },
+                    File::open(
+                        store
+                            .layout()
+                            .scans
+                            .join(&job_id.0)
+                            .join("fscan-output.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            (job_id, raw)
+        };
+        let fscan_page = core
+            .list_structured_results(&ListStructuredResultsRequest {
+                project_id: project.project_id,
+                job_id: fscan_job.0.clone(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(fscan_page.status, StructuredResultStatus::Ready);
+        assert_eq!(
+            fscan_page.rows[0].cells.get("host").map(String::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            fscan_page.rows[0].cells.get("url").map(String::as_str),
+            Some("http://127.0.0.1:80/")
+        );
+        assert_eq!(
+            fscan_page.rows[0].source_artifact_id.as_ref(),
+            Some(&fscan_job.1.artifact_id)
         );
     }
 

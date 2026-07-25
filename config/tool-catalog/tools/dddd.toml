@@ -1,18 +1,104 @@
 id = "dddd"
 name = "dddd"
 category = "fingerprint"
+tier = "tier_1"
+capabilities = ["host_discovery", "service_discovery", "web_fingerprint"]
+aliases = ["资产发现", "指纹探测", "信息收集", "dddd"]
+risk_level = "l2"
 summary = "批量信息收集与指纹探测（Active/dddd）"
 
 usage = """
 【FlagDeck 表单】
 • 必填：目标 -t
 • 可选：端口、扫描方式、主机发现、POC/目录、子域、代理、线程超时
+• 输出：任务目录 dddd-output.jsonl
 
 完整帮助：dddd -h
 仅限授权目标。
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "web_quick"
+name = "Web 快速探测"
+core_fields = ["target", "ports", "web_threads"]
+
+[presets.defaults]
+ports = "80,443,8080,8000,8443"
+skip_host_discovery = "no"
+no_poc = "yes"
+no_dir = "yes"
+web_threads = "20"
+
+[[presets]]
+id = "port_scan"
+name = "端口扫描"
+core_fields = ["target", "ports", "port_timeout"]
+
+[presets.defaults]
+ports = "1-1000"
+skip_host_discovery = "no"
+no_poc = "yes"
+no_dir = "yes"
+port_timeout = "3"
+
+[[presets]]
+id = "full_recon"
+name = "完整侦察"
+core_fields = ["target", "ports", "web_threads", "subdomain"]
+
+[presets.defaults]
+ports = "80,443,8080,8000,8443,22,3389,3306,6379"
+skip_host_discovery = "no"
+no_poc = "no"
+no_dir = "no"
+subdomain = "no"
+web_threads = "30"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["target", "ports", "no_port"]
+
+[[field_groups]]
+id = "discovery"
+name = "发现"
+fields = ["skip_host_discovery", "no_icmp", "tcp_ping", "subdomain", "allow_cdn"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["web_threads", "web_timeout", "port_timeout", "no_poc", "no_dir", "no_golang_poc", "poc_name", "proxy", "html_report"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "target"
+
+[[io.outputs]]
+id = "discoveries"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "MIT"
+homepage = "https://github.com/SleepingBag945/dddd"
+version = "2.0.2"
+health_strategy = "safe-version-command"
+runtime = "standalone Go binary"
+version_args = ["-h"]
+install_command = "go install github.com/SleepingBag945/dddd/v2@latest"
+path_fix = "export PATH=\"$PATH:$(go env GOPATH)/bin\""
+wordlist_source = ""
+wordlist_install_command = ""
 
 [binary]
 command = "dddd"
@@ -260,7 +346,9 @@ equals = "yes"
 args = ["-ho", "{job_dir}/dddd-report.html"]
 
 [parser]
-kind = "none"
+kind = "dddd-jsonl"
+id = "flagdeck.dddd-jsonl"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 600000

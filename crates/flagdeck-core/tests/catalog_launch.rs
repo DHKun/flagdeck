@@ -1737,3 +1737,116 @@ fn curl_and_wafw00f_preview_redacts_sensitive_and_diagnoses() {
     assert_eq!(waf_diag.tool_id, "wafw00f");
     assert!(!waf_diag.checks.is_empty());
 }
+
+#[test]
+fn workspace_catalog_exposes_dddd_and_fscan_v2_contracts() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let snapshot = core.list_catalog().expect("workspace catalog loads");
+    let dddd = snapshot
+        .tools
+        .iter()
+        .find(|t| t.id == "dddd")
+        .expect("dddd");
+    assert_eq!(dddd.tier, "tier_1");
+    assert!(dddd.presets.len() >= 3);
+    assert!(
+        dddd.capabilities
+            .iter()
+            .any(|c| c.contains("discovery") || c.contains("fingerprint"))
+    );
+    assert_eq!(dddd.io.schema_version, 1);
+    assert!(!dddd.installation.homepage.is_empty());
+
+    let fscan = snapshot
+        .tools
+        .iter()
+        .find(|t| t.id == "fscan")
+        .expect("fscan");
+    assert_eq!(fscan.tier, "tier_1");
+    assert!(fscan.presets.len() >= 3);
+    assert!(
+        fscan
+            .aliases
+            .iter()
+            .any(|a| a.contains("扫描") || a.contains("fscan"))
+    );
+    assert_eq!(fscan.io.schema_version, 1);
+    assert!(!fscan.installation.install_command.is_empty());
+}
+
+#[test]
+fn dddd_and_fscan_preview_and_diagnostic() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "dddd-fscan".to_owned(),
+        })
+        .unwrap();
+    let dddd_preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id.clone(),
+            tool_id: "dddd".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([
+                ("target".to_owned(), "127.0.0.1".to_owned()),
+                ("ports".to_owned(), "80,443".to_owned()),
+            ]),
+        })
+        .expect("dddd preview");
+    assert!(dddd_preview.command_preview.contains("dddd"));
+    assert_eq!(dddd_preview.risk_level, RiskLevel::L2);
+
+    let fscan_preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "fscan".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([
+                ("host".to_owned(), "127.0.0.1".to_owned()),
+                ("ports".to_owned(), "80,443".to_owned()),
+                ("mode".to_owned(), "all".to_owned()),
+                ("output_format".to_owned(), "json".to_owned()),
+                ("global_timeout".to_owned(), "3".to_owned()),
+            ]),
+        })
+        .expect("fscan preview");
+    assert!(fscan_preview.command_preview.contains("fscan"));
+    assert_eq!(fscan_preview.risk_level, RiskLevel::L2);
+
+    assert_eq!(
+        core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "dddd".to_owned()
+        })
+        .unwrap()
+        .tool_id,
+        "dddd"
+    );
+    assert_eq!(
+        core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "fscan".to_owned()
+        })
+        .unwrap()
+        .tool_id,
+        "fscan"
+    );
+}
