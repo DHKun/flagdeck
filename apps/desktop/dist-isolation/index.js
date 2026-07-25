@@ -15,6 +15,7 @@
     "tool_health",
     "list_catalog",
     "ensure_target",
+    "preview_catalog_tool",
     "run_catalog_tool",
     "delete_job",
     "clear_jobs",
@@ -305,7 +306,7 @@
           boundedString(request.base_url, 4096) &&
           request.base_url.length > 0;
         break;
-      case "run_catalog_tool":
+      case "preview_catalog_tool":
         valid =
           object(request) &&
           projectId(request.project_id) &&
@@ -321,6 +322,27 @@
               typeof value === "string" &&
               value.length <= 16_384,
           );
+        break;
+      case "run_catalog_tool":
+        valid =
+          object(request) &&
+          projectId(request.project_id) &&
+          boundedString(request.tool_id, 128) &&
+          request.tool_id.length > 0 &&
+          boundedString(request.target_url, 4096) &&
+          object(request.form) &&
+          !Array.isArray(request.form) &&
+          Object.keys(request.form).length <= 64 &&
+          Object.entries(request.form).every(
+            ([key, value]) =>
+              boundedString(key, 128) &&
+              typeof value === "string" &&
+              value.length <= 16_384,
+          ) &&
+          typeof request.confirm_sensitive_argv === "boolean" &&
+          typeof request.confirm_l2 === "boolean" &&
+          (request.l3_confirmation === null ||
+            boundedString(request.l3_confirmation, 256));
         break;
       case "delete_job":
         valid =

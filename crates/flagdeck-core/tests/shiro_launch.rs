@@ -37,6 +37,8 @@ async fn shiro_detaches_with_visible_logs() {
             target_url: String::new(),
             form: BTreeMap::new(),
             confirm_sensitive_argv: false,
+            confirm_l2: false,
+            l3_confirmation: Some("RUN CATALOG shiro".to_owned()),
         })
         .unwrap();
 

@@ -1,6 +1,10 @@
 id = "ffuf"
 name = "ffuf"
 category = "content_discovery"
+tier = "tier_1"
+capabilities = ["path_discovery"]
+aliases = ["扫目录", "路径发现", "目录扫描"]
+risk_level = "l2"
 summary = "目录/路径模糊测试（FUZZ）"
 
 usage = """
@@ -13,6 +17,86 @@ usage = """
 """
 mode = "embedded_cli"
 featured = true
+
+[[presets]]
+id = "quick_scan"
+name = "快速扫描"
+core_fields = ["url", "wordlist", "threads", "mc"]
+
+[presets.defaults]
+recursion = "no"
+
+[[presets]]
+id = "recursive_scan"
+name = "递归扫描"
+core_fields = ["url", "wordlist", "threads", "mc", "recursion_depth"]
+
+[presets.defaults]
+recursion = "yes"
+
+[[presets]]
+id = "virtual_host_discovery"
+name = "虚拟主机发现"
+core_fields = ["url", "wordlist", "threads", "mc", "vhost"]
+
+[presets.defaults]
+recursion = "no"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url", "wordlist"]
+
+[[field_groups]]
+id = "matching"
+name = "匹配与过滤"
+fields = ["mc", "fc", "fs", "fw", "fl", "match_regex", "filter_regex"]
+
+[[field_groups]]
+id = "request"
+name = "请求"
+fields = ["method", "post_data", "headers", "vhost", "proxy"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = [
+  "threads",
+  "extensions",
+  "auto_calibrate",
+  "recursion",
+  "recursion_depth",
+  "rate",
+  "timeout",
+]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.inputs]]
+id = "wordlist"
+kind = "wordlist"
+field = "wordlist"
+
+[[io.outputs]]
+id = "discoveries"
+kind = "http_discovery"
+
+[[io.outputs]]
+id = "raw_output"
+kind = "raw_artifact"
+
+[installation]
+distribution = "hybrid"
+license = "MIT"
+homepage = "https://github.com/ffuf/ffuf"
+version = "2.1.0-dev"
+health_strategy = "safe-version-command"
 
 [binary]
 command = "ffuf"

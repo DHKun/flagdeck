@@ -15,6 +15,7 @@ import type {
   CancelAllJobsResult,
   CancelJobRequest,
   CancelJobResult,
+  CatalogRunPreview,
   CommandError,
   CoreEvent,
   CreateDictionaryRequest,
@@ -51,6 +52,7 @@ import type {
   PayloadPreview,
   PayloadSourceHealthDto,
   PreviewArtifactRequest,
+  PreviewCatalogToolRequest,
   PreviewJobFileRequest,
   PreviewJobLogRequest,
   PreviewPayloadRequest,
@@ -127,6 +129,9 @@ export const ipc = {
     invoke("list_scopes", { request }),
   toolHealth: (): Promise<ToolHealthDto[]> => invoke("tool_health"),
   listCatalog: (): Promise<CatalogSnapshot> => invoke("list_catalog"),
+  previewCatalogTool: (
+    request: PreviewCatalogToolRequest,
+  ): Promise<CatalogRunPreview> => invoke("preview_catalog_tool", { request }),
   ensureTarget: (request: EnsureTargetRequest): Promise<TargetScope> =>
     invoke("ensure_target", { request }),
   runCatalogTool: (request: RunCatalogToolRequest): Promise<JobView> =>

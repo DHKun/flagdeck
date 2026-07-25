@@ -371,6 +371,7 @@ pub fn prepare_command(
         timeout_millis: manifest.timeout_millis,
         stop_grace_millis: 2_000,
         expected_outputs: Vec::new(),
+        io: flagdeck_domain::ToolRunIo::default(),
         risk_level: RiskLevel::L3,
         scope_id: Some(scope_id.clone()),
         sandbox_profile: "stable-external-launcher-systemd-or-pgid".to_owned(),

@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import type { TargetScope } from "./generated/contracts";
+  import type { TargetScope, ToolIoKind } from "./generated/contracts";
   import type {
     AppStatus,
+    CatalogRunPreview,
     CatalogSnapshot,
     CatalogToolDto,
     JobLogStream,
@@ -22,6 +23,12 @@
     saveWorkbenchPrefs,
     type WorkbenchPrefs,
   } from "./lib/workbenchPrefs";
+  import {
+    capabilityLabel,
+    searchTools,
+    type InstallationFilter,
+  } from "./lib/toolSearch";
+  import { buildProgressiveForm } from "./lib/progressiveForm";
 
   type NavId = "home" | "tools" | "jobs" | "settings";
   type OutputTab = "log" | "result";
@@ -92,6 +99,13 @@
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let toolQuery = "";
   let categoryFilter = "";
+  let capabilityFilter = "";
+  let tierFilter = "";
+  let installationFilter: InstallationFilter = "";
+  let selectedPresetId = "";
+  let advancedFieldsExpanded = false;
+  let runPreview: CatalogRunPreview | null = null;
+  let runPreviewTimer: ReturnType<typeof setTimeout> | undefined;
   let jobFilterToolId = prefs.jobFilterToolId;
   let autoScrollLog = prefs.autoScrollLog;
   let outputTab: OutputTab = "log";
@@ -101,22 +115,30 @@
 
   $: selectedTool =
     catalog?.tools.find((tool) => tool.id === selectedToolId) ?? null;
+  $: progressiveForm = selectedTool
+    ? buildProgressiveForm(
+        selectedTool,
+        selectedPresetId,
+        advancedFieldsExpanded,
+      )
+    : null;
   $: availableTools = (catalog?.tools ?? []).filter((tool) => tool.available);
   $: featuredTools = availableTools.filter((tool) => tool.featured);
   $: recentTools = prefs.recentToolIds
     .map((id) => catalog?.tools.find((tool) => tool.id === id))
     .filter((tool): tool is CatalogToolDto => Boolean(tool));
-  $: filteredTools = (catalog?.tools ?? []).filter((tool) => {
-    if (categoryFilter && tool.category !== categoryFilter) return false;
-    if (!toolQuery.trim()) return true;
-    const q = toolQuery.toLowerCase();
-    return (
-      tool.id.toLowerCase().includes(q) ||
-      tool.name.toLowerCase().includes(q) ||
-      tool.summary.toLowerCase().includes(q) ||
-      tool.category_name.toLowerCase().includes(q)
-    );
+  $: catalogTools = catalog?.tools ?? [];
+  $: filteredTools = searchTools(catalogTools, {
+    query: toolQuery,
+    category: categoryFilter,
+    capability: capabilityFilter,
+    tier: tierFilter,
+    installation: installationFilter,
   });
+  $: capabilityOptions = [
+    ...new Set(catalogTools.flatMap((tool) => tool.capabilities)),
+  ].sort();
+  $: tierOptions = [...new Set(catalogTools.map((tool) => tool.tier))].sort();
   $: categories = catalog?.categories ?? [];
   $: wordlists = (catalog?.wordlists ?? []).filter((item) => item.available);
   $: activeJobCount = jobs.filter(jobIsActive).length;
@@ -220,6 +242,21 @@
     formValues = next;
   }
 
+  function applyToolPreset(tool: CatalogToolDto, presetId: string): void {
+    selectedPresetId = presetId;
+    advancedFieldsExpanded = false;
+    const plan = buildProgressiveForm(tool, presetId, false);
+    formValues = { ...formValues, ...plan.presetDefaults };
+    scheduleRunPreview();
+  }
+
+  function advancedGroupName(fieldId: string): string {
+    const group = progressiveForm?.advancedGroups.find(
+      (item) => item.fields[0]?.id === fieldId,
+    );
+    return group?.name ?? "";
+  }
+
   function hostFromTarget(value: string): string {
     const raw = value.trim();
     if (!raw) return "";
@@ -256,6 +293,7 @@
     }
     selectedToolId = tool.id;
     applyToolDefaults(tool);
+    applyToolPreset(tool, tool.presets[0]?.id ?? "");
     prefs = {
       ...prefs,
       selectedToolId: tool.id,
@@ -325,6 +363,12 @@
             formValues = { ...formValues, [field.id]: field.default_value };
           }
         }
+      }
+      if (
+        !selectedPresetId ||
+        !selectedTool.presets.some((preset) => preset.id === selectedPresetId)
+      ) {
+        applyToolPreset(selectedTool, selectedTool.presets[0]?.id ?? "");
       }
     }
   }
@@ -493,6 +537,28 @@
     return selectedTool.needs_target ? targetUrl.trim() : "";
   }
 
+  function scheduleRunPreview(): void {
+    if (runPreviewTimer) clearTimeout(runPreviewTimer);
+    runPreview = null;
+    runPreviewTimer = setTimeout(() => {
+      void refreshRunPreview();
+    }, 250);
+  }
+
+  async function refreshRunPreview(): Promise<void> {
+    if (!status?.active_project || !selectedTool) return;
+    try {
+      runPreview = await ipc.previewCatalogTool({
+        project_id: status.active_project.project_id,
+        tool_id: selectedTool.id,
+        target_url: contextTargetForRun(),
+        form: { ...formValues },
+      });
+    } catch {
+      runPreview = null;
+    }
+  }
+
   async function runSelectedTool(): Promise<void> {
     if (!status?.active_project || !selectedTool) return;
     const contextTarget = contextTargetForRun();
@@ -504,13 +570,22 @@
     const hasSensitiveArgv = selectedTool.fields.some(
       (field) => field.sensitive && Boolean(formValues[field.id]),
     );
-    if (
-      hasSensitiveArgv &&
-      !window.confirm(
-        "该工具只能通过进程参数接收此敏感值。运行期间，同一用户的进程列表可能看到该值。确认继续？",
-      )
-    ) {
-      return;
+    const riskLevel = hasSensitiveArgv
+      ? "l3"
+      : (runPreview?.risk_level ?? selectedTool.risk_level.toLowerCase());
+    let confirmL2 = false;
+    let l3Confirmation: string | null = null;
+    if (riskLevel === "l2") {
+      if (!window.confirm("确认运行此 L2 工具？")) return;
+      confirmL2 = true;
+    } else if (riskLevel === "l3") {
+      const expected = `RUN CATALOG ${selectedTool.id}`;
+      l3Confirmation = window.prompt(`输入 ${expected} 以确认 L3 操作`);
+      if (l3Confirmation !== expected) {
+        notice = "L3 确认短语不匹配";
+        noticeKind = "error";
+        return;
+      }
     }
     await guarded(async () => {
       if (contextTarget) {
@@ -551,6 +626,8 @@
         target_url: contextTarget,
         form: { ...formValues },
         confirm_sensitive_argv: hasSensitiveArgv,
+        confirm_l2: confirmL2,
+        l3_confirmation: l3Confirmation,
       });
       selectedLogJobId = job.job.job_id;
       selectedLogStream = "stdout";
@@ -645,6 +722,32 @@
     return (tool.usage || tool.summary || "").trim();
   }
 
+  function tierLabel(tier: string): string {
+    const match = /^tier_(\d+)$/.exec(tier);
+    return match ? `Tier ${match[1]}` : tier;
+  }
+
+  function installationSummary(tool: CatalogToolDto): string {
+    return [
+      tool.installation.distribution,
+      tool.installation.license,
+      tool.installation.version,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  const ioKindLabels: Record<ToolIoKind, string> = {
+    url: "URL",
+    wordlist: "字典",
+    http_discovery: "HTTP 发现",
+    raw_artifact: "原始文件",
+  };
+
+  function ioKindList(items: Array<{ kind: ToolIoKind }>): string {
+    return items.map((item) => ioKindLabels[item.kind]).join("、");
+  }
+
   onMount(() => {
     void guarded(async () => {
       await refresh();
@@ -652,6 +755,7 @@
     }, "工作台已就绪");
     return () => {
       if (pollTimer) clearTimeout(pollTimer);
+      if (runPreviewTimer) clearTimeout(runPreviewTimer);
     };
   });
 </script>
@@ -901,11 +1005,42 @@
             <input
               id="tool-query"
               bind:value={toolQuery}
-              placeholder="id、名称、分类、说明"
+              placeholder="工具名、任务、参数"
             />
+          </div>
+          <div class="field" style="max-width: 180px; margin-bottom: 0">
+            <label for="tool-capability-filter">能力</label>
+            <select id="tool-capability-filter" bind:value={capabilityFilter}>
+              <option value="">全部能力</option>
+              {#each capabilityOptions as capability}
+                <option value={capability}>{capabilityLabel(capability)}</option
+                >
+              {/each}
+            </select>
+          </div>
+          <div class="field" style="max-width: 140px; margin-bottom: 0">
+            <label for="tool-tier-filter">Tier</label>
+            <select id="tool-tier-filter" bind:value={tierFilter}>
+              <option value="">全部 Tier</option>
+              {#each tierOptions as tier}
+                <option value={tier}>{tierLabel(tier)}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="field" style="max-width: 150px; margin-bottom: 0">
+            <label for="tool-installation-filter">安装</label>
+            <select
+              id="tool-installation-filter"
+              bind:value={installationFilter}
+            >
+              <option value="">全部状态</option>
+              <option value="available">可用</option>
+              <option value="missing">缺失</option>
+            </select>
           </div>
           <div class="chip-row">
             <button
+              data-testid="category-all"
               type="button"
               class="chip"
               class:active={categoryFilter === ""}
@@ -913,6 +1048,7 @@
             >
             {#each categories as category}
               <button
+                data-testid={`category-${category.id}`}
                 type="button"
                 class="chip"
                 class:active={categoryFilter === category.id}
@@ -925,6 +1061,9 @@
 
         <div class="workspace">
           <section class="stack">
+            {#if filteredTools.length === 0}
+              <div class="empty">没有匹配工具。</div>
+            {/if}
             {#each categories as category}
               {@const items = toolsInCategory(category.id)}
               {#if items.length > 0}
@@ -995,96 +1134,203 @@
                 </span>
               </div>
 
-              {#if selectedTool.fields.length === 0}
-                <p class="sub" style="margin-bottom: 14px">
-                  此工具无需在 FlagDeck 内填写参数，点击启动即可打开独立窗口。
+              <div class="meta">
+                <span class="pill muted" data-testid="tool-tier">
+                  {tierLabel(selectedTool.tier)}
+                </span>
+                <span class="pill muted" data-testid="tool-risk">
+                  {selectedTool.risk_level.toUpperCase()}
+                </span>
+                {#if selectedTool.capabilities.length > 0}
+                  <span class="pill muted" data-testid="tool-capabilities">
+                    {selectedTool.capabilities.join(" · ")}
+                  </span>
+                {/if}
+              </div>
+              {#if installationSummary(selectedTool)}
+                <p
+                  class="sub"
+                  data-testid="tool-installation"
+                  style="margin: 10px 0 14px"
+                >
+                  安装：{installationSummary(selectedTool)}
                 </p>
-              {:else}
-                {#each selectedTool.fields as field}
+              {/if}
+              {#if selectedTool.io.schema_version > 0}
+                <p
+                  class="sub"
+                  data-testid="tool-io-contract"
+                  style="margin: 10px 0 14px"
+                >
+                  输入：{ioKindList(selectedTool.io.inputs)}<br />
+                  输出：{ioKindList(selectedTool.io.outputs)}
+                </p>
+              {/if}
+
+              <div oninput={scheduleRunPreview} onchange={scheduleRunPreview}>
+                {#if selectedTool.presets.length > 0}
                   <div class="field">
-                    <label for={`field-${field.id}`}>{field.label}</label>
-                    {#if field.field_type === "wordlist"}
-                      <select
-                        id={`field-${field.id}`}
-                        bind:value={formValues[field.id]}
-                        onchange={() =>
-                          selectedToolId && rememberFormForTool(selectedToolId)}
-                      >
-                        {#if wordlists.length === 0}
-                          <option value="">未找到可用字典</option>
-                        {:else}
-                          {#each wordlists as wl}
-                            <option value={wl.id}>{wordlistLabel(wl)}</option>
+                    <label for="tool-preset">任务预设</label>
+                    <select
+                      id="tool-preset"
+                      data-testid="tool-preset"
+                      value={selectedPresetId}
+                      onchange={(event) =>
+                        applyToolPreset(
+                          selectedTool,
+                          event.currentTarget.value,
+                        )}
+                    >
+                      {#each selectedTool.presets as preset}
+                        <option value={preset.id}>{preset.name}</option>
+                      {/each}
+                    </select>
+                  </div>
+                  <button
+                    data-testid="toggle-advanced-fields"
+                    class="btn btn-secondary"
+                    type="button"
+                    onclick={() =>
+                      (advancedFieldsExpanded = !advancedFieldsExpanded)}
+                  >
+                    {advancedFieldsExpanded ? "收起高级参数" : "显示高级参数"}
+                  </button>
+                {/if}
+
+                {#if selectedTool.fields.length === 0}
+                  <p class="sub" style="margin-bottom: 14px">
+                    此工具无需在 FlagDeck 内填写参数，点击启动即可打开独立窗口。
+                  </p>
+                {:else}
+                  {#each progressiveForm?.visibleFields ?? selectedTool.fields as field}
+                    {@const groupName = advancedGroupName(field.id)}
+                    {#if groupName}
+                      <div class="section-label">{groupName}</div>
+                    {/if}
+                    <div class="field">
+                      <label for={`field-${field.id}`}>{field.label}</label>
+                      {#if field.field_type === "wordlist"}
+                        <select
+                          id={`field-${field.id}`}
+                          bind:value={formValues[field.id]}
+                          onchange={() =>
+                            selectedToolId &&
+                            rememberFormForTool(selectedToolId)}
+                        >
+                          {#if wordlists.length === 0}
+                            <option value="">未找到可用字典</option>
+                          {:else}
+                            {#each wordlists as wl}
+                              <option value={wl.id}>{wordlistLabel(wl)}</option>
+                            {/each}
+                          {/if}
+                        </select>
+                      {:else if field.field_type === "select"}
+                        <select
+                          id={`field-${field.id}`}
+                          bind:value={formValues[field.id]}
+                          onchange={() =>
+                            selectedToolId &&
+                            rememberFormForTool(selectedToolId)}
+                        >
+                          {#each field.options.length > 0 ? field.options : [field.default_value || ""] as opt}
+                            <option value={opt}>{opt}</option>
                           {/each}
-                        {/if}
-                      </select>
-                    {:else if field.field_type === "select"}
-                      <select
-                        id={`field-${field.id}`}
-                        bind:value={formValues[field.id]}
-                        onchange={() =>
-                          selectedToolId && rememberFormForTool(selectedToolId)}
-                      >
-                        {#each field.options.length > 0 ? field.options : [field.default_value || ""] as opt}
-                          <option value={opt}>{opt}</option>
-                        {/each}
-                      </select>
-                    {:else if field.field_type === "number"}
-                      <input
-                        id={`field-${field.id}`}
-                        type="number"
-                        bind:value={formValues[field.id]}
-                        oninput={() =>
-                          selectedToolId && rememberFormForTool(selectedToolId)}
-                      />
-                    {:else if field.field_type === "textarea"}
-                      <textarea
-                        id={`field-${field.id}`}
-                        bind:value={formValues[field.id]}
-                        rows="3"
-                        oninput={() =>
-                          selectedToolId && rememberFormForTool(selectedToolId)}
-                      ></textarea>
-                    {:else}
-                      <input
-                        id={`field-${field.id}`}
-                        type={field.sensitive ? "password" : "text"}
-                        bind:value={formValues[field.id]}
-                        oninput={() => {
-                          if (
-                            field.from === "target_url" ||
-                            field.id === "url" ||
-                            field.id === "host" ||
-                            field.id === "target"
-                          ) {
-                            const value = formValues[field.id] ?? "";
-                            if (value.startsWith("http")) {
-                              targetUrl = value;
-                              persistPrefs();
-                            } else if (value && field.id === "host") {
-                              try {
-                                const base = targetUrl.startsWith("http")
-                                  ? targetUrl
-                                  : `http://${targetUrl || "127.0.0.1"}/`;
-                                const u = new URL(base);
-                                u.hostname = value;
-                                targetUrl = u.toString();
+                        </select>
+                      {:else if field.field_type === "number"}
+                        <input
+                          id={`field-${field.id}`}
+                          type="number"
+                          bind:value={formValues[field.id]}
+                          oninput={() =>
+                            selectedToolId &&
+                            rememberFormForTool(selectedToolId)}
+                        />
+                      {:else if field.field_type === "textarea"}
+                        <textarea
+                          id={`field-${field.id}`}
+                          bind:value={formValues[field.id]}
+                          rows="3"
+                          oninput={() =>
+                            selectedToolId &&
+                            rememberFormForTool(selectedToolId)}></textarea>
+                      {:else}
+                        <input
+                          id={`field-${field.id}`}
+                          type={field.sensitive ? "password" : "text"}
+                          bind:value={formValues[field.id]}
+                          oninput={() => {
+                            if (
+                              field.from === "target_url" ||
+                              field.id === "url" ||
+                              field.id === "host" ||
+                              field.id === "target"
+                            ) {
+                              const value = formValues[field.id] ?? "";
+                              if (value.startsWith("http")) {
+                                targetUrl = value;
                                 persistPrefs();
-                              } catch {
-                                /* ignore */
+                              } else if (value && field.id === "host") {
+                                try {
+                                  const base = targetUrl.startsWith("http")
+                                    ? targetUrl
+                                    : `http://${targetUrl || "127.0.0.1"}/`;
+                                  const u = new URL(base);
+                                  u.hostname = value;
+                                  targetUrl = u.toString();
+                                  persistPrefs();
+                                } catch {
+                                  /* ignore */
+                                }
                               }
                             }
-                          }
-                          if (selectedToolId)
-                            rememberFormForTool(selectedToolId);
-                        }}
-                      />
-                    {/if}
-                    {#if field.hint}
-                      <small class="field-hint">{field.hint}</small>
-                    {/if}
+                            if (selectedToolId)
+                              rememberFormForTool(selectedToolId);
+                          }}
+                        />
+                      {/if}
+                      {#if field.hint}
+                        <small class="field-hint">{field.hint}</small>
+                      {/if}
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+
+              {#if runPreview}
+                <div class="card" data-testid="run-preview">
+                  <div class="section-label">运行预览</div>
+                  <code
+                    data-testid="preview-command"
+                    style="word-break: break-all"
+                    >{runPreview.command_preview}</code
+                  >
+                  <div class="meta" style="margin-top: 10px">
+                    <span class="pill muted" data-testid="preview-scope">
+                      Scope：{runPreview.scope}
+                    </span>
+                    <span class="pill muted" data-testid="preview-rate">
+                      速率：{runPreview.rate_per_second == null
+                        ? "不限"
+                        : `${runPreview.rate_per_second} req/s`}
+                    </span>
+                    <span class="pill muted" data-testid="preview-size">
+                      预计请求：{runPreview.estimated_request_count ?? "未知"}
+                    </span>
+                    <span class="pill muted" data-testid="preview-risk">
+                      风险：{runPreview.risk_level.toUpperCase()}
+                    </span>
                   </div>
-                {/each}
+                  <p
+                    class="sub"
+                    data-testid="preview-confirmation"
+                    style="margin: 10px 0 0"
+                  >
+                    {runPreview.risk_level === "l3"
+                      ? `运行前需输入 RUN CATALOG ${selectedTool.id}`
+                      : "运行前需确认 L2 操作"}
+                  </p>
+                </div>
               {/if}
 
               {#if selectedTool.binary_path}
@@ -1367,6 +1613,13 @@
                         >{item.tool_id} · {item.job.execution_status}</strong
                       >
                       <small>{item.command_preview}</small>
+                      {#if item.io.schema_version > 0}
+                        <small data-testid={`job-io-${item.job.job_id}`}>
+                          输入：{ioKindList(item.io.inputs)}。输出：{ioKindList(
+                            item.io.outputs,
+                          )}。
+                        </small>
+                      {/if}
                     </button>
                     {#if jobIsActive(item)}
                       <button

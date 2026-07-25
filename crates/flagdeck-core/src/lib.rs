@@ -13,8 +13,9 @@ mod metasploit;
 mod payloads;
 
 pub use catalog_api::{
-    CatalogCategoryDto, CatalogFormFieldDto, CatalogSnapshot, CatalogToolDto, EnsureTargetRequest,
-    RunCatalogToolRequest, WordlistDto,
+    CatalogCategoryDto, CatalogFieldGroupDto, CatalogFormFieldDto, CatalogInstallationDto,
+    CatalogPresetDto, CatalogRunPreview, CatalogSnapshot, CatalogToolDto, EnsureTargetRequest,
+    PreviewCatalogToolRequest, RunCatalogToolRequest, WordlistDto,
 };
 pub use external::{ExternalLauncherHealthDto, ExternalLauncherId, LaunchExternalRequest};
 pub use http::*;
@@ -25,10 +26,10 @@ pub use payloads::{
     PayloadSourceHealthDto, PreviewPayloadRequest,
 };
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -40,7 +41,8 @@ use std::time::Duration;
 use flagdeck_cli_adapters::{
     AdapterError, CatalogError, CatalogPaths, ExpectedOutput, OutputRole, ParsedHttpResponse,
     PreparedToolCommand, ToolCatalog, ToolId, ToolManifest, manifest, materialize_discoveries,
-    parse_output, prepare_catalog_command, prepare_command, registry, write_wordlist,
+    parse_output, prepare_catalog_command_with_sources, prepare_catalog_preview_with_sources,
+    prepare_command, registry, write_wordlist,
 };
 use flagdeck_domain::{
     Artifact, ArtifactId, BodyState, CommandSpec, ConnectionMetadata, DictionaryId,
@@ -48,7 +50,7 @@ use flagdeck_domain::{
     HttpSource, ImportStatus, IntruderCampaign, Job, JobId, MessageDirection, MessageId,
     MultipartDocument, NetworkClass, OrderedValue, PortRange, ProjectId, ProjectSummary,
     ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, TargetScope, Timestamp,
-    Validate,
+    ToolInputSource, ToolRunIo, Validate,
 };
 use flagdeck_exec::{
     CancellationResult, ExecPolicyError, ManagedExecutionResult, ManagedProcessIdentity,
@@ -88,6 +90,8 @@ pub enum CoreError {
     ScopeViolation,
     #[error("tool integrity or execution policy failed")]
     ToolUnavailable,
+    #[error("catalog run confirmation required")]
+    CatalogConfirmationRequired(flagdeck_domain::RiskLevel),
     #[error("job is no longer active")]
     JobNotActive,
     #[error("managed cancellation failed")]
@@ -142,6 +146,14 @@ impl From<CoreError> for CommandError {
             CoreError::ToolUnavailable => (
                 "tool_unavailable",
                 "The selected tool failed its integrity or health policy",
+            ),
+            CoreError::CatalogConfirmationRequired(flagdeck_domain::RiskLevel::L3) => (
+                "l3_confirmation_required",
+                "The exact catalog L3 confirmation phrase is required",
+            ),
+            CoreError::CatalogConfirmationRequired(_) => (
+                "l2_confirmation_required",
+                "Catalog L2 confirmation is required",
             ),
             CoreError::JobNotActive => ("job_not_active", "The job is no longer active"),
             CoreError::CancellationFailed => {
@@ -378,6 +390,7 @@ pub struct JobView {
     pub tool_id: String,
     pub command_preview: String,
     pub network_isolation: String,
+    pub io: ToolRunIo,
     pub parser_id: Option<String>,
     pub parser_version: Option<String>,
     pub parser_error: Option<String>,
@@ -403,6 +416,7 @@ impl From<StoredJob> for JobView {
             tool_id: value.command_spec.tool_id,
             command_preview,
             network_isolation: value.command_spec.network_isolation,
+            io: value.command_spec.io,
             parser_id,
             parser_version,
             parser_error,
@@ -2035,6 +2049,37 @@ impl CoreService {
                     name: view.name,
                     category: view.category,
                     category_name: view.category_name,
+                    tier: view.tier,
+                    capabilities: view.capabilities,
+                    aliases: view.aliases,
+                    presets: view
+                        .presets
+                        .into_iter()
+                        .map(|preset| CatalogPresetDto {
+                            id: preset.id,
+                            name: preset.name,
+                            core_fields: preset.core_fields,
+                            defaults: preset.defaults,
+                        })
+                        .collect(),
+                    field_groups: view
+                        .field_groups
+                        .into_iter()
+                        .map(|group| CatalogFieldGroupDto {
+                            id: group.id,
+                            name: group.name,
+                            fields: group.fields,
+                        })
+                        .collect(),
+                    risk_level: view.risk_level,
+                    installation: CatalogInstallationDto {
+                        distribution: view.installation.distribution,
+                        license: view.installation.license,
+                        homepage: view.installation.homepage,
+                        version: view.installation.version,
+                        health_strategy: view.installation.health_strategy,
+                    },
+                    io: view.io,
                     summary: view.summary,
                     usage: view.usage,
                     mode: view.mode,
@@ -2094,6 +2139,92 @@ impl CoreService {
         })
     }
 
+    pub fn preview_catalog_tool(
+        &self,
+        request: PreviewCatalogToolRequest,
+    ) -> Result<CatalogRunPreview, CoreError> {
+        request
+            .project_id
+            .validate()
+            .map_err(|_| CoreError::InvalidRequest)?;
+        if request.tool_id.is_empty() || request.tool_id.len() > 128 {
+            return Err(CoreError::InvalidRequest);
+        }
+        let catalog = ToolCatalog::load(self.catalog_paths.clone())
+            .map_err(|error| map_catalog_error(&error))?;
+        let tool = catalog
+            .tool(&request.tool_id)
+            .ok_or(CoreError::ToolUnavailable)?;
+        let mut form = request.form;
+        for field in &tool.form.fields {
+            if field.from == "target_url" && !request.target_url.is_empty() {
+                form.entry(field.id.clone())
+                    .or_insert_with(|| request.target_url.clone());
+            }
+            if !field.default.is_empty() {
+                form.entry(field.id.clone())
+                    .or_insert_with(|| field.default.clone());
+            }
+        }
+        let input_sources = form
+            .keys()
+            .map(|field_id| (field_id.clone(), ToolInputSource::Form))
+            .collect::<BTreeMap<_, _>>();
+        let scope_seed = form
+            .get("url")
+            .cloned()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                form.get("target")
+                    .cloned()
+                    .filter(|value| !value.is_empty())
+            })
+            .or_else(|| form.get("host").cloned().filter(|value| !value.is_empty()))
+            .or_else(|| (!request.target_url.is_empty()).then_some(request.target_url));
+        let (preview_scope_id, scope_summary) = if let Some(seed) = scope_seed.as_deref() {
+            (ScopeId::new(), normalize_scope_base_url(seed)?)
+        } else {
+            let store = self.project_store(&request.project_id, true)?;
+            store.list_target_scopes()?.into_iter().next().map_or_else(
+                || (ScopeId::new(), "http://127.0.0.1/".to_owned()),
+                |scope| (scope.scope_id.clone(), summarize_target_scope(&scope)),
+            )
+        };
+        let rate_per_second = form
+            .get("rate")
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let estimated_request_count = form.get("wordlist").and_then(|value| {
+            let direct = PathBuf::from(value);
+            let path = if direct.is_file() {
+                Some(direct)
+            } else {
+                catalog.resolve_wordlist_path(value).ok()
+            }?;
+            count_wordlist_entries(&path).ok()
+        });
+        let store = self.project_store(&request.project_id, true)?;
+        let preview_directory = create_job_directory(&store.layout().tmp, &JobId::new())?;
+        let prepared = prepare_catalog_preview_with_sources(
+            &catalog,
+            &request.tool_id,
+            &preview_scope_id,
+            &form,
+            &input_sources,
+            &preview_directory,
+        )
+        .map_err(|error| map_catalog_error(&error));
+        let _ = fs::remove_dir_all(&preview_directory);
+        let prepared = prepared?;
+        Ok(CatalogRunPreview {
+            command_preview: format_command_preview(&prepared.spec),
+            scope: scope_summary,
+            rate_per_second,
+            estimated_request_count,
+            risk_level: prepared.spec.risk_level,
+        })
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     pub fn start_catalog_tool(
         self: &Arc<Self>,
@@ -2124,14 +2255,45 @@ impl CoreService {
         }
 
         let mut form = request.form.clone();
+        let mut input_sources = request
+            .form
+            .iter()
+            .map(|(field_id, value)| {
+                let source = tool
+                    .form
+                    .fields
+                    .iter()
+                    .find(|field| field.id == *field_id)
+                    .map_or(ToolInputSource::Form, |field| {
+                        if field.from == "target_url"
+                            && !request.target_url.is_empty()
+                            && value == &request.target_url
+                        {
+                            ToolInputSource::TargetContext
+                        } else if !field.default.is_empty() && value == &field.default {
+                            ToolInputSource::CatalogDefault
+                        } else {
+                            ToolInputSource::Form
+                        }
+                    });
+                (field_id.clone(), source)
+            })
+            .collect::<BTreeMap<_, _>>();
         for field in &tool.form.fields {
-            if field.from == "target_url" && !request.target_url.is_empty() {
-                form.entry(field.id.clone())
-                    .or_insert_with(|| request.target_url.clone());
+            if field.from == "target_url"
+                && !request.target_url.is_empty()
+                && let std::collections::btree_map::Entry::Vacant(entry) =
+                    form.entry(field.id.clone())
+            {
+                entry.insert(request.target_url.clone());
+                input_sources.insert(field.id.clone(), ToolInputSource::TargetContext);
             }
-            if !field.default.is_empty() {
-                form.entry(field.id.clone())
-                    .or_insert_with(|| field.default.clone());
+            if !field.default.is_empty()
+                && let std::collections::btree_map::Entry::Vacant(entry) =
+                    form.entry(field.id.clone())
+            {
+                entry.insert(field.default.clone());
+                input_sources.insert(field.id.clone(), ToolInputSource::CatalogDefault);
             }
         }
 
@@ -2169,16 +2331,45 @@ impl CoreService {
         let (store, run_guard) = self.begin_run(&request.project_id)?;
         let job_id = JobId::new();
         let job_directory = create_job_directory(store.layout().scans.as_path(), &job_id)?;
-        let prepared = prepare_catalog_command(
+        let prepared = prepare_catalog_command_with_sources(
             &catalog,
             &request.tool_id,
             &scope.scope_id,
             &form,
+            &input_sources,
             &job_directory,
         )
         .map_err(|e| map_catalog_error(&e))?;
 
         let command = prepared.spec;
+        let expected_l3_confirmation = format!("RUN CATALOG {}", request.tool_id);
+        let confirmed = match command.risk_level {
+            flagdeck_domain::RiskLevel::L3 => {
+                request.l3_confirmation.as_deref() == Some(expected_l3_confirmation.as_str())
+            }
+            flagdeck_domain::RiskLevel::L2 => request.confirm_l2,
+            flagdeck_domain::RiskLevel::L0 | flagdeck_domain::RiskLevel::L1 => true,
+        };
+        store.save_audit_event(&flagdeck_domain::AuditEvent {
+            audit_event_id: flagdeck_domain::AuditEventId::new(),
+            project_id: request.project_id.clone(),
+            adapter_id: Some(format!("catalog.{}", request.tool_id)),
+            action: "catalog.run".to_owned(),
+            risk_level: command.risk_level,
+            outcome: if confirmed { "allowed" } else { "denied" }.to_owned(),
+            target_summary: summarize_target_scope(&scope),
+            details_json: serde_json::json!({
+                "tool_id": request.tool_id,
+                "scope_id": scope.scope_id.0,
+                "command_preview": format_command_preview(&command),
+            })
+            .to_string(),
+            created_at: Timestamp::now(),
+        })?;
+        if !confirmed {
+            let _ = fs::remove_dir_all(&job_directory);
+            return Err(CoreError::CatalogConfirmationRequired(command.risk_level));
+        }
         store.save_command_spec(&command)?;
 
         let job = Job {
@@ -3141,6 +3332,31 @@ fn create_job_directory(scans: &Path, job_id: &JobId) -> Result<PathBuf, CoreErr
     Ok(fs::canonicalize(directory)?)
 }
 
+fn count_wordlist_entries(path: &Path) -> Result<u32, std::io::Error> {
+    BufReader::new(File::open(path)?)
+        .lines()
+        .try_fold(0_u32, |count, line| {
+            let line = line?;
+            Ok(count.saturating_add(u32::from(!line.trim().is_empty())))
+        })
+}
+
+fn summarize_target_scope(scope: &TargetScope) -> String {
+    let scheme = scope.schemes.first().map_or("http", String::as_str);
+    let host = scope
+        .exact_hosts
+        .first()
+        .or_else(|| scope.cidrs.first())
+        .map_or("127.0.0.1", String::as_str);
+    let port = scope.ports.first().map(|range| range.start);
+    match port {
+        Some(80) if scheme == "http" => format!("{scheme}://{host}/"),
+        Some(443) if scheme == "https" => format!("{scheme}://{host}/"),
+        Some(port) => format!("{scheme}://{host}:{port}/"),
+        None => format!("{scheme}://{host}/"),
+    }
+}
+
 fn alpha_tool_from_id(value: &str) -> Result<AlphaTool, CoreError> {
     match value {
         "curl" => Ok(AlphaTool::Curl),
@@ -3736,11 +3952,16 @@ pub fn typescript_declarations() -> String {
         declaration!(AlphaTool),
         declaration!(RunToolRequest),
         declaration!(CatalogCategoryDto),
+        declaration!(CatalogFieldGroupDto),
         declaration!(CatalogFormFieldDto),
+        declaration!(CatalogInstallationDto),
+        declaration!(CatalogPresetDto),
+        declaration!(CatalogRunPreview),
         declaration!(CatalogToolDto),
         declaration!(WordlistDto),
         declaration!(CatalogSnapshot),
         declaration!(RunCatalogToolRequest),
+        declaration!(PreviewCatalogToolRequest),
         declaration!(EnsureTargetRequest),
         declaration!(JobView),
         declaration!(JobPageRequest),
@@ -4902,6 +5123,178 @@ mod tests {
         }));
         assert_eq!(core.active_runs.load(Ordering::SeqCst), 0);
         assert!(core.active_executions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn catalog_l2_confirmation_records_denied_and_allowed_audit_outcomes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let catalog_root = temporary.path().join("catalog");
+        let tools_dir = catalog_root.join("tools");
+        fs::create_dir_all(&tools_dir).unwrap();
+        fs::write(
+            tools_dir.join("ffuf.toml"),
+            r#"
+id = "ffuf"
+name = "ffuf"
+category = "content_discovery"
+mode = "embedded_cli"
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标"
+required = true
+from = "target_url"
+
+[argv]
+template = ["--", "{url}"]
+"#,
+        )
+        .unwrap();
+        let core = Arc::new(CoreService::with_bundled_resources(
+            temporary.path().join("workspaces"),
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root),
+        ));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "catalog-l2-audit".to_owned(),
+            })
+            .unwrap();
+        let denied = RunCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "ffuf".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([("url".to_owned(), "http://127.0.0.1:9/".to_owned())]),
+            confirm_sensitive_argv: false,
+            confirm_l2: false,
+            l3_confirmation: None,
+        };
+
+        assert!(matches!(
+            core.start_catalog_tool(denied.clone()),
+            Err(CoreError::CatalogConfirmationRequired(
+                flagdeck_domain::RiskLevel::L2
+            ))
+        ));
+        core.start_catalog_tool(RunCatalogToolRequest {
+            confirm_l2: true,
+            ..denied
+        })
+        .unwrap();
+
+        let audit = core.audit_events_for_test(10);
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "denied"
+                && event.risk_level == flagdeck_domain::RiskLevel::L2
+                && event.adapter_id.as_deref() == Some("catalog.ffuf")
+        }));
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "allowed"
+                && event.risk_level == flagdeck_domain::RiskLevel::L2
+                && event.adapter_id.as_deref() == Some("catalog.ffuf")
+        }));
+    }
+
+    #[tokio::test]
+    async fn catalog_l3_requires_exact_phrase_and_audits_redacted_outcomes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let catalog_root = temporary.path().join("catalog");
+        let tools_dir = catalog_root.join("tools");
+        fs::create_dir_all(&tools_dir).unwrap();
+        fs::write(
+            tools_dir.join("ffuf.toml"),
+            r#"
+id = "ffuf"
+name = "ffuf"
+category = "content_discovery"
+mode = "embedded_cli"
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[[form.fields]]
+id = "url"
+type = "url"
+label = "目标"
+required = true
+from = "target_url"
+
+[[form.fields]]
+id = "secret"
+type = "text"
+label = "令牌"
+sensitive = true
+
+[argv]
+template = ["--", "{url}", "{secret}"]
+"#,
+        )
+        .unwrap();
+        let core = Arc::new(CoreService::with_bundled_resources(
+            temporary.path().join("workspaces"),
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root),
+        ));
+        let project = core
+            .create_project(&CreateProjectRequest {
+                name: "catalog-l3-audit".to_owned(),
+            })
+            .unwrap();
+        let denied = RunCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "ffuf".to_owned(),
+            target_url: "http://127.0.0.1:9/".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/".to_owned()),
+                ("secret".to_owned(), "top-secret-token".to_owned()),
+            ]),
+            confirm_sensitive_argv: true,
+            confirm_l2: false,
+            l3_confirmation: Some("RUN CATALOG FFUF".to_owned()),
+        };
+
+        assert!(matches!(
+            core.start_catalog_tool(denied.clone()),
+            Err(CoreError::CatalogConfirmationRequired(
+                flagdeck_domain::RiskLevel::L3
+            ))
+        ));
+        core.start_catalog_tool(RunCatalogToolRequest {
+            l3_confirmation: Some("RUN CATALOG ffuf".to_owned()),
+            ..denied
+        })
+        .expect("the exact L3 phrase should allow the catalog run");
+
+        let audit = core.audit_events_for_test(10);
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "denied"
+                && event.risk_level == flagdeck_domain::RiskLevel::L3
+        }));
+        assert!(audit.iter().any(|event| {
+            event.action == "catalog.run"
+                && event.outcome == "allowed"
+                && event.risk_level == flagdeck_domain::RiskLevel::L3
+        }));
+        assert!(
+            audit
+                .iter()
+                .all(|event| !event.details_json.contains("top-secret-token"))
+        );
     }
 
     #[test]

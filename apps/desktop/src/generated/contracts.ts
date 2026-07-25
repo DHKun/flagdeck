@@ -70,7 +70,21 @@ export type SecretInputLifecycle = { identifier: string, transport: SecretTransp
 
 export type ResourceLimits = { memory_max_bytes: number, tasks_max: number, cpu_quota_percent: number, core_dump_bytes: number, };
 
-export type CommandSpec = { command_spec_id: CommandSpecId, tool_id: string, tool_version: string, tool_sha256: string, program: string, argv_redacted: Array<string>, env_redacted: { [key in string]: string }, secret_transport: SecretTransport, secret_inputs: Array<SecretInputLifecycle>, cwd: string, environment_allowlist: Array<string>, timeout_millis: number, stop_grace_millis: number, expected_outputs: Array<string>, risk_level: RiskLevel, scope_id: ScopeId | null, sandbox_profile: string, resource_limits: ResourceLimits, network_isolation: string, };
+export type ToolIoKind = "url" | "wordlist" | "http_discovery" | "raw_artifact";
+
+export type ToolInputSpec = { id: string, kind: ToolIoKind, field: string, };
+
+export type ToolOutputSpec = { id: string, kind: ToolIoKind, };
+
+export type ToolIoContract = { schema_version: number, inputs: Array<ToolInputSpec>, outputs: Array<ToolOutputSpec>, };
+
+export type ToolInputSource = "form" | "target_context" | "catalog_default";
+
+export type ToolInputRecord = { id: string, kind: ToolIoKind, source: ToolInputSource, source_id: string, };
+
+export type ToolRunIo = { schema_version: number, inputs: Array<ToolInputRecord>, outputs: Array<ToolOutputSpec>, };
+
+export type CommandSpec = { command_spec_id: CommandSpecId, tool_id: string, tool_version: string, tool_sha256: string, program: string, argv_redacted: Array<string>, env_redacted: { [key in string]: string }, secret_transport: SecretTransport, secret_inputs: Array<SecretInputLifecycle>, cwd: string, environment_allowlist: Array<string>, timeout_millis: number, stop_grace_millis: number, expected_outputs: Array<string>, io: ToolRunIo, risk_level: RiskLevel, scope_id: ScopeId | null, sandbox_profile: string, resource_limits: ResourceLimits, network_isolation: string, };
 
 export type ExecutionStatus = "queued" | "starting" | "running" | "stopping" | "succeeded" | "failed" | "timed_out" | "cancelled" | "interrupted";
 

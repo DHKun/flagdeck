@@ -486,6 +486,97 @@ async function main() {
       `sensitive preferences persisted: ${JSON.stringify(preferenceEvidence)}`,
     );
   }
+  const catalogSnapshot = await invokeMain("list_catalog");
+  const ffufCatalog = catalogSnapshot.tools.find((tool) => tool.id === "ffuf");
+  if (
+    !ffufCatalog?.aliases.includes("扫目录") ||
+    !ffufCatalog.aliases.includes("路径发现") ||
+    !ffufCatalog.capabilities.includes("path_discovery")
+  ) {
+    throw new Error("ffuf search metadata is missing from the runtime Catalog");
+  }
+  const ffufLocalSearch = await execute(
+    "const values = (selector) => [...document.querySelector(selector).options].map((option) => ({ value: option.value, text: option.textContent.trim() })); return { placeholder: document.querySelector('#tool-query')?.placeholder, capabilityOptions: values('#tool-capability-filter'), tierOptions: values('#tool-tier-filter'), installationOptions: values('#tool-installation-filter'), categoryFilter: Boolean(document.querySelector('[data-testid=category-content_discovery]')) };",
+  );
+  if (
+    ffufLocalSearch.placeholder !== "工具名、任务、参数" ||
+    !ffufLocalSearch.capabilityOptions.some(
+      (option) =>
+        option.value === "path_discovery" && option.text === "路径发现",
+    ) ||
+    !ffufLocalSearch.tierOptions.some(
+      (option) => option.value === "tier_1" && option.text === "Tier 1",
+    ) ||
+    !ffufLocalSearch.installationOptions.some(
+      (option) => option.value === "available",
+    ) ||
+    !ffufLocalSearch.installationOptions.some(
+      (option) => option.value === "missing",
+    ) ||
+    !ffufLocalSearch.categoryFilter
+  ) {
+    throw new Error(
+      `local search controls failed: ${JSON.stringify(ffufLocalSearch)}`,
+    );
+  }
+  await setValue("#tool-query", "ffuf");
+  await click('[data-testid="tool-ffuf"]');
+  const ffufV2Metadata = await waitFor("ffuf V2 metadata", async () => {
+    const value = await execute(
+      "return { selected: document.querySelector('[data-testid=tool-runner] h2')?.textContent.trim(), tier: document.querySelector('[data-testid=tool-tier]')?.textContent.trim(), capabilities: document.querySelector('[data-testid=tool-capabilities]')?.textContent.trim(), risk: document.querySelector('[data-testid=tool-risk]')?.textContent.trim(), installation: document.querySelector('[data-testid=tool-installation]')?.textContent.trim(), ioContract: document.querySelector('[data-testid=tool-io-contract]')?.textContent.trim() };",
+    );
+    return value.selected === "ffuf" &&
+      value.tier === "Tier 1" &&
+      value.capabilities?.includes("path_discovery") &&
+      value.risk === "L2" &&
+      value.installation?.includes("hybrid") &&
+      value.installation?.includes("MIT") &&
+      value.installation?.includes("2.1.0-dev") &&
+      value.ioContract?.includes("输入：URL、字典") &&
+      value.ioContract?.includes("输出：HTTP 发现、原始文件")
+      ? value
+      : undefined;
+  });
+  const ffufProgressiveForm = await waitFor(
+    "ffuf progressive form",
+    async () => {
+      const value = await execute(
+        "const preset = document.querySelector('[data-testid=tool-preset]'); const options = preset ? [...preset.options].map((option) => option.value) : []; const fieldIds = [...document.querySelectorAll('[data-testid=tool-runner] [id^=field-]')].map((field) => field.id); return { options, fieldIds, advancedToggle: Boolean(document.querySelector('[data-testid=toggle-advanced-fields]')) };",
+      );
+      return JSON.stringify(value.options) ===
+        JSON.stringify([
+          "quick_scan",
+          "recursive_scan",
+          "virtual_host_discovery",
+        ]) &&
+        JSON.stringify(value.fieldIds) ===
+          JSON.stringify([
+            "field-url",
+            "field-wordlist",
+            "field-threads",
+            "field-mc",
+          ]) &&
+        value.advancedToggle
+        ? value
+        : undefined;
+    },
+  );
+  const ffufRunPreview = await waitFor("ffuf run preview", async () => {
+    const value = await execute(
+      "return { command: document.querySelector('[data-testid=preview-command]')?.textContent.trim(), scope: document.querySelector('[data-testid=preview-scope]')?.textContent.trim(), rate: document.querySelector('[data-testid=preview-rate]')?.textContent.trim(), size: document.querySelector('[data-testid=preview-size]')?.textContent.trim(), risk: document.querySelector('[data-testid=preview-risk]')?.textContent.trim(), confirmation: document.querySelector('[data-testid=preview-confirmation]')?.textContent.trim() };",
+    );
+    if (
+      value.command?.includes("ffuf") &&
+      value.scope?.startsWith("Scope：") &&
+      value.rate?.startsWith("速率：") &&
+      value.size?.startsWith("预计请求：") &&
+      value.risk === "风险：L2" &&
+      value.confirmation === "运行前需确认 L2 操作"
+    ) {
+      return value;
+    }
+    throw new Error(`ffuf preview state: ${JSON.stringify(value)}`);
+  });
 
   const status = await invokeMain("app_status");
   const projectId = status.active_project?.project_id;
@@ -630,6 +721,10 @@ async function main() {
       redactedPreview: true,
       credentialPersistenceDenied: true,
       catalogWorkbench,
+      ffufLocalSearch,
+      ffufProgressiveForm,
+      ffufRunPreview,
+      ffufV2Metadata,
       preferenceEvidence,
       workspaceUi,
       artifactCount,

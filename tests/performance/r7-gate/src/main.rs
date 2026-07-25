@@ -311,6 +311,7 @@ fn sleep_spec(cwd: &Path, sha256: &str) -> CommandSpec {
         timeout_millis: 5_000,
         stop_grace_millis: 100,
         expected_outputs: Vec::new(),
+        io: flagdeck_domain::ToolRunIo::default(),
         risk_level: RiskLevel::L0,
         scope_id: None,
         sandbox_profile: "r7-concurrency-gate".to_owned(),

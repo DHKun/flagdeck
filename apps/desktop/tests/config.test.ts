@@ -29,6 +29,7 @@ const commands = [
   "tool_health",
   "list_catalog",
   "ensure_target",
+  "preview_catalog_tool",
   "run_catalog_tool",
   "delete_job",
   "clear_jobs",

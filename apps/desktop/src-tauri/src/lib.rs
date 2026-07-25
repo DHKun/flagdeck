@@ -11,12 +11,12 @@ use std::sync::Arc;
 
 use flagdeck_core::{
     AppStatus, ArtifactPage, ArtifactPageRequest, ArtifactPreview, CampaignRequest,
-    CancelAllJobsResult, CancelJobRequest, CancelJobResult, CatalogSnapshot, ClearJobsRequest,
-    ClearJobsResult, CommandError, CoreError, CoreEvent, CoreService, CreateDictionaryRequest,
-    CreateNoteRequest, CreateProjectRequest, CreateScopeRequest, CreateSqlmapRequestFileRequest,
-    DeleteJobRequest, DeleteJobResult, DictionaryPage, DictionarySearchResult,
-    DiffHttpMessagesRequest, DiscoveryPage, DiscoveryPageRequest, EnsureTargetRequest,
-    ExecuteMetasploitModuleRequest, ExportProjectRequest, ExportProjectResult,
+    CancelAllJobsResult, CancelJobRequest, CancelJobResult, CatalogRunPreview, CatalogSnapshot,
+    ClearJobsRequest, ClearJobsResult, CommandError, CoreError, CoreEvent, CoreService,
+    CreateDictionaryRequest, CreateNoteRequest, CreateProjectRequest, CreateScopeRequest,
+    CreateSqlmapRequestFileRequest, DeleteJobRequest, DeleteJobResult, DictionaryPage,
+    DictionarySearchResult, DiffHttpMessagesRequest, DiscoveryPage, DiscoveryPageRequest,
+    EnsureTargetRequest, ExecuteMetasploitModuleRequest, ExportProjectRequest, ExportProjectResult,
     ExternalLauncherHealthDto, GetHttpMessageRequest, GetMetasploitOptionsRequest, HttpHistoryPage,
     HttpHistoryPageRequest, HttpMessageDiff, ImportPackagePage, ImportProjectRequest,
     ImportProjectResult, IntruderAttemptPage, IntruderAttemptPageRequest, IntruderCampaignPage,
@@ -26,13 +26,13 @@ use flagdeck_core::{
     MetasploitModuleSummary, MetasploitSessionCommandRequest, MetasploitStatus,
     MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult,
     OpenProjectRequest, ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
-    PreviewArtifactRequest, PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest,
-    ProjectContextRequest, ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult,
-    RunCatalogToolRequest, RunToolRequest, ScopePage, SearchDictionaryRequest,
-    SearchMetasploitModulesRequest, SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest,
-    StartMetasploitRequest, StartProxyRequest, StartUploadCampaignRequest,
-    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, ToolHealthDto,
-    ToolPackHealthDto,
+    PreviewArtifactRequest, PreviewCatalogToolRequest, PreviewJobFileRequest, PreviewJobLogRequest,
+    PreviewPayloadRequest, ProjectContextRequest, ProjectPage, ProjectPageRequest,
+    RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest, RunToolRequest, ScopePage,
+    SearchDictionaryRequest, SearchMetasploitModulesRequest, SendRawHttp1Request,
+    SendRawHttp1Result, StartIntruderRequest, StartMetasploitRequest, StartProxyRequest,
+    StartUploadCampaignRequest, StopMetasploitEntityRequest, StopMetasploitRequest,
+    StopProxyRequest, ToolHealthDto, ToolPackHealthDto,
 };
 use flagdeck_domain::{
     AdapterEntity, Artifact, DictionaryIndex, HttpMessage, IntruderCampaign, MultipartDocument,
@@ -218,6 +218,15 @@ async fn ensure_target(
     let scope = run_core(move || worker.ensure_target_scope(&request)).await?;
     emit_core_event(&app, &core, "scope_saved", Some(project_id));
     Ok(scope)
+}
+
+#[tauri::command]
+async fn preview_catalog_tool(
+    state: State<'_, Arc<CoreService>>,
+    request: PreviewCatalogToolRequest,
+) -> Result<CatalogRunPreview, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.preview_catalog_tool(request)).await
 }
 
 #[tauri::command]
@@ -1027,6 +1036,7 @@ pub fn run() {
             tool_health,
             list_catalog,
             ensure_target,
+            preview_catalog_tool,
             run_catalog_tool,
             delete_job,
             clear_jobs,

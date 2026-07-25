@@ -18,6 +18,7 @@
     "allow-tool-health",
     "allow-list-catalog",
     "allow-ensure-target",
+    "allow-preview-catalog-tool",
     "allow-run-catalog-tool",
     "allow-delete-job",
     "allow-clear-jobs",

@@ -72,6 +72,17 @@ const attempts = [
     },
   ],
   [
+    "preview_catalog_tool",
+    {
+      request: {
+        project_id: "00000000-0000-0000-0000-000000000000",
+        tool_id: "curl",
+        target_url: "http://127.0.0.1:1/",
+        form: {},
+      },
+    },
+  ],
+  [
     "run_catalog_tool",
     {
       request: {
@@ -79,6 +90,9 @@ const attempts = [
         tool_id: "curl",
         target_url: "http://127.0.0.1:1/",
         form: {},
+        confirm_sensitive_argv: false,
+        confirm_l2: true,
+        l3_confirmation: null,
       },
     },
   ],

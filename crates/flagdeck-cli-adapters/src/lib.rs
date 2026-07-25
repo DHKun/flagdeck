@@ -11,7 +11,8 @@ pub mod catalog;
 pub use catalog::{
     CatalogCategory, CatalogError, CatalogPaths, CatalogToolManifest, CatalogToolView,
     PreparedCatalogCommand, ToolCatalog, ToolMode, WordlistShortcut, WordlistView,
-    prepare_catalog_command,
+    prepare_catalog_command, prepare_catalog_command_with_sources,
+    prepare_catalog_preview_with_sources,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -632,6 +633,7 @@ pub fn prepare_command(
             .iter()
             .map(|output| output.logical_name.clone())
             .collect(),
+        io: flagdeck_domain::ToolRunIo::default(),
         risk_level,
         scope_id: Some(scope_id.clone()),
         sandbox_profile: "stable-systemd-or-pgid".to_owned(),

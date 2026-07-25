@@ -78,6 +78,88 @@
         "argv_exception"
       ],
       "type": "string"
+    },
+    "ToolInputRecord": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolIoKind"
+        },
+        "source": {
+          "$ref": "#/$defs/ToolInputSource"
+        },
+        "source_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "source",
+        "source_id"
+      ],
+      "type": "object"
+    },
+    "ToolInputSource": {
+      "enum": [
+        "form",
+        "target_context",
+        "catalog_default"
+      ],
+      "type": "string"
+    },
+    "ToolIoKind": {
+      "enum": [
+        "url",
+        "wordlist",
+        "http_discovery",
+        "raw_artifact"
+      ],
+      "type": "string"
+    },
+    "ToolOutputSpec": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolIoKind"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ToolRunIo": {
+      "properties": {
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolInputRecord"
+          },
+          "type": "array"
+        },
+        "outputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolOutputSpec"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -111,6 +193,14 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "io": {
+      "$ref": "#/$defs/ToolRunIo",
+      "default": {
+        "inputs": [],
+        "outputs": [],
+        "schema_version": 0
+      }
     },
     "network_isolation": {
       "type": "string"

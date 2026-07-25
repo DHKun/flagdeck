@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = root.join("apps/desktop/src/generated/ipc.ts");
     let temporary = path.with_extension("tmp");
     fs::create_dir_all(path.parent().ok_or("generated path lacks parent")?)?;
-    let imports = "import type { AdapterEntity, Artifact, ArtifactId, AuditEvent, DictionaryId, DictionaryIndex, Discovery, HttpMessage, HttpSource, IntruderAttackMode, IntruderAttempt, IntruderCampaign, IntruderCampaignId, Job, JobId, MessageDirection, MessageId, OrderedValue, PayloadPosition, ProjectId, ProjectSummary, ProxyCaptureMode, ScopeId, Sensitivity, TargetScope, Timestamp, UploadMutationKind } from './contracts';\n\n";
+    let imports = "import type { AdapterEntity, Artifact, ArtifactId, AuditEvent, DictionaryId, DictionaryIndex, Discovery, HttpMessage, HttpSource, IntruderAttackMode, IntruderAttempt, IntruderCampaign, IntruderCampaignId, Job, JobId, MessageDirection, MessageId, OrderedValue, PayloadPosition, ProjectId, ProjectSummary, ProxyCaptureMode, RiskLevel, ScopeId, Sensitivity, TargetScope, Timestamp, ToolIoContract, ToolRunIo, UploadMutationKind } from './contracts';\n\n";
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
