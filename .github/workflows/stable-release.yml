@@ -107,8 +107,10 @@ jobs:
           test -f "$appimage"
           test -f "$deb"
           test -f "$rpm_package"
-          dpkg-deb --contents "$deb" | grep -q 'usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml'
-          rpm -qpl "$rpm_package" | grep -q '/usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml'
+          dpkg-deb --contents "$deb" > deb-contents.txt
+          rpm -qpl "$rpm_package" > rpm-contents.txt
+          grep -q 'usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml' deb-contents.txt
+          grep -q '/usr/lib/FlagDeck/config/tool-catalog/tools/curl.toml' rpm-contents.txt
 
       - uses: actions/upload-artifact@v4
         with:
