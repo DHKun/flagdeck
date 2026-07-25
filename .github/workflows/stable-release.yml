@@ -77,6 +77,11 @@ jobs:
       - name: Sync locked dependencies
         run: mise run sync-all
 
+      - name: Prepare generated release resources
+        run: |
+          mise run stage-host-runtime
+          mise run r7-sbom
+
       - name: Run source and dependency gates
         run: |
           mise run test-all

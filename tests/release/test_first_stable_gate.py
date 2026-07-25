@@ -31,6 +31,17 @@ class FirstStableGateTests(unittest.TestCase):
         self.assertIn("if: inputs.tag != 'v1.0.0'", workflow)
         self.assertIn("--first-release", workflow)
 
+    def test_stable_workflow_prepares_release_resources_before_source_gates(
+        self,
+    ) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+
+        preparation = workflow.index("mise run stage-host-runtime")
+        self.assertIn("mise run r7-sbom", workflow)
+        self.assertLess(preparation, workflow.index("mise run test-all"))
+
     def test_preview_packages_trigger_only_accepts_prerelease_tags(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/packages.yml"
