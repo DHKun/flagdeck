@@ -535,6 +535,7 @@ fn prepare_proxy_worker(
 ) -> Result<PathBuf, HttpWorkbenchError> {
     let source_root = fs::canonicalize(source_root)?;
     if source_root.join(".venv/bin/mitmdump").is_file() {
+        restrict_worker_python_permissions(&source_root)?;
         return Ok(source_root);
     }
     for required in ["pyproject.toml", "uv.lock", "flagdeck_worker_addon.py"] {
@@ -594,10 +595,7 @@ fn prepare_proxy_worker(
             return Err(HttpWorkbenchError::WorkerContract);
         }
     }
-    let python = fs::canonicalize(destination.join(".venv/bin/python"))?;
-    let mut permissions = fs::metadata(&python)?.permissions();
-    permissions.set_mode(permissions.mode() & !0o022);
-    fs::set_permissions(python, permissions)?;
+    restrict_worker_python_permissions(&destination)?;
     let output = Command::new(destination.join(".venv/bin/mitmdump"))
         .arg("--version")
         .env_clear()
@@ -609,6 +607,14 @@ fn prepare_proxy_worker(
         return Err(HttpWorkbenchError::WorkerContract);
     }
     fs::canonicalize(destination).map_err(Into::into)
+}
+
+fn restrict_worker_python_permissions(worker_root: &Path) -> Result<(), HttpWorkbenchError> {
+    let python = fs::canonicalize(worker_root.join(".venv/bin/python"))?;
+    let mut permissions = fs::metadata(&python)?.permissions();
+    permissions.set_mode(permissions.mode() & !0o022);
+    fs::set_permissions(python, permissions)?;
+    Ok(())
 }
 
 fn copy_private_tree(source: &Path, destination: &Path) -> Result<(), HttpWorkbenchError> {
@@ -2516,6 +2522,27 @@ mod tests {
         assert!(view.contains("Authorization: <redacted>"));
         assert!(!view.contains("Bearer secret"));
         assert!(view.contains("Accept: text/plain"));
+    }
+
+    #[test]
+    fn existing_proxy_worker_python_permissions_are_restricted() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source_root = temporary.path().join("worker");
+        let bin = source_root.join(".venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("mitmdump"), b"fixture").unwrap();
+        let python = bin.join("python");
+        fs::write(&python, b"fixture").unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o777)).unwrap();
+        let (store, _) =
+            ProjectStore::create(&temporary.path().join("workspaces"), "permissions").unwrap();
+
+        prepare_proxy_worker(&source_root, None, store.layout()).unwrap();
+
+        assert_eq!(
+            fs::metadata(python).unwrap().permissions().mode() & 0o022,
+            0
+        );
     }
 
     #[tokio::test]
