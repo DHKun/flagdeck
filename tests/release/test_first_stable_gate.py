@@ -42,6 +42,14 @@ class FirstStableGateTests(unittest.TestCase):
         self.assertIn("mise run r7-sbom", workflow)
         self.assertLess(preparation, workflow.index("mise run test-all"))
 
+    def test_stable_build_uses_the_proven_ci_runner(self) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+        build_job = workflow[workflow.index("  build:") : workflow.index("  sign:")]
+
+        self.assertIn("runs-on: ubuntu-24.04", build_job)
+
     def test_preview_packages_trigger_only_accepts_prerelease_tags(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/packages.yml"
