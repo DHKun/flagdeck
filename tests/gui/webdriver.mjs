@@ -577,6 +577,61 @@ async function main() {
     }
     throw new Error(`ffuf preview state: ${JSON.stringify(value)}`);
   });
+  await click('[data-testid="toggle-advanced-fields"]');
+  await setValue("#field-threads", "41");
+  await setValue("#field-headers", "Authorization: flagdeck-preset-secret");
+  await execute("window.prompt = () => 'WebDriver 个人预设'; return true;");
+  await click('[data-testid="create-personal-preset"]');
+  const ffufPersonalPreset = await waitFor("ffuf personal preset", async () => {
+    const store = await invokeMain("load_personal_presets");
+    const dom = await execute(
+      "return { selected: document.querySelector('[data-testid=tool-preset]')?.selectedOptions?.[0]?.textContent.trim(), update: Boolean(document.querySelector('[data-testid=update-personal-preset]')), setDefault: Boolean(document.querySelector('[data-testid=default-personal-preset]')), transfer: Boolean(document.querySelector('[data-testid=export-personal-presets]')) };",
+    );
+    const preset = store.presets.find((item) => item.tool_id === "ffuf");
+    const value = {
+      ...dom,
+      presetId: preset?.id,
+      threads: preset?.values?.threads,
+      sensitiveDenied: !JSON.stringify(store).includes(
+        "flagdeck-preset-secret",
+      ),
+    };
+    return value.selected === "WebDriver 个人预设" &&
+      value.presetId?.startsWith("user:ffuf:") &&
+      value.threads === "41" &&
+      value.sensitiveDenied &&
+      value.update &&
+      value.setDefault &&
+      value.transfer
+      ? value
+      : Promise.reject(
+          new Error(
+            `personal preset state: ${JSON.stringify({
+              ...value,
+              notice: await text('[data-testid="notice"]'),
+              store,
+            })}`,
+          ),
+        );
+  });
+  await click('[data-testid="default-personal-preset"]');
+  await click('[data-testid="export-personal-presets"]');
+  const ffufPersonalPresetExport = await waitFor(
+    "ffuf personal preset export",
+    async () => {
+      const stored = await invokeMain("load_personal_presets");
+      const value = await execute(
+        "const raw = document.querySelector('#personal-preset-json')?.value; const exported = raw ? JSON.parse(raw) : null; return { schemaVersion: exported?.schema_version, presetCount: exported?.presets?.length, sensitiveDenied: !raw?.includes('flagdeck-preset-secret'), transferVisible: Boolean(document.querySelector('[data-testid=personal-preset-transfer]')) };",
+      );
+      return value.schemaVersion === 1 &&
+        value.presetCount === 1 &&
+        value.sensitiveDenied &&
+        stored.default_by_tool.ffuf === ffufPersonalPreset.presetId &&
+        value.transferVisible
+        ? value
+        : undefined;
+    },
+  );
 
   const status = await invokeMain("app_status");
   const projectId = status.active_project?.project_id;
@@ -723,6 +778,8 @@ async function main() {
       catalogWorkbench,
       ffufLocalSearch,
       ffufProgressiveForm,
+      ffufPersonalPreset,
+      ffufPersonalPresetExport,
       ffufRunPreview,
       ffufV2Metadata,
       preferenceEvidence,

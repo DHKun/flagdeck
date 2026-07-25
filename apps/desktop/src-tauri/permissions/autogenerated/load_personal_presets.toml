@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-personal-presets"
+description = "Enables the load_personal_presets command without any pre-configured scope."
+commands.allow = ["load_personal_presets"]
+
+[[permission]]
+identifier = "deny-load-personal-presets"
+description = "Denies the load_personal_presets command without any pre-configured scope."
+commands.deny = ["load_personal_presets"]

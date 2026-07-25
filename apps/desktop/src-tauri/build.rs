@@ -2,6 +2,8 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "app_status",
+            "load_personal_presets",
+            "save_personal_presets",
             "create_project",
             "list_projects",
             "open_project",

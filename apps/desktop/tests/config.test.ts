@@ -17,6 +17,8 @@ const isolation = read("dist-isolation/index.js");
 
 const commands = [
   "app_status",
+  "load_personal_presets",
+  "save_personal_presets",
   "create_project",
   "list_projects",
   "open_project",

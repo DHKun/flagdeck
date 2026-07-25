@@ -117,6 +117,10 @@ function validate(result) {
     result.main?.catalogWorkbench?.sensitiveInputPassword === true &&
     result.main?.preferenceEvidence?.targetDenied === true &&
     result.main?.preferenceEvidence?.formSecretDenied === true &&
+    result.main?.ffufPersonalPreset?.threads === "41" &&
+    result.main?.ffufPersonalPreset?.sensitiveDenied === true &&
+    result.main?.ffufPersonalPresetExport?.schemaVersion === 1 &&
+    result.main?.ffufPersonalPresetExport?.sensitiveDenied === true &&
     result.unprivilegedProbe?.localFile === "blocked" &&
     result.process?.coreLimitZero === true &&
     result.process?.argvContainsFixtureSecret === false &&

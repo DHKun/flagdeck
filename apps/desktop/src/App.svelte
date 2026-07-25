@@ -29,6 +29,20 @@
     type InstallationFilter,
   } from "./lib/toolSearch";
   import { buildProgressiveForm } from "./lib/progressiveForm";
+  import {
+    createPersonalPreset,
+    deletePersonalPreset,
+    emptyPersonalPresetStore,
+    exportPersonalPresets,
+    findPersonalPreset,
+    importPersonalPresets,
+    personalPresetsForTool,
+    renamePersonalPreset,
+    resolveDefaultPresetId,
+    setDefaultPersonalPreset,
+    updatePersonalPreset,
+    type PersonalPresetStore,
+  } from "./lib/personalPresets";
 
   type NavId = "home" | "tools" | "jobs" | "settings";
   type OutputTab = "log" | "result";
@@ -103,6 +117,10 @@
   let tierFilter = "";
   let installationFilter: InstallationFilter = "";
   let selectedPresetId = "";
+  let personalPresetStore: PersonalPresetStore = emptyPersonalPresetStore();
+  let personalPresetStoreLoaded = false;
+  let presetTransferOpen = false;
+  let presetTransferText = "";
   let advancedFieldsExpanded = false;
   let runPreview: CatalogRunPreview | null = null;
   let runPreviewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -115,13 +133,28 @@
 
   $: selectedTool =
     catalog?.tools.find((tool) => tool.id === selectedToolId) ?? null;
+  $: selectedPersonalPreset = findPersonalPreset(
+    personalPresetStore,
+    selectedPresetId,
+  );
+  $: selectedFormPresetId =
+    selectedTool && selectedPersonalPreset
+      ? selectedTool.presets.some(
+          (preset) => preset.id === selectedPersonalPreset?.base_preset_id,
+        )
+        ? selectedPersonalPreset.base_preset_id
+        : (selectedTool.presets[0]?.id ?? "")
+      : selectedPresetId;
   $: progressiveForm = selectedTool
     ? buildProgressiveForm(
         selectedTool,
-        selectedPresetId,
+        selectedFormPresetId,
         advancedFieldsExpanded,
       )
     : null;
+  $: selectedToolPersonalPresets = selectedTool
+    ? personalPresetsForTool(personalPresetStore, selectedTool.id)
+    : [];
   $: availableTools = (catalog?.tools ?? []).filter((tool) => tool.available);
   $: featuredTools = availableTools.filter((tool) => tool.featured);
   $: recentTools = prefs.recentToolIds
@@ -175,6 +208,17 @@
 
   function reportError(error: unknown): void {
     notice = commandErrorMessage(error);
+    noticeKind = "error";
+  }
+
+  function reportLocalError(error: unknown): void {
+    const ipcMessage = commandErrorMessage(error);
+    notice =
+      error instanceof Error && error.message.length <= 256
+        ? error.message
+        : ipcMessage === "Operation failed (ipc_error)"
+          ? "个人预设操作失败"
+          : ipcMessage;
     noticeKind = "error";
   }
 
@@ -245,9 +289,179 @@
   function applyToolPreset(tool: CatalogToolDto, presetId: string): void {
     selectedPresetId = presetId;
     advancedFieldsExpanded = false;
-    const plan = buildProgressiveForm(tool, presetId, false);
-    formValues = { ...formValues, ...plan.presetDefaults };
+    const personal = findPersonalPreset(personalPresetStore, presetId);
+    const basePresetId =
+      personal &&
+      tool.presets.some((preset) => preset.id === personal.base_preset_id)
+        ? personal.base_preset_id
+        : personal
+          ? (tool.presets[0]?.id ?? "")
+          : presetId;
+    const plan = buildProgressiveForm(tool, basePresetId, false);
+    formValues = {
+      ...formValues,
+      ...plan.presetDefaults,
+      ...(personal?.values ?? {}),
+    };
     scheduleRunPreview();
+  }
+
+  async function persistPersonalPresetStore(
+    next: PersonalPresetStore,
+  ): Promise<void> {
+    personalPresetStore = await ipc.savePersonalPresets({ store: next });
+  }
+
+  async function createCurrentPersonalPreset(): Promise<void> {
+    if (!selectedTool) return;
+    const name = window.prompt("个人预设名称", `${selectedTool.name} 个人预设`);
+    if (name === null) return;
+    busy = true;
+    try {
+      const personal = findPersonalPreset(
+        personalPresetStore,
+        selectedPresetId,
+      );
+      const basePresetId =
+        personal?.base_preset_id ||
+        selectedTool.presets.find((preset) => preset.id === selectedPresetId)
+          ?.id ||
+        selectedTool.presets[0]?.id ||
+        "";
+      const next = createPersonalPreset(personalPresetStore, selectedTool, {
+        name,
+        basePresetId,
+        values: formValues,
+      });
+      await persistPersonalPresetStore(next);
+      const created = next.presets.at(-1);
+      if (created) applyToolPreset(selectedTool, created.id);
+      notice = "已保存个人预设";
+      noticeKind = "success";
+    } catch (error) {
+      reportLocalError(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function updateCurrentPersonalPreset(): Promise<void> {
+    if (!selectedTool || !selectedPersonalPreset) return;
+    busy = true;
+    try {
+      const next = updatePersonalPreset(
+        personalPresetStore,
+        selectedTool,
+        selectedPersonalPreset.id,
+        formValues,
+      );
+      await persistPersonalPresetStore(next);
+      notice = "已更新个人预设";
+      noticeKind = "success";
+    } catch (error) {
+      reportLocalError(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function renameCurrentPersonalPreset(): Promise<void> {
+    if (!selectedPersonalPreset) return;
+    const name = window.prompt("新的预设名称", selectedPersonalPreset.name);
+    if (name === null) return;
+    busy = true;
+    try {
+      const next = renamePersonalPreset(
+        personalPresetStore,
+        selectedPersonalPreset.id,
+        name,
+      );
+      await persistPersonalPresetStore(next);
+      notice = "已重命名个人预设";
+      noticeKind = "success";
+    } catch (error) {
+      reportLocalError(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function deleteCurrentPersonalPreset(): Promise<void> {
+    if (!selectedTool || !selectedPersonalPreset) return;
+    if (!window.confirm(`删除个人预设“${selectedPersonalPreset.name}”？`))
+      return;
+    busy = true;
+    try {
+      const next = deletePersonalPreset(
+        personalPresetStore,
+        selectedPersonalPreset.id,
+      );
+      await persistPersonalPresetStore(next);
+      applyToolPreset(
+        selectedTool,
+        resolveDefaultPresetId(personalPresetStore, selectedTool),
+      );
+      notice = "已删除个人预设";
+      noticeKind = "success";
+    } catch (error) {
+      reportLocalError(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function setCurrentPersonalPresetAsDefault(): Promise<void> {
+    if (!selectedTool || !selectedPersonalPreset) return;
+    busy = true;
+    try {
+      const next = setDefaultPersonalPreset(
+        personalPresetStore,
+        selectedTool.id,
+        selectedPersonalPreset.id,
+      );
+      await persistPersonalPresetStore(next);
+      notice = "已设为当前工具的默认个人预设";
+      noticeKind = "success";
+    } catch (error) {
+      reportLocalError(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function openPresetExport(): void {
+    if (!catalog) return;
+    try {
+      presetTransferText = exportPersonalPresets(
+        personalPresetStore,
+        catalog.tools,
+      );
+      presetTransferOpen = true;
+    } catch (error) {
+      reportLocalError(error);
+    }
+  }
+
+  async function importPresetPackage(): Promise<void> {
+    if (!catalog) return;
+    busy = true;
+    try {
+      const next = importPersonalPresets(presetTransferText, catalog.tools);
+      await persistPersonalPresetStore(next);
+      presetTransferOpen = false;
+      if (selectedTool) {
+        applyToolPreset(
+          selectedTool,
+          resolveDefaultPresetId(personalPresetStore, selectedTool),
+        );
+      }
+      notice = "已导入个人预设";
+      noticeKind = "success";
+    } catch (error) {
+      reportLocalError(error);
+    } finally {
+      busy = false;
+    }
   }
 
   function advancedGroupName(fieldId: string): string {
@@ -293,7 +507,7 @@
     }
     selectedToolId = tool.id;
     applyToolDefaults(tool);
-    applyToolPreset(tool, tool.presets[0]?.id ?? "");
+    applyToolPreset(tool, resolveDefaultPresetId(personalPresetStore, tool));
     prefs = {
       ...prefs,
       selectedToolId: tool.id,
@@ -331,16 +545,27 @@
   async function refresh(): Promise<void> {
     await ensureToolboxWorkspace();
     const projectId = status?.active_project?.project_id;
-    const [nextCatalog, nextJobs, nextScopes] = await Promise.all([
-      ipc.listCatalog(),
-      projectId
-        ? ipc.listJobs({ project_id: projectId, cursor: null, limit: 50 })
-        : Promise.resolve({ items: [], next_cursor: null }),
-      projectId
-        ? ipc.listScopes({ project_id: projectId })
-        : Promise.resolve({ items: [] }),
-    ]);
+    const [nextCatalog, nextJobs, nextScopes, nextPersonalPresets] =
+      await Promise.all([
+        ipc.listCatalog(),
+        projectId
+          ? ipc.listJobs({ project_id: projectId, cursor: null, limit: 50 })
+          : Promise.resolve({ items: [], next_cursor: null }),
+        projectId
+          ? ipc.listScopes({ project_id: projectId })
+          : Promise.resolve({ items: [] }),
+        personalPresetStoreLoaded
+          ? Promise.resolve(personalPresetStore)
+          : ipc.loadPersonalPresets(),
+      ]);
     catalog = nextCatalog;
+    if (!personalPresetStoreLoaded) {
+      personalPresetStore = importPersonalPresets(
+        JSON.stringify(nextPersonalPresets),
+        catalog.tools,
+      );
+      personalPresetStoreLoaded = true;
+    }
     jobs = nextJobs.items;
     scopes = nextScopes.items;
 
@@ -366,9 +591,17 @@
       }
       if (
         !selectedPresetId ||
-        !selectedTool.presets.some((preset) => preset.id === selectedPresetId)
+        (!selectedTool.presets.some(
+          (preset) => preset.id === selectedPresetId,
+        ) &&
+          !personalPresetsForTool(personalPresetStore, selectedTool.id).some(
+            (preset) => preset.id === selectedPresetId,
+          ))
       ) {
-        applyToolPreset(selectedTool, selectedTool.presets[0]?.id ?? "");
+        applyToolPreset(
+          selectedTool,
+          resolveDefaultPresetId(personalPresetStore, selectedTool),
+        );
       }
     }
   }
@@ -1168,7 +1401,7 @@
               {/if}
 
               <div oninput={scheduleRunPreview} onchange={scheduleRunPreview}>
-                {#if selectedTool.presets.length > 0}
+                {#if selectedTool.presets.length > 0 || selectedToolPersonalPresets.length > 0}
                   <div class="field">
                     <label for="tool-preset">任务预设</label>
                     <select
@@ -1181,20 +1414,118 @@
                           event.currentTarget.value,
                         )}
                     >
-                      {#each selectedTool.presets as preset}
-                        <option value={preset.id}>{preset.name}</option>
-                      {/each}
+                      {#if selectedTool.presets.length > 0}
+                        <optgroup label="内置预设">
+                          {#each selectedTool.presets as preset}
+                            <option value={preset.id}>{preset.name}</option>
+                          {/each}
+                        </optgroup>
+                      {/if}
+                      {#if selectedToolPersonalPresets.length > 0}
+                        <optgroup label="个人预设">
+                          {#each selectedToolPersonalPresets as preset}
+                            <option value={preset.id}>{preset.name}</option>
+                          {/each}
+                        </optgroup>
+                      {/if}
                     </select>
                   </div>
-                  <button
-                    data-testid="toggle-advanced-fields"
-                    class="btn btn-secondary"
-                    type="button"
-                    onclick={() =>
-                      (advancedFieldsExpanded = !advancedFieldsExpanded)}
-                  >
-                    {advancedFieldsExpanded ? "收起高级参数" : "显示高级参数"}
-                  </button>
+                  <div class="actions" style="margin: 0 0 12px">
+                    <button
+                      data-testid="toggle-advanced-fields"
+                      class="btn btn-secondary"
+                      type="button"
+                      onclick={() =>
+                        (advancedFieldsExpanded = !advancedFieldsExpanded)}
+                    >
+                      {advancedFieldsExpanded ? "收起高级参数" : "显示高级参数"}
+                    </button>
+                    <button
+                      data-testid="create-personal-preset"
+                      class="btn btn-secondary"
+                      type="button"
+                      onclick={createCurrentPersonalPreset}
+                    >
+                      保存为个人预设
+                    </button>
+                    {#if selectedPersonalPreset}
+                      <button
+                        data-testid="update-personal-preset"
+                        class="btn btn-secondary"
+                        type="button"
+                        onclick={updateCurrentPersonalPreset}
+                      >
+                        更新
+                      </button>
+                      <button
+                        class="btn btn-secondary"
+                        type="button"
+                        onclick={renameCurrentPersonalPreset}
+                      >
+                        重命名
+                      </button>
+                      <button
+                        data-testid="default-personal-preset"
+                        class="btn btn-secondary"
+                        type="button"
+                        disabled={personalPresetStore.default_by_tool[
+                          selectedTool.id
+                        ] === selectedPersonalPreset.id}
+                        onclick={setCurrentPersonalPresetAsDefault}
+                      >
+                        {personalPresetStore.default_by_tool[
+                          selectedTool.id
+                        ] === selectedPersonalPreset.id
+                          ? "当前默认"
+                          : "设为默认"}
+                      </button>
+                      <button
+                        class="btn btn-danger"
+                        type="button"
+                        onclick={deleteCurrentPersonalPreset}
+                      >
+                        删除
+                      </button>
+                    {/if}
+                    <button
+                      data-testid="export-personal-presets"
+                      class="btn btn-secondary"
+                      type="button"
+                      onclick={openPresetExport}
+                    >
+                      导入/导出
+                    </button>
+                  </div>
+                  {#if presetTransferOpen}
+                    <div class="field" data-testid="personal-preset-transfer">
+                      <label for="personal-preset-json">个人预设 JSON</label>
+                      <textarea
+                        id="personal-preset-json"
+                        bind:value={presetTransferText}
+                        rows="8"
+                        spellcheck="false"></textarea>
+                      <small class="field-hint">
+                        导出内容已填入。粘贴预设包后点击导入，版本和字段会经过严格校验。
+                      </small>
+                      <div class="actions" style="margin: 8px 0 0">
+                        <button
+                          data-testid="import-personal-presets"
+                          class="btn btn-primary"
+                          type="button"
+                          onclick={importPresetPackage}
+                        >
+                          导入
+                        </button>
+                        <button
+                          class="btn btn-secondary"
+                          type="button"
+                          onclick={() => (presetTransferOpen = false)}
+                        >
+                          关闭
+                        </button>
+                      </div>
+                    </div>
+                  {/if}
                 {/if}
 
                 {#if selectedTool.fields.length === 0}

@@ -26,13 +26,14 @@ use flagdeck_core::{
     MetasploitModuleSummary, MetasploitSessionCommandRequest, MetasploitStatus,
     MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult,
     OpenProjectRequest, ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
-    PreviewArtifactRequest, PreviewCatalogToolRequest, PreviewJobFileRequest, PreviewJobLogRequest,
-    PreviewPayloadRequest, ProjectContextRequest, ProjectPage, ProjectPageRequest,
-    RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest, RunToolRequest, ScopePage,
-    SearchDictionaryRequest, SearchMetasploitModulesRequest, SendRawHttp1Request,
-    SendRawHttp1Result, StartIntruderRequest, StartMetasploitRequest, StartProxyRequest,
-    StartUploadCampaignRequest, StopMetasploitEntityRequest, StopMetasploitRequest,
-    StopProxyRequest, ToolHealthDto, ToolPackHealthDto,
+    PersonalPresetStoreDto, PreviewArtifactRequest, PreviewCatalogToolRequest,
+    PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest, ProjectContextRequest,
+    ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest,
+    RunToolRequest, SavePersonalPresetsRequest, ScopePage, SearchDictionaryRequest,
+    SearchMetasploitModulesRequest, SendRawHttp1Request, SendRawHttp1Result, StartIntruderRequest,
+    StartMetasploitRequest, StartProxyRequest, StartUploadCampaignRequest,
+    StopMetasploitEntityRequest, StopMetasploitRequest, StopProxyRequest, ToolHealthDto,
+    ToolPackHealthDto,
 };
 use flagdeck_domain::{
     AdapterEntity, Artifact, DictionaryIndex, HttpMessage, IntruderCampaign, MultipartDocument,
@@ -79,6 +80,23 @@ fn emit_core_event(
 async fn app_status(state: State<'_, Arc<CoreService>>) -> Result<AppStatus, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.status()).await
+}
+
+#[tauri::command]
+async fn load_personal_presets(
+    state: State<'_, Arc<CoreService>>,
+) -> Result<PersonalPresetStoreDto, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.load_personal_presets()).await
+}
+
+#[tauri::command]
+async fn save_personal_presets(
+    state: State<'_, Arc<CoreService>>,
+    request: SavePersonalPresetsRequest,
+) -> Result<PersonalPresetStoreDto, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.save_personal_presets(request)).await
 }
 
 #[tauri::command]
@@ -1024,6 +1042,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            load_personal_presets,
+            save_personal_presets,
             create_project,
             list_projects,
             open_project,

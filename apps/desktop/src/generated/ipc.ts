@@ -246,4 +246,10 @@ export type SecurityBaselineDto = { preferred_supervisor: string, fallback_super
 
 export type AppStatus = { application_version: string, contract_version: number, active_project: ProjectSummary | null, storage: StorageHealthDto | null, recovery: RecoveryStatusDto | null, active_jobs: number, security: SecurityBaselineDto, };
 
+export type PersonalPresetDto = { id: string, tool_id: string, name: string, base_preset_id: string, values: { [key in string]: string }, created_at: string, updated_at: string, };
+
+export type PersonalPresetStoreDto = { schema_version: number, presets: Array<PersonalPresetDto>, default_by_tool: { [key in string]: string }, };
+
+export type SavePersonalPresetsRequest = { store: PersonalPresetStoreDto, };
+
 export type CoreEvent = { sequence: number, kind: string, project_id: ProjectId | null, };

@@ -51,6 +51,7 @@ import type {
   PayloadPage,
   PayloadPreview,
   PayloadSourceHealthDto,
+  PersonalPresetStoreDto,
   PreviewArtifactRequest,
   PreviewCatalogToolRequest,
   PreviewJobFileRequest,
@@ -66,6 +67,7 @@ import type {
   SearchDictionaryRequest,
   SendRawHttp1Request,
   SendRawHttp1Result,
+  SavePersonalPresetsRequest,
   StartProxyRequest,
   StopProxyRequest,
   ToolHealthDto,
@@ -109,6 +111,12 @@ import type {
 
 export const ipc = {
   status: (): Promise<AppStatus> => invoke("app_status"),
+  loadPersonalPresets: (): Promise<PersonalPresetStoreDto> =>
+    invoke("load_personal_presets"),
+  savePersonalPresets: (
+    request: SavePersonalPresetsRequest,
+  ): Promise<PersonalPresetStoreDto> =>
+    invoke("save_personal_presets", { request }),
   createProject: (request: CreateProjectRequest): Promise<ProjectSummary> =>
     invoke("create_project", { request }),
   listProjects: (request: ProjectPageRequest): Promise<ProjectPage> =>

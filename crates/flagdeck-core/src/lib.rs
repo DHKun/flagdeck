@@ -73,6 +73,8 @@ pub const MAX_NOTE_BYTES: usize = 1024 * 1024;
 pub const MAX_DICTIONARY_INPUT_BYTES: usize = 1024 * 1024;
 pub const MAX_JOB_LOG_PREVIEW_BYTES: usize = 64 * 1024;
 pub const MAX_JOB_FILE_PREVIEW_BYTES: usize = 1024 * 1024;
+pub const MAX_PERSONAL_PRESETS: usize = 200;
+pub const MAX_PERSONAL_PRESET_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
@@ -811,6 +813,42 @@ pub struct AppStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPresetDto {
+    pub id: String,
+    pub tool_id: String,
+    pub name: String,
+    pub base_preset_id: String,
+    pub values: BTreeMap<String, String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPresetStoreDto {
+    pub schema_version: u32,
+    pub presets: Vec<PersonalPresetDto>,
+    pub default_by_tool: BTreeMap<String, String>,
+}
+
+impl Default for PersonalPresetStoreDto {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            presets: Vec::new(),
+            default_by_tool: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SavePersonalPresetsRequest {
+    pub store: PersonalPresetStoreDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CoreEvent {
     #[ts(type = "number")]
     pub sequence: u64,
@@ -825,6 +863,8 @@ pub struct CoreService {
     active_runs: Arc<AtomicUsize>,
     active_executions: Mutex<HashMap<JobId, Arc<ActiveExecution>>>,
     event_sequence: AtomicU64,
+    personal_preset_write_sequence: AtomicU64,
+    personal_preset_lock: Mutex<()>,
     http_workbench: HttpWorkbench,
     metasploit_workbench: MetasploitWorkbench,
     intruder_workbench: IntruderWorkbench,
@@ -881,6 +921,8 @@ impl CoreService {
             active_runs: Arc::new(AtomicUsize::new(0)),
             active_executions: Mutex::new(HashMap::new()),
             event_sequence: AtomicU64::new(0),
+            personal_preset_write_sequence: AtomicU64::new(0),
+            personal_preset_lock: Mutex::new(()),
             http_workbench: worker_source_root.map_or_else(HttpWorkbench::new, |source| {
                 HttpWorkbench::with_worker_source_and_uv(source, uv_program)
             }),
@@ -908,6 +950,148 @@ impl CoreService {
             active_jobs: self.active_runs.load(Ordering::SeqCst),
             security: SecurityBaselineDto::default(),
         })
+    }
+
+    pub fn load_personal_presets(&self) -> Result<PersonalPresetStoreDto, CoreError> {
+        let _guard = self
+            .personal_preset_lock
+            .lock()
+            .map_err(|_| CoreError::StateLock)?;
+        let path = self.personal_presets_path();
+        let file = match File::options()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(PersonalPresetStoreDto::default());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        if metadata.len() > MAX_PERSONAL_PRESET_BYTES as u64 {
+            return Err(CoreError::InvalidRequest);
+        }
+        if metadata.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        let mut bytes = Vec::new();
+        file.take((MAX_PERSONAL_PRESET_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_PERSONAL_PRESET_BYTES {
+            return Err(CoreError::InvalidRequest);
+        }
+        let store: PersonalPresetStoreDto =
+            serde_json::from_slice(&bytes).map_err(|_| CoreError::InvalidRequest)?;
+        self.validate_personal_presets(&store)?;
+        Ok(store)
+    }
+
+    pub fn save_personal_presets(
+        &self,
+        request: SavePersonalPresetsRequest,
+    ) -> Result<PersonalPresetStoreDto, CoreError> {
+        use std::io::Write;
+
+        self.validate_personal_presets(&request.store)?;
+        let bytes =
+            serde_json::to_vec_pretty(&request.store).map_err(|_| CoreError::InvalidRequest)?;
+        if bytes.len() > MAX_PERSONAL_PRESET_BYTES {
+            return Err(CoreError::InvalidRequest);
+        }
+        let _guard = self
+            .personal_preset_lock
+            .lock()
+            .map_err(|_| CoreError::StateLock)?;
+        fs::create_dir_all(&self.workspaces_root)?;
+        fs::set_permissions(&self.workspaces_root, fs::Permissions::from_mode(0o700))?;
+        let path = self.personal_presets_path();
+        let sequence = self
+            .personal_preset_write_sequence
+            .fetch_add(1, Ordering::SeqCst);
+        let temporary = self.workspaces_root.join(format!(
+            ".personal-presets-v1.json.tmp-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut file = File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&temporary)?;
+        let write_result = (|| -> Result<(), CoreError> {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, &path)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            File::open(&self.workspaces_root)?.sync_all()?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        write_result?;
+        Ok(request.store)
+    }
+
+    fn personal_presets_path(&self) -> PathBuf {
+        self.workspaces_root.join(".personal-presets-v1.json")
+    }
+
+    fn validate_personal_presets(&self, store: &PersonalPresetStoreDto) -> Result<(), CoreError> {
+        if store.schema_version != 1
+            || store.presets.len() > MAX_PERSONAL_PRESETS
+            || store.default_by_tool.len() > MAX_PERSONAL_PRESETS
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        let catalog = self.list_catalog()?;
+        let tools = catalog
+            .tools
+            .iter()
+            .map(|tool| (tool.id.as_str(), tool))
+            .collect::<BTreeMap<_, _>>();
+        let mut preset_ids = BTreeSet::new();
+        for preset in &store.presets {
+            if !valid_personal_preset_id(&preset.id)
+                || !preset_ids.insert(preset.id.as_str())
+                || preset.name.trim().is_empty()
+                || preset.name.chars().count() > 80
+                || preset.base_preset_id.is_empty()
+                || preset.created_at.len() > 64
+                || preset.updated_at.len() > 64
+                || preset.values.len() > 256
+            {
+                return Err(CoreError::InvalidRequest);
+            }
+            let Some(tool) = tools.get(preset.tool_id.as_str()) else {
+                return Err(CoreError::InvalidRequest);
+            };
+            for (field_id, value) in &preset.values {
+                let Some(field) = tool.fields.iter().find(|field| field.id == *field_id) else {
+                    return Err(CoreError::InvalidRequest);
+                };
+                if field.sensitive {
+                    return Err(CoreError::CredentialPersistenceDenied);
+                }
+                if value.len() > 16_384 {
+                    return Err(CoreError::InvalidRequest);
+                }
+            }
+        }
+        for (tool_id, preset_id) in &store.default_by_tool {
+            if !tools.contains_key(tool_id.as_str())
+                || !store
+                    .presets
+                    .iter()
+                    .any(|preset| preset.tool_id == *tool_id && preset.id == *preset_id)
+            {
+                return Err(CoreError::InvalidRequest);
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -2956,6 +3140,32 @@ fn is_active_execution_status(status: ExecutionStatus) -> bool {
     )
 }
 
+fn valid_personal_preset_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("user:") else {
+        return false;
+    };
+    let mut parts = rest.split(':');
+    let Some(tool_id) = parts.next() else {
+        return false;
+    };
+    let Some(preset_id) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none()
+        && valid_personal_preset_id_part(tool_id)
+        && valid_personal_preset_id_part(preset_id)
+}
+
+fn valid_personal_preset_id_part(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'_' | b'-'))
+        })
+}
+
 fn append_job_log(path: &Path, text: &str) -> Result<(), CoreError> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
@@ -3997,6 +4207,9 @@ pub fn typescript_declarations() -> String {
         declaration!(StorageHealthDto),
         declaration!(SecurityBaselineDto),
         declaration!(AppStatus),
+        declaration!(PersonalPresetDto),
+        declaration!(PersonalPresetStoreDto),
+        declaration!(SavePersonalPresetsRequest),
         declaration!(CoreEvent),
     ]
     .join("\n\n")
@@ -4173,6 +4386,9 @@ mod tests {
         let declarations = typescript_declarations();
         for name in [
             "AppStatus",
+            "PersonalPresetDto",
+            "PersonalPresetStoreDto",
+            "SavePersonalPresetsRequest",
             "CreateProjectRequest",
             "OpenProjectRequest",
             "CreateNoteRequest",
@@ -4200,6 +4416,73 @@ mod tests {
         ] {
             assert!(declarations.contains(name));
         }
+    }
+
+    #[test]
+    fn personal_presets_persist_privately_and_reject_sensitive_fields() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspaces = temporary.path().join("workspaces");
+        let catalog_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+        let core = CoreService::with_bundled_resources(
+            &workspaces,
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root.clone()),
+        );
+        let preset = PersonalPresetDto {
+            id: "user:ffuf:local".to_owned(),
+            tool_id: "ffuf".to_owned(),
+            name: "本地快速扫描".to_owned(),
+            base_preset_id: "retired-built-in-id".to_owned(),
+            values: BTreeMap::from([("threads".to_owned(), "60".to_owned())]),
+            created_at: "2026-07-25T00:00:00.000Z".to_owned(),
+            updated_at: "2026-07-25T00:00:00.000Z".to_owned(),
+        };
+        let store = PersonalPresetStoreDto {
+            schema_version: 1,
+            presets: vec![preset],
+            default_by_tool: BTreeMap::from([("ffuf".to_owned(), "user:ffuf:local".to_owned())]),
+        };
+
+        assert_eq!(
+            core.save_personal_presets(SavePersonalPresetsRequest {
+                store: store.clone(),
+            })
+            .unwrap(),
+            store
+        );
+        let restarted = CoreService::with_bundled_resources(
+            &workspaces,
+            None,
+            None,
+            None,
+            None,
+            Some(catalog_root),
+        );
+        assert_eq!(restarted.load_personal_presets().unwrap(), store);
+        let metadata = fs::metadata(workspaces.join(".personal-presets-v1.json")).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o077, 0);
+
+        let mut sensitive = store.clone();
+        sensitive.presets[0]
+            .values
+            .insert("headers".to_owned(), "Authorization: secret".to_owned());
+        assert!(matches!(
+            restarted.save_personal_presets(SavePersonalPresetsRequest { store: sensitive }),
+            Err(CoreError::CredentialPersistenceDenied)
+        ));
+
+        let mut unknown = store;
+        unknown.presets[0]
+            .values
+            .insert("future_field".to_owned(), "value".to_owned());
+        assert!(matches!(
+            restarted.save_personal_presets(SavePersonalPresetsRequest { store: unknown }),
+            Err(CoreError::InvalidRequest)
+        ));
     }
 
     #[test]

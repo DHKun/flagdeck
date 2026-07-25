@@ -6,6 +6,8 @@
   "webviews": ["main"],
   "permissions": [
     "allow-app-status",
+    "allow-load-personal-presets",
+    "allow-save-personal-presets",
     "allow-create-project",
     "allow-list-projects",
     "allow-open-project",

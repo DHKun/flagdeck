@@ -393,6 +393,12 @@
           "markdownDescription": "Enables the list_scopes command without any pre-configured scope."
         },
         {
+          "description": "Enables the load_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-personal-presets",
+          "markdownDescription": "Enables the load_personal_presets command without any pre-configured scope."
+        },
+        {
           "description": "Enables the metasploit_console_command command without any pre-configured scope.",
           "type": "string",
           "const": "allow-metasploit-console-command",
@@ -487,6 +493,12 @@
           "type": "string",
           "const": "allow-run-tool",
           "markdownDescription": "Enables the run_tool command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-personal-presets",
+          "markdownDescription": "Enables the save_personal_presets command without any pre-configured scope."
         },
         {
           "description": "Enables the search_dictionary command without any pre-configured scope.",
@@ -777,6 +789,12 @@
           "markdownDescription": "Denies the list_scopes command without any pre-configured scope."
         },
         {
+          "description": "Denies the load_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-personal-presets",
+          "markdownDescription": "Denies the load_personal_presets command without any pre-configured scope."
+        },
+        {
           "description": "Denies the metasploit_console_command command without any pre-configured scope.",
           "type": "string",
           "const": "deny-metasploit-console-command",
@@ -871,6 +889,12 @@
           "type": "string",
           "const": "deny-run-tool",
           "markdownDescription": "Denies the run_tool command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_personal_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-personal-presets",
+          "markdownDescription": "Denies the save_personal_presets command without any pre-configured scope."
         },
         {
           "description": "Denies the search_dictionary command without any pre-configured scope.",

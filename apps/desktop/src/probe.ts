@@ -2,6 +2,19 @@ import { invoke } from "@tauri-apps/api/core";
 
 const attempts = [
   ["app_status", {}],
+  ["load_personal_presets", {}],
+  [
+    "save_personal_presets",
+    {
+      request: {
+        store: {
+          schema_version: 1,
+          presets: [],
+          default_by_tool: {},
+        },
+      },
+    },
+  ],
   ["list_projects", { request: { cursor: null, limit: 20 } }],
   ["create_project", { request: { name: "probe" } }],
   [
