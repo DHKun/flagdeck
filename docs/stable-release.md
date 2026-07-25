@@ -6,14 +6,15 @@ Stable 1.0 使用 `.github/workflows/stable-release.yml`。工作流按“无密
 
 创建名为 `stable-release` 的 Environment，并配置：
 
-- Required reviewers，开启禁止发起人自行批准。
-- Deployment branches and tags，仅允许受保护的 Stable 标签。
+- 禁用管理员绕过。
+- Deployment branches and tags，仅允许当前 Stable 标签 `v1.0.0`。
+- 仓库加入第二名维护者后配置 Required reviewers，并开启禁止发起人自行批准。
 - Environment secret `FLAGDECK_RPM_SIGNING_KEY`，内容为 ASCII-armored OpenPGP 私钥。
 
 私钥必须匹配仓库中的 `release/FlagDeck-1.0.0-signing-key.asc`，批准的主密钥指纹为：
 
 ```text
-5DEDB3781215AC2CB323FE2B3742F9C007201D22
+18AD547A9ABCBC8B633031213FB7C61845873DE6
 ```
 
 CI 使用非交互式 `rpmsign`。Environment secret 应提供专用于自动发布、无需交互式口令的最小签名私钥，并依靠 Environment 审批、标签保护和 GitHub Secret 加密控制访问。
@@ -22,7 +23,8 @@ CI 使用非交互式 `rpmsign`。Environment secret 应提供专用于自动发
 
 - Stable 标签采用 `vMAJOR.MINOR.PATCH`，版本与 `tauri.conf.json` 一致。
 - 标签是 annotated tag，标签提交位于 `main` 历史中。
-- GitHub Release `v0.6.0` 包含 `FlagDeck-0.6.0-1.x86_64.rpm`，供升级、回退、再升级生命周期验证使用。
+- `v1.0.0` 是首个 Stable RPM，Fedora 门禁记录明确的 `first-release` 模式以及固定的 `not_applicable` 升级状态。
+- 后续 Stable 发布需先扩展工作流，输入上一版 Stable RPM，并恢复升级、回退、再升级门禁。
 - 目标 Stable Release 尚未创建。
 
 ## 执行
