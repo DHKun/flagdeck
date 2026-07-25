@@ -409,7 +409,19 @@
           typeof request.confirm_sensitive_argv === "boolean" &&
           typeof request.confirm_l2 === "boolean" &&
           (request.l3_confirmation === null ||
-            boundedString(request.l3_confirmation, 256));
+            request.l3_confirmation === undefined ||
+            boundedString(request.l3_confirmation, 256)) &&
+          (request.source_job_id === null ||
+            request.source_job_id === undefined ||
+            projectId(request.source_job_id)) &&
+          (request.source_result_id === null ||
+            request.source_result_id === undefined ||
+            (typeof request.source_result_id === "string" &&
+              request.source_result_id.length > 0 &&
+              request.source_result_id.length <= 256)) &&
+          (request.source_artifact_id === null ||
+            request.source_artifact_id === undefined ||
+            projectId(request.source_artifact_id));
         break;
       case "delete_job":
         valid =

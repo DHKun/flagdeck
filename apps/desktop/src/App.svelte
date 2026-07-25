@@ -33,6 +33,13 @@
     type ResultSortDir,
   } from "./lib/structuredResults";
   import {
+    listCompatibleSendToTargets,
+    prefillSendToForm,
+    sendToTargetUrl,
+    type CompatibleTarget,
+    type SendToSource,
+  } from "./lib/sendTo";
+  import {
     loadWorkbenchPrefs,
     rememberTool,
     saveWorkbenchPrefs,
@@ -152,6 +159,13 @@
   let resultFilter = "";
   let resultSortKey = "status";
   let resultSortDir: ResultSortDir = "asc";
+  let sendToSource: SendToSource | null = null;
+  let sendToTargets: CompatibleTarget[] = [];
+  let pendingSendTo: {
+    sourceJobId: string;
+    sourceResultId: string;
+    sourceArtifactId: string | null;
+  } | null = null;
   let logPaneEl: HTMLPreElement | null = null;
 
   $: selectedTool =
@@ -864,6 +878,63 @@
     noticeKind = "info";
   }
 
+  function openSendTo(row: {
+    result_id: string;
+    cells: Record<string, string>;
+    source_job_id: string;
+    source_artifact_id: string | null;
+  }): void {
+    if (!catalog) return;
+    const source: SendToSource = {
+      resultKind: structuredResult?.kind ?? "unknown",
+      cells: row.cells,
+      sourceJobId: row.source_job_id,
+      sourceResultId: row.result_id,
+      sourceArtifactId: row.source_artifact_id,
+    };
+    const targets = listCompatibleSendToTargets(catalog.tools, source);
+    if (targets.length === 0) {
+      notice = "没有接受 URL 输入的可用兼容工具";
+      noticeKind = "error";
+      return;
+    }
+    sendToSource = source;
+    sendToTargets = targets;
+  }
+
+  function cancelSendTo(): void {
+    sendToSource = null;
+    sendToTargets = [];
+  }
+
+  function applySendTo(target: CompatibleTarget): void {
+    if (!sendToSource) return;
+    const url = sendToTargetUrl(sendToSource);
+    const tool = target.tool;
+    selectTool(tool);
+    const presetId = resolveDefaultPresetId(personalPresetStore, tool);
+    applyToolPreset(tool, presetId);
+    formValues = prefillSendToForm({
+      tool,
+      baseValues: { ...formValues },
+      sourceUrl: url,
+      urlFieldIds: target.urlFieldIds,
+    });
+    targetUrl = url;
+    pendingSendTo = {
+      sourceJobId: sendToSource.sourceJobId,
+      sourceResultId: sendToSource.sourceResultId,
+      sourceArtifactId: sendToSource.sourceArtifactId,
+    };
+    sendToSource = null;
+    sendToTargets = [];
+    activeNav = "tools";
+    persistPrefs();
+    scheduleRunPreview();
+    notice = `已发送到 ${tool.name}，仅填充 URL 字段；请确认 Scope 与风险后运行`;
+    noticeKind = "info";
+  }
+
   function jobStatusLabel(item: JobView | null): string {
     if (!item) return "未选择任务";
     const reason = item.job.exit_reason ? ` · ${item.job.exit_reason}` : "";
@@ -1027,7 +1098,11 @@
         confirm_sensitive_argv: hasSensitiveArgv,
         confirm_l2: confirmL2,
         l3_confirmation: l3Confirmation,
+        source_job_id: pendingSendTo?.sourceJobId ?? null,
+        source_result_id: pendingSendTo?.sourceResultId ?? null,
+        source_artifact_id: pendingSendTo?.sourceArtifactId ?? null,
       });
+      pendingSendTo = null;
       selectedLogJobId = job.job.job_id;
       selectedLogStream = "stdout";
       jobLogWindow = null;
@@ -2345,11 +2420,43 @@
                                 jumpToSourceArtifact(row.source_artifact_id)}
                               >原始证据</button
                             >
+                            <button
+                              class="btn btn-primary"
+                              type="button"
+                              data-testid={`send-to-${row.result_id}`}
+                              onclick={() => openSendTo(row)}>发送到…</button
+                            >
                           </td>
                         </tr>
                       {/each}
                     </tbody>
                   </table>
+                </div>
+              {/if}
+              {#if sendToSource}
+                <div class="send-to-panel" data-testid="send-to-panel">
+                  <h3>发送到兼容工具</h3>
+                  <p class="sub">
+                    来源 {sendToSource.sourceResultId} · URL
+                    {sendToTargetUrl(sendToSource)}
+                  </p>
+                  <div class="actions">
+                    {#each sendToTargets as target}
+                      <button
+                        class="btn btn-secondary"
+                        type="button"
+                        data-testid={`send-to-target-${target.tool.id}`}
+                        onclick={() => applySendTo(target)}
+                        >{target.tool.name}</button
+                      >
+                    {/each}
+                    <button
+                      class="btn btn-danger"
+                      type="button"
+                      data-testid="send-to-cancel"
+                      onclick={() => cancelSendTo()}>取消</button
+                    >
+                  </div>
                 </div>
               {/if}
             {/if}

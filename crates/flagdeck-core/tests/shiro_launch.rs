@@ -39,6 +39,9 @@ async fn shiro_detaches_with_visible_logs() {
             confirm_sensitive_argv: false,
             confirm_l2: false,
             l3_confirmation: Some("RUN CATALOG shiro".to_owned()),
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
         })
         .unwrap();
 

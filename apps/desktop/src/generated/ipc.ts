@@ -194,7 +194,11 @@ export type WordlistDto = { id: string, name: string, path: string, available: b
 
 export type CatalogSnapshot = { tools_root: string, wordlists_root: string, categories: Array<CatalogCategoryDto>, tools: Array<CatalogToolDto>, wordlists: Array<WordlistDto>, };
 
-export type RunCatalogToolRequest = { project_id: ProjectId, tool_id: string, target_url: string, form: { [key in string]: string }, confirm_sensitive_argv: boolean, confirm_l2: boolean, l3_confirmation: string | null, };
+export type RunCatalogToolRequest = { project_id: ProjectId, tool_id: string, target_url: string, form: { [key in string]: string }, confirm_sensitive_argv: boolean, confirm_l2: boolean, l3_confirmation: string | null, 
+/**
+ * Optional provenance when launched via typed "send to" from another job result.
+ */
+source_job_id: JobId | null, source_result_id: string | null, source_artifact_id: ArtifactId | null, };
 
 export type PreviewCatalogToolRequest = { project_id: ProjectId, tool_id: string, target_url: string, form: { [key in string]: string }, };
 

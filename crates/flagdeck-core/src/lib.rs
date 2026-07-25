@@ -3107,6 +3107,33 @@ impl CoreService {
         if request.tool_id.is_empty() || request.tool_id.len() > 128 {
             return Err(CoreError::InvalidRequest);
         }
+        if let Some(source_job_id) = &request.source_job_id {
+            source_job_id
+                .validate()
+                .map_err(|_| CoreError::InvalidRequest)?;
+            if request
+                .source_result_id
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 256)
+            {
+                return Err(CoreError::InvalidRequest);
+            }
+            self.with_active(&request.project_id, |store| {
+                let _source = store.job(source_job_id)?;
+                if let Some(artifact_id) = &request.source_artifact_id {
+                    artifact_id
+                        .validate()
+                        .map_err(|_| CoreError::InvalidRequest)?;
+                    let artifact = store.artifact(artifact_id)?;
+                    if artifact.source_job_id.as_ref() != Some(source_job_id) {
+                        return Err(CoreError::InvalidRequest);
+                    }
+                }
+                Ok(())
+            })?;
+        } else if request.source_result_id.is_some() || request.source_artifact_id.is_some() {
+            return Err(CoreError::InvalidRequest);
+        }
         let catalog =
             ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
         let tool = catalog
@@ -3267,7 +3294,7 @@ impl CoreService {
             stdout_artifact_id: None,
             stderr_artifact_id: None,
             retry_count: 0,
-            source_job_id: None,
+            source_job_id: request.source_job_id.clone(),
         };
         store.save_job(&job)?;
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
@@ -7085,6 +7112,9 @@ template = ["--", "{url}"]
             confirm_sensitive_argv: false,
             confirm_l2: false,
             l3_confirmation: None,
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
         };
 
         assert!(matches!(
@@ -7174,6 +7204,9 @@ template = ["--", "{url}", "{secret}"]
             confirm_sensitive_argv: true,
             confirm_l2: false,
             l3_confirmation: Some("RUN CATALOG FFUF".to_owned()),
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
         };
 
         assert!(matches!(

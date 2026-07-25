@@ -879,6 +879,9 @@ async fn catalog_job_records_typed_io_sources_without_sensitive_values() {
             confirm_sensitive_argv: true,
             confirm_l2: true,
             l3_confirmation: Some("RUN CATALOG ffuf".to_owned()),
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
         })
         .unwrap();
 
@@ -958,6 +961,9 @@ async fn catalog_curl_writes_visible_logs() {
             confirm_sensitive_argv: false,
             confirm_l2: true,
             l3_confirmation: None,
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
         })
         .unwrap();
 
@@ -1024,6 +1030,9 @@ async fn catalog_gui_godzilla_detaches_or_logs_error() {
             confirm_sensitive_argv: false,
             confirm_l2: false,
             l3_confirmation: Some("RUN CATALOG godzilla".to_owned()),
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
         })
         .unwrap();
 
@@ -1098,6 +1107,9 @@ fn catalog_sensitive_argv_requires_explicit_confirmation() {
             confirm_sensitive_argv: false,
             confirm_l2: true,
             l3_confirmation: None,
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
         })
         .is_err()
     );
@@ -1295,6 +1307,9 @@ async fn catalog_l2_run_requires_explicit_confirmation() {
         confirm_sensitive_argv: false,
         confirm_l2: false,
         l3_confirmation: None,
+        source_job_id: None,
+        source_result_id: None,
+        source_artifact_id: None,
     });
 
     assert!(

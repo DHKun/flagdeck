@@ -993,6 +993,19 @@ button {
   word-break: break-all;
 }
 
+.send-to-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.send-to-panel h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
 @media (max-width: 1180px) {
   .hero,
   .workspace,

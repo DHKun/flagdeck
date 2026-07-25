@@ -151,6 +151,13 @@ pub struct RunCatalogToolRequest {
     pub confirm_l2: bool,
     #[serde(default)]
     pub l3_confirmation: Option<String>,
+    /// Optional provenance when launched via typed "send to" from another job result.
+    #[serde(default)]
+    pub source_job_id: Option<flagdeck_domain::JobId>,
+    #[serde(default)]
+    pub source_result_id: Option<String>,
+    #[serde(default)]
+    pub source_artifact_id: Option<flagdeck_domain::ArtifactId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
