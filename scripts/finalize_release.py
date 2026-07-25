@@ -38,7 +38,7 @@ ARTIFACTS = [
     "docs/adr/0013-r7-stable-release-boundaries.md",
 ]
 
-APPROVED_SIGNING_FINGERPRINT = "5DEDB3781215AC2CB323FE2B3742F9C007201D22"
+APPROVED_SIGNING_FINGERPRINT = "18AD547A9ABCBC8B633031213FB7C61845873DE6"
 GUI_ASSERTIONS = [
     "allCustomCommandsDeniedFromProbe",
     "allHostilePreviewsDataOnly",
@@ -50,6 +50,29 @@ GUI_ASSERTIONS = [
     "allArtifactHashesVerified",
     "allCoreLimitsZero",
 ]
+FIRST_RELEASE_REASON = "no prior stable RPM release exists"
+FIRST_RELEASE_RECORDS = {
+    "baseEnvironment",
+    "desktopValidator",
+    "importReleaseKey",
+    "installStable",
+    "verifyStable",
+    "removeStable",
+    "verifyRemoved",
+}
+UPGRADE_RECORDS = {
+    "baseEnvironment",
+    "desktopValidator",
+    "installPrevious",
+    "verifyPrevious",
+    "importReleaseKey",
+    "upgradeStable",
+    "verifyStable",
+    "rollbackPrevious",
+    "upgradeStableAgain",
+    "removeStable",
+    "verifyRemoved",
+}
 
 
 def sha256(path: Path) -> str:
@@ -69,6 +92,45 @@ def require_all_true(name: str, values: dict[str, Any]) -> None:
     failed = [key for key, value in values.items() if value is not True]
     if failed:
         raise RuntimeError(f"{name} failed assertions: {', '.join(failed)}")
+
+
+def validate_fedora_lifecycle(
+    lifecycle: dict[str, Any],
+    rpm_hash: str,
+    public_key_hash: str,
+) -> str:
+    artifacts = lifecycle.get("artifacts", {})
+    if lifecycle.get("passed") is not True or lifecycle.get("failure") is not None:
+        raise RuntimeError("Fedora lifecycle evidence failed")
+    if artifacts.get("stableRpmSha256") != rpm_hash:
+        raise RuntimeError("Fedora lifecycle RPM evidence is stale")
+    if artifacts.get("publicKeySha256") != public_key_hash:
+        raise RuntimeError("Fedora lifecycle public-key evidence is stale")
+
+    records = lifecycle.get("records", {})
+    mode = lifecycle.get("mode")
+    if mode == "first-release":
+        if (
+            lifecycle.get("status") != "not_applicable"
+            or lifecycle.get("reason") != FIRST_RELEASE_REASON
+            or artifacts.get("previousRpmSha256") is not None
+            or set(records) != FIRST_RELEASE_RECORDS
+            or any(record.get("passed") is not True for record in records.values())
+        ):
+            raise RuntimeError("first Stable lifecycle evidence is incomplete")
+        return "not_applicable"
+
+    if (
+        mode != "upgrade"
+        or lifecycle.get("status") != "PASS"
+        or lifecycle.get("reason") is not None
+        or not isinstance(artifacts.get("previousRpmSha256"), str)
+        or len(artifacts["previousRpmSha256"]) != 64
+        or set(records) != UPGRADE_RECORDS
+        or any(record.get("passed") is not True for record in records.values())
+    ):
+        raise RuntimeError("upgrade lifecycle evidence is incomplete")
+    return "PASS"
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -165,12 +227,11 @@ def main() -> None:
     ):
         raise RuntimeError("RPM signing identity is not approved")
     signature_verification = verify_rpm_signature(rpm_path, public_key_path)
-    if lifecycle.get("passed") is not True or (
-        lifecycle.get("artifacts", {}).get("stableRpmSha256") != rpm_hash
-    ):
-        raise RuntimeError("Fedora lifecycle evidence is stale")
-    if lifecycle.get("artifacts", {}).get("publicKeySha256") != public_key_hash:
-        raise RuntimeError("Fedora lifecycle public-key evidence is stale")
+    lifecycle_status = validate_fedora_lifecycle(
+        lifecycle,
+        rpm_hash,
+        public_key_hash,
+    )
     require_all_true("R7 performance", performance.get("assertions", {}))
     if gui.get("status") != "PASS" or gui.get("packageSha256") != rpm_hash:
         raise RuntimeError("GUI release evidence is stale")
@@ -247,6 +308,9 @@ def main() -> None:
             "format": "CycloneDX 1.6",
             "components": len(sbom.get("components", [])),
             "ecosystemCounts": ecosystem_counts,
+        },
+        "fedoraLifecycle": {
+            "status": lifecycle_status,
         },
         "checks": {
             "dependencyAudits": True,

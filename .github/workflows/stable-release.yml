@@ -160,7 +160,7 @@ jobs:
             --public-key release/FlagDeck-1.0.0-signing-key.asc \
             --rpm-db release/evidence/rpmdb \
             --evidence release/evidence/rpm-signature.json \
-            --expected-fingerprint 5DEDB3781215AC2CB323FE2B3742F9C007201D22
+            --expected-fingerprint 18AD547A9ABCBC8B633031213FB7C61845873DE6
 
       - name: Remove private signing material
         if: always()
@@ -242,21 +242,16 @@ jobs:
             TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
             node tests/gui/desktop-memory-gate.mjs
 
-      - name: Download previous Stable RPM
-        shell: bash
+      - name: Reject unsupported lifecycle baseline
+        if: inputs.tag != 'v1.0.0'
         run: |
-          set -euo pipefail
-          gh release download v0.6.0 \
-            --pattern 'FlagDeck-0.6.0-1.x86_64.rpm' \
-            --dir target/release/bundle/rpm
-          test -f target/release/bundle/rpm/FlagDeck-0.6.0-1.x86_64.rpm
-        env:
-          GH_TOKEN: ${{ github.token }}
+          echo "this workflow revision supports the v1.0.0 first Stable lifecycle" >&2
+          exit 1
 
       - name: Run Fedora lifecycle and finalize evidence
         run: |
           python3 scripts/fedora_lifecycle_gate.py \
-            --old-rpm target/release/bundle/rpm/FlagDeck-0.6.0-1.x86_64.rpm \
+            --first-release \
             --new-rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm \
             --public-key release/FlagDeck-1.0.0-signing-key.asc \
             --output release/evidence/fedora-lifecycle.json

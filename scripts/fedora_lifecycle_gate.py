@@ -67,30 +67,46 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def read_command(arguments: list[str], fallback: str) -> str:
-    result = subprocess.run(
-        arguments,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            arguments,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except FileNotFoundError:
+        return fallback
     return result.stdout.strip() or fallback
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--old-rpm", type=Path, required=True)
+    parser.add_argument("--old-rpm", type=Path)
+    parser.add_argument("--first-release", action="store_true")
     parser.add_argument("--new-rpm", type=Path, required=True)
     parser.add_argument("--public-key", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--image", default="registry.fedoraproject.org/fedora:44")
     arguments = parser.parse_args()
+    if arguments.first_release and arguments.old_rpm is not None:
+        parser.error("--first-release cannot be combined with --old-rpm")
+    if not arguments.first_release and arguments.old_rpm is None:
+        parser.error("--old-rpm is required unless --first-release is set")
+
     root = Path(__file__).resolve().parent.parent
-    old_rpm = (root / arguments.old_rpm).resolve()
+    old_rpm = (
+        (root / arguments.old_rpm).resolve()
+        if arguments.old_rpm is not None
+        else None
+    )
     new_rpm = (root / arguments.new_rpm).resolve()
     public_key = (root / arguments.public_key).resolve()
     output = (root / arguments.output).resolve()
-    for required in (old_rpm, new_rpm, public_key):
+    required_paths = [new_rpm, public_key]
+    if old_rpm is not None:
+        required_paths.append(old_rpm)
+    for required in required_paths:
         if not required.is_file():
             raise FileNotFoundError(required)
 
@@ -98,10 +114,15 @@ def main() -> None:
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True, mode=0o700)
-    staged_old = staging / "FlagDeck-0.6.0-1.x86_64.rpm"
+    staged_old = (
+        staging / "FlagDeck-0.6.0-1.x86_64.rpm"
+        if old_rpm is not None
+        else None
+    )
     staged_new = staging / "FlagDeck-1.0.0-1.x86_64.rpm"
     staged_key = staging / "FlagDeck-1.0.0-signing-key.asc"
-    shutil.copy2(old_rpm, staged_old)
+    if old_rpm is not None and staged_old is not None:
+        shutil.copy2(old_rpm, staged_old)
     shutil.copy2(new_rpm, staged_new)
     shutil.copy2(public_key, staged_key)
 
@@ -156,23 +177,24 @@ def main() -> None:
             "desktopValidator",
             "dnf install -y --setopt=install_weak_deps=False desktop-file-utils",
         )
-        execute(
-            "installPrevious",
-            "dnf install -y --setopt=install_weak_deps=False "
-            "/release/FlagDeck-0.6.0-1.x86_64.rpm",
-        )
-        execute(
-            "verifyPrevious",
-            "test \"$(rpm -q --qf '%{VERSION}-%{RELEASE}' flag-deck)\" = '0.6.0-1'; "
-            "test -x /usr/bin/flagdeck-desktop",
-        )
+        if not arguments.first_release:
+            execute(
+                "installPrevious",
+                "dnf install -y --setopt=install_weak_deps=False "
+                "/release/FlagDeck-0.6.0-1.x86_64.rpm",
+            )
+            execute(
+                "verifyPrevious",
+                "test \"$(rpm -q --qf '%{VERSION}-%{RELEASE}' flag-deck)\" = '0.6.0-1'; "
+                "test -x /usr/bin/flagdeck-desktop",
+            )
         execute(
             "importReleaseKey",
             "rpmkeys --import /release/FlagDeck-1.0.0-signing-key.asc; "
             "rpmkeys --checksig --verbose /release/FlagDeck-1.0.0-1.x86_64.rpm",
         )
         execute(
-            "upgradeStable",
+            "installStable" if arguments.first_release else "upgradeStable",
             "dnf install -y --setopt=install_weak_deps=False "
             "--setopt=localpkg_gpgcheck=True "
             "/release/FlagDeck-1.0.0-1.x86_64.rpm",
@@ -189,19 +211,20 @@ def main() -> None:
             "test -f /usr/lib/FlagDeck/config/tools.toml; "
             "if ldd /usr/bin/flagdeck-desktop | grep -q 'not found'; then exit 1; fi",
         )
-        execute(
-            "rollbackPrevious",
-            "dnf downgrade -y --setopt=install_weak_deps=False "
-            "/release/FlagDeck-0.6.0-1.x86_64.rpm; "
-            "test \"$(rpm -q --qf '%{VERSION}-%{RELEASE}' flag-deck)\" = '0.6.0-1'",
-        )
-        execute(
-            "upgradeStableAgain",
-            "dnf install -y --setopt=install_weak_deps=False "
-            "--setopt=localpkg_gpgcheck=True "
-            "/release/FlagDeck-1.0.0-1.x86_64.rpm; "
-            "test \"$(rpm -q --qf '%{VERSION}-%{RELEASE}' flag-deck)\" = '1.0.0-1'",
-        )
+        if not arguments.first_release:
+            execute(
+                "rollbackPrevious",
+                "dnf downgrade -y --setopt=install_weak_deps=False "
+                "/release/FlagDeck-0.6.0-1.x86_64.rpm; "
+                "test \"$(rpm -q --qf '%{VERSION}-%{RELEASE}' flag-deck)\" = '0.6.0-1'",
+            )
+            execute(
+                "upgradeStableAgain",
+                "dnf install -y --setopt=install_weak_deps=False "
+                "--setopt=localpkg_gpgcheck=True "
+                "/release/FlagDeck-1.0.0-1.x86_64.rpm; "
+                "test \"$(rpm -q --qf '%{VERSION}-%{RELEASE}' flag-deck)\" = '1.0.0-1'",
+            )
         execute(
             "removeStable",
             "dnf remove -y --no-autoremove flag-deck; "
@@ -226,9 +249,19 @@ def main() -> None:
         and all(record["passed"] for record in records.values())
         and cleanup["passed"]
     )
+    status = (
+        "not_applicable"
+        if arguments.first_release and passed
+        else ("PASS" if passed else "FAIL")
+    )
     report = {
         "schema": "flagdeck.fedora-lifecycle.r7.v1",
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "mode": "first-release" if arguments.first_release else "upgrade",
+        "status": status,
+        "reason": (
+            "no prior stable RPM release exists" if arguments.first_release else None
+        ),
         "passed": passed,
         "failure": failure,
         "host": {
@@ -246,7 +279,9 @@ def main() -> None:
             "cleanup": cleanup,
         },
         "artifacts": {
-            "previousRpmSha256": sha256(staged_old),
+            "previousRpmSha256": (
+                sha256(staged_old) if staged_old is not None else None
+            ),
             "stableRpmSha256": sha256(staged_new),
             "publicKeySha256": sha256(staged_key),
         },

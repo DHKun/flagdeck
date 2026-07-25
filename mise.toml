@@ -56,7 +56,7 @@ run = "python3 -m unittest tests/contract/test_adapter_protocol.py"
 
 [tasks.test-release-tools]
 description = "运行 Stable 签名身份、可信公钥与最终清单合同测试"
-run = "python3 -m unittest tests/release/test_signing_tools.py"
+run = "python3 -m unittest tests/release/test_signing_tools.py tests/release/test_first_stable_gate.py"
 
 [tasks.test-python]
 description = "运行正式 mitmproxy Worker 格式、类型与合同测试"
@@ -135,11 +135,11 @@ run = "python3 scripts/run_release_audits.py --tool-root .release-tools --output
 [tasks.r7-sign]
 description = "使用隔离 Ed25519 发布密钥签名 RPM 并通过独立 RPM 密钥库验签"
 depends = ["package"]
-run = "python3 scripts/sign_rpm.py --rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --gpg-home release/private-signing/gnupg --public-key release/FlagDeck-1.0.0-signing-key.asc --rpm-db release/evidence/rpmdb --evidence release/evidence/rpm-signature.json --expected-fingerprint 5DEDB3781215AC2CB323FE2B3742F9C007201D22"
+run = "python3 scripts/sign_rpm.py --rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --gpg-home release/private-signing/gnupg --public-key release/FlagDeck-1.0.0-signing-key.asc --rpm-db release/evidence/rpmdb --evidence release/evidence/rpm-signature.json --expected-fingerprint 18AD547A9ABCBC8B633031213FB7C61845873DE6"
 
 [tasks.r7-fedora-lifecycle]
-description = "在干净 Fedora 44 容器执行 RPM 安装、升级、回退、再升级与卸载门禁"
-run = "python3 scripts/fedora_lifecycle_gate.py --old-rpm target/release/bundle/rpm/FlagDeck-0.6.0-1.x86_64.rpm --new-rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --public-key release/FlagDeck-1.0.0-signing-key.asc --output release/evidence/fedora-lifecycle.json"
+description = "在干净 Fedora 44 容器执行首个 Stable RPM 安装与卸载门禁"
+run = "python3 scripts/fedora_lifecycle_gate.py --first-release --new-rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm --public-key release/FlagDeck-1.0.0-signing-key.asc --output release/evidence/fedora-lifecycle.json"
 
 [tasks.r7-finalize]
 description = "验证最终 RPM、二进制、SBOM 与全部 Stable 证据的哈希绑定并生成发布清单"
