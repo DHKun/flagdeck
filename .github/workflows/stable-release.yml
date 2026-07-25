@@ -234,7 +234,7 @@ jobs:
         with:
           node-version: 22.22.2
 
-      - name: Run signed GUI and memory gates
+      - name: Run signed GUI gate
         shell: bash
         run: |
           set -euo pipefail
@@ -244,10 +244,28 @@ jobs:
             TAURI_DRIVER="$PWD/stable-input/tauri-driver" \
             TAURI_PACKAGE="$PWD/target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm" \
             node tests/gui/release-gate.mjs
-          xvfb-run -a env \
-            FLAGDECK_R7_MEMORY_RUNS=10 \
-            TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
-            node tests/gui/desktop-memory-gate.mjs
+
+      - name: Run signed desktop memory gate on the Fedora 44 target
+        shell: bash
+        run: |
+          set -euo pipefail
+          podman run --rm \
+            --volume "$PWD/target/release/flagdeck-desktop:/release/flagdeck-desktop:ro" \
+            --volume "$PWD/tests/gui:/release/gui" \
+            registry.fedoraproject.org/fedora:44 \
+            bash -euo pipefail -c '
+              dnf install -y --setopt=install_weak_deps=False \
+                webkit2gtk4.1 \
+                libappindicator-gtk3 \
+                xorg-x11-server-Xvfb \
+                nodejs \
+                procps-ng
+              install -m 755 /release/flagdeck-desktop /usr/local/bin/flagdeck-desktop
+              xvfb-run -a env \
+                FLAGDECK_R7_MEMORY_RUNS=10 \
+                TAURI_BINARY=/usr/local/bin/flagdeck-desktop \
+                node /release/gui/desktop-memory-gate.mjs
+            '
 
       - name: Reject unsupported lifecycle baseline
         if: inputs.tag != 'v1.0.0'
