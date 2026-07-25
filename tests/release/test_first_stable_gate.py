@@ -50,6 +50,17 @@ class FirstStableGateTests(unittest.TestCase):
 
         self.assertIn("runs-on: ubuntu-24.04", build_job)
 
+    def test_package_structure_check_reads_listings_without_broken_pipes(self) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+        build_job = workflow[workflow.index("  build:") : workflow.index("  sign:")]
+
+        self.assertNotIn('--contents "$deb" | grep', build_job)
+        self.assertNotIn('-qpl "$rpm_package" | grep', build_job)
+        self.assertIn('--contents "$deb" > deb-contents.txt', build_job)
+        self.assertIn('-qpl "$rpm_package" > rpm-contents.txt', build_job)
+
     def test_preview_packages_trigger_only_accepts_prerelease_tags(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/packages.yml"
