@@ -4435,14 +4435,16 @@ fn parse_fscan_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDt
         let url = record
             .get("url")
             .and_then(|item| item.as_str())
-            .map(str::to_owned)
-            .unwrap_or_else(|| {
-                if !host.is_empty() && !port.is_empty() {
-                    format!("http://{host}:{port}/")
-                } else {
-                    String::new()
-                }
-            });
+            .map_or_else(
+                || {
+                    if !host.is_empty() && !port.is_empty() {
+                        format!("http://{host}:{port}/")
+                    } else {
+                        String::new()
+                    }
+                },
+                str::to_owned,
+            );
         let status = record
             .get("info")
             .or_else(|| record.get("status"))
