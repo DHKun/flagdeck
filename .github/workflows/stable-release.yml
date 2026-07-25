@@ -193,7 +193,7 @@ jobs:
   validate-and-publish:
     name: Validate signed candidate and publish
     needs: sign
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: write
