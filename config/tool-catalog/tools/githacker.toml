@@ -1,6 +1,10 @@
 id = "githacker"
 name = "GitHacker"
 category = "web_exploit"
+tier = "tier_1"
+capabilities = ["git_leak", "source_recovery"]
+aliases = ["Git 泄露", ".git 恢复", "githacker", "源码还原"]
+risk_level = "l2"
 summary = "Web .git 泄露综合还原（分支/标签/历史，Active/git-leak）"
 
 usage = """
@@ -22,6 +26,72 @@ python -m githacker --url URL --output-folder DIR [--brute] [--threads N]
 mode = "embedded_cli"
 featured = true
 cwd = "Active/git-leak/GitHacker"
+
+[[presets]]
+id = "quick_dump"
+name = "快速还原"
+core_fields = ["url", "threads"]
+
+[presets.defaults]
+brute = "no"
+threads = "10"
+
+[[presets]]
+id = "brute_refs"
+name = "爆破分支标签"
+core_fields = ["url", "brute", "threads"]
+
+[presets.defaults]
+brute = "yes"
+threads = "20"
+
+[[presets]]
+id = "slow_safe"
+name = "低并发安全还原"
+core_fields = ["url", "threads"]
+
+[presets.defaults]
+brute = "no"
+threads = "4"
+
+[[field_groups]]
+id = "target"
+name = "目标"
+fields = ["url"]
+
+[[field_groups]]
+id = "execution"
+name = "执行"
+fields = ["brute", "threads"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "target"
+kind = "url"
+field = "url"
+
+[[io.outputs]]
+id = "recovery"
+kind = "raw_artifact"
+
+[[io.outputs]]
+id = "summary"
+kind = "http_discovery"
+
+[installation]
+distribution = "hybrid"
+license = "MIT"
+homepage = "https://github.com/WangYihang/GitHacker"
+version = "1.1.7"
+health_strategy = "safe-version-command"
+runtime = "Python venv (tools root)"
+version_args = ["-m", "githacker", "--help"]
+install_command = "cd Active/git-leak/GitHacker && python3 -m venv .venv && .venv/bin/pip install -e ."
+path_fix = "使用 tools root 内 .venv/bin/python"
+wordlist_source = ""
+wordlist_install_command = ""
 
 [binary]
 command = "python3"
@@ -141,7 +211,9 @@ equals = "yes"
 args = ["--enable-manually-check-dangerous-git-files"]
 
 [parser]
-kind = "none"
+kind = "githacker-text"
+id = "flagdeck.githacker-text"
+version = "1.0.0"
 
 [limits]
 timeout_millis = 3600000

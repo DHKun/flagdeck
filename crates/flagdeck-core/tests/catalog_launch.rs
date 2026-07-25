@@ -1850,3 +1850,139 @@ fn dddd_and_fscan_preview_and_diagnostic() {
         "fscan"
     );
 }
+
+#[test]
+fn workspace_catalog_exposes_sqlmap_and_githacker_v2() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let snapshot = core.list_catalog().unwrap();
+    let sqlmap = snapshot
+        .tools
+        .iter()
+        .find(|t| t.id == "sqlmap")
+        .expect("sqlmap");
+    assert_eq!(sqlmap.tier, "tier_1");
+    assert_eq!(sqlmap.risk_level, "l3");
+    assert!(sqlmap.presets.len() >= 3);
+    assert!(
+        sqlmap
+            .fields
+            .iter()
+            .any(|f| f.id == "cookie" && f.sensitive)
+    );
+    assert!(sqlmap.fields.iter().any(|f| f.id == "request_file"));
+    assert_eq!(sqlmap.io.schema_version, 1);
+    assert!(!sqlmap.installation.homepage.is_empty());
+
+    let gh = snapshot
+        .tools
+        .iter()
+        .find(|t| t.id == "githacker")
+        .expect("githacker");
+    assert_eq!(gh.tier, "tier_1");
+    assert!(gh.presets.len() >= 3);
+    assert!(gh.capabilities.iter().any(|c| c.contains("git")));
+    assert_eq!(gh.io.schema_version, 1);
+}
+
+#[test]
+fn sqlmap_requires_l3_and_githacker_preview_works() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = Arc::new(CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    ));
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "sqlmap-githacker".to_owned(),
+        })
+        .unwrap();
+
+    let preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id.clone(),
+            tool_id: "sqlmap".to_owned(),
+            target_url: "http://127.0.0.1:9/?id=1".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/?id=1".to_owned()),
+                ("level".to_owned(), "1".to_owned()),
+                ("risk".to_owned(), "1".to_owned()),
+                ("batch".to_owned(), "yes".to_owned()),
+            ]),
+        })
+        .expect("sqlmap preview");
+    assert!(preview.command_preview.contains("sqlmap"));
+    assert_eq!(preview.risk_level, RiskLevel::L3);
+
+    let denied = core.start_catalog_tool(RunCatalogToolRequest {
+        project_id: project.project_id.clone(),
+        tool_id: "sqlmap".to_owned(),
+        target_url: "http://127.0.0.1:9/?id=1".to_owned(),
+        form: BTreeMap::from([
+            ("url".to_owned(), "http://127.0.0.1:9/?id=1".to_owned()),
+            ("level".to_owned(), "1".to_owned()),
+            ("risk".to_owned(), "1".to_owned()),
+            ("batch".to_owned(), "yes".to_owned()),
+        ]),
+        confirm_sensitive_argv: false,
+        confirm_l2: true,
+        l3_confirmation: None,
+        source_job_id: None,
+        source_result_id: None,
+        source_artifact_id: None,
+    });
+    assert!(matches!(
+        denied,
+        Err(CoreError::CatalogConfirmationRequired(RiskLevel::L3))
+    ));
+
+    let gh_preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id,
+            tool_id: "githacker".to_owned(),
+            target_url: "http://127.0.0.1:9/.git/".to_owned(),
+            form: BTreeMap::from([
+                ("url".to_owned(), "http://127.0.0.1:9/.git/".to_owned()),
+                ("brute".to_owned(), "no".to_owned()),
+                ("threads".to_owned(), "4".to_owned()),
+            ]),
+        })
+        .expect("githacker preview");
+    assert!(
+        gh_preview.command_preview.contains("githacker")
+            || gh_preview.command_preview.contains("python")
+    );
+    assert_eq!(gh_preview.risk_level, RiskLevel::L2);
+
+    assert_eq!(
+        core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "sqlmap".to_owned()
+        })
+        .unwrap()
+        .tool_id,
+        "sqlmap"
+    );
+    assert_eq!(
+        core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "githacker".to_owned()
+        })
+        .unwrap()
+        .tool_id,
+        "githacker"
+    );
+}

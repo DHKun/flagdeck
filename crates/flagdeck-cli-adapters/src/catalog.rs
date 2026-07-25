@@ -1054,9 +1054,14 @@ fn prepare_catalog_command_with_sources_impl(
     let cwd = resolve_cwd(tool, &catalog.paths, &binary, job_directory)?;
     let environment = build_environment(tool, job_directory, &cwd);
 
-    let risk_level = match tool.mode {
-        ToolMode::ExternalLaunch => RiskLevel::L3,
-        ToolMode::EmbeddedCli => RiskLevel::L2,
+    let risk_level = match tool.risk_level.to_ascii_lowercase().as_str() {
+        "l0" => RiskLevel::L0,
+        "l1" => RiskLevel::L1,
+        "l3" => RiskLevel::L3,
+        _ => match tool.mode {
+            ToolMode::ExternalLaunch => RiskLevel::L3,
+            ToolMode::EmbeddedCli => RiskLevel::L2,
+        },
     };
 
     let mut sensitive_values = tool
