@@ -15,6 +15,7 @@ const attempts = [
       },
     },
   ],
+  ["diagnose_catalog_tool", { request: { tool_id: "ffuf" } }],
   ["list_projects", { request: { cursor: null, limit: 20 } }],
   ["create_project", { request: { name: "probe" } }],
   [

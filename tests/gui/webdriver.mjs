@@ -537,6 +537,48 @@ async function main() {
       ? value
       : undefined;
   });
+  const ffufDiagnosticApi = await invokeMain("diagnose_catalog_tool", {
+    request: { tool_id: "ffuf" },
+  });
+  const ffufDiagnosticIds = ffufDiagnosticApi.checks.map((check) => check.id);
+  const expectedDiagnosticIds = [
+    "binary",
+    "path",
+    "permission",
+    "version",
+    "runtime",
+    "wordlist",
+  ];
+  if (
+    JSON.stringify(ffufDiagnosticIds) !==
+      JSON.stringify(expectedDiagnosticIds) ||
+    ffufDiagnosticApi.checks
+      .filter((check) => check.status !== "usable")
+      .some(
+        (check) => !check.source || !check.fix || !check.copy_value,
+      )
+  ) {
+    throw new Error(
+      `ffuf diagnostic contract failed: ${JSON.stringify(ffufDiagnosticApi)}`,
+    );
+  }
+  const ffufDiagnostic = await waitFor("ffuf environment diagnostic", async () => {
+    const value = await execute(
+      "const panel = document.querySelector('[data-testid=tool-diagnostic]'); const checks = [...panel?.querySelectorAll('[data-testid^=diagnostic-]') ?? []]; return { status: document.querySelector('[data-testid=tool-diagnostic-status]')?.textContent.trim(), checkIds: checks.map((item) => item.dataset.testid.replace('diagnostic-', '')), sourceVisible: panel?.textContent.includes('https://github.com/ffuf/ffuf'), repairValues: [...panel?.querySelectorAll('.diagnostic-copy code') ?? []].map((item) => item.textContent.trim()), recheck: Boolean(document.querySelector('[data-testid=recheck-tool-diagnostic]')) };",
+    );
+    return JSON.stringify(value.checkIds) ===
+      JSON.stringify(expectedDiagnosticIds) &&
+      value.status &&
+      value.sourceVisible &&
+      value.recheck
+      ? value
+      : undefined;
+  });
+  await click('[data-testid="recheck-tool-diagnostic"]');
+  await waitFor("ffuf environment recheck", async () => {
+    const value = await text('[data-testid="notice"]');
+    return value?.includes("环境诊断已更新") ? value : undefined;
+  });
   const ffufProgressiveForm = await waitFor(
     "ffuf progressive form",
     async () => {
@@ -777,6 +819,7 @@ async function main() {
       credentialPersistenceDenied: true,
       catalogWorkbench,
       ffufLocalSearch,
+      ffufDiagnostic,
       ffufProgressiveForm,
       ffufPersonalPreset,
       ffufPersonalPresetExport,

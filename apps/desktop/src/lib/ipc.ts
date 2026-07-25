@@ -15,6 +15,7 @@ import type {
   CancelAllJobsResult,
   CancelJobRequest,
   CancelJobResult,
+  CatalogToolDiagnosticDto,
   CatalogRunPreview,
   CommandError,
   CoreEvent,
@@ -25,6 +26,7 @@ import type {
   CreateScopeRequest,
   DictionaryPage,
   DictionarySearchResult,
+  DiagnoseCatalogToolRequest,
   DiffHttpMessagesRequest,
   DiscoveryPage,
   DiscoveryPageRequest,
@@ -137,6 +139,10 @@ export const ipc = {
     invoke("list_scopes", { request }),
   toolHealth: (): Promise<ToolHealthDto[]> => invoke("tool_health"),
   listCatalog: (): Promise<CatalogSnapshot> => invoke("list_catalog"),
+  diagnoseCatalogTool: (
+    request: DiagnoseCatalogToolRequest,
+  ): Promise<CatalogToolDiagnosticDto> =>
+    invoke("diagnose_catalog_tool", { request }),
   previewCatalogTool: (
     request: PreviewCatalogToolRequest,
   ): Promise<CatalogRunPreview> => invoke("preview_catalog_tool", { request }),

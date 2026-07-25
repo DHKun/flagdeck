@@ -12,20 +12,21 @@ use std::sync::Arc;
 use flagdeck_core::{
     AppStatus, ArtifactPage, ArtifactPageRequest, ArtifactPreview, CampaignRequest,
     CancelAllJobsResult, CancelJobRequest, CancelJobResult, CatalogRunPreview, CatalogSnapshot,
-    ClearJobsRequest, ClearJobsResult, CommandError, CoreError, CoreEvent, CoreService,
-    CreateDictionaryRequest, CreateNoteRequest, CreateProjectRequest, CreateScopeRequest,
-    CreateSqlmapRequestFileRequest, DeleteJobRequest, DeleteJobResult, DictionaryPage,
-    DictionarySearchResult, DiffHttpMessagesRequest, DiscoveryPage, DiscoveryPageRequest,
-    EnsureTargetRequest, ExecuteMetasploitModuleRequest, ExportProjectRequest, ExportProjectResult,
-    ExternalLauncherHealthDto, GetHttpMessageRequest, GetMetasploitOptionsRequest, HttpHistoryPage,
-    HttpHistoryPageRequest, HttpMessageDiff, ImportPackagePage, ImportProjectRequest,
-    ImportProjectResult, IntruderAttemptPage, IntruderAttemptPageRequest, IntruderCampaignPage,
-    JobFilePreview, JobLogPreview, JobPage, JobPageRequest, JobView, LaunchExternalRequest,
-    ListIntruderCampaignsRequest, ListPayloadsRequest, MetasploitConsoleCommandRequest,
-    MetasploitEntityPage, MetasploitExecutionResult, MetasploitModuleOption,
-    MetasploitModuleSummary, MetasploitSessionCommandRequest, MetasploitStatus,
-    MetasploitTranscriptResult, OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult,
-    OpenProjectRequest, ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
+    CatalogToolDiagnosticDto, ClearJobsRequest, ClearJobsResult, CommandError, CoreError,
+    CoreEvent, CoreService, CreateDictionaryRequest, CreateNoteRequest, CreateProjectRequest,
+    CreateScopeRequest, CreateSqlmapRequestFileRequest, DeleteJobRequest, DeleteJobResult,
+    DiagnoseCatalogToolRequest, DictionaryPage, DictionarySearchResult, DiffHttpMessagesRequest,
+    DiscoveryPage, DiscoveryPageRequest, EnsureTargetRequest, ExecuteMetasploitModuleRequest,
+    ExportProjectRequest, ExportProjectResult, ExternalLauncherHealthDto, GetHttpMessageRequest,
+    GetMetasploitOptionsRequest, HttpHistoryPage, HttpHistoryPageRequest, HttpMessageDiff,
+    ImportPackagePage, ImportProjectRequest, ImportProjectResult, IntruderAttemptPage,
+    IntruderAttemptPageRequest, IntruderCampaignPage, JobFilePreview, JobLogPreview, JobPage,
+    JobPageRequest, JobView, LaunchExternalRequest, ListIntruderCampaignsRequest,
+    ListPayloadsRequest, MetasploitConsoleCommandRequest, MetasploitEntityPage,
+    MetasploitExecutionResult, MetasploitModuleOption, MetasploitModuleSummary,
+    MetasploitSessionCommandRequest, MetasploitStatus, MetasploitTranscriptResult,
+    OpenHttpBrowserPreviewRequest, OpenHttpBrowserPreviewResult, OpenProjectRequest,
+    ParseMultipartRequest, PayloadPage, PayloadPreview, PayloadSourceHealthDto,
     PersonalPresetStoreDto, PreviewArtifactRequest, PreviewCatalogToolRequest,
     PreviewJobFileRequest, PreviewJobLogRequest, PreviewPayloadRequest, ProjectContextRequest,
     ProjectPage, ProjectPageRequest, RepeatHttpRequest, RepeatHttpResult, RunCatalogToolRequest,
@@ -97,6 +98,15 @@ async fn save_personal_presets(
 ) -> Result<PersonalPresetStoreDto, CommandError> {
     let core = Arc::clone(state.inner());
     run_core(move || core.save_personal_presets(request)).await
+}
+
+#[tauri::command]
+async fn diagnose_catalog_tool(
+    state: State<'_, Arc<CoreService>>,
+    request: DiagnoseCatalogToolRequest,
+) -> Result<CatalogToolDiagnosticDto, CommandError> {
+    let core = Arc::clone(state.inner());
+    run_core(move || core.diagnose_catalog_tool(&request)).await
 }
 
 #[tauri::command]
@@ -1044,6 +1054,7 @@ pub fn run() {
             app_status,
             load_personal_presets,
             save_personal_presets,
+            diagnose_catalog_tool,
             create_project,
             list_projects,
             open_project,

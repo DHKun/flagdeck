@@ -97,6 +97,12 @@ license = "MIT"
 homepage = "https://github.com/ffuf/ffuf"
 version = "2.1.0-dev"
 health_strategy = "safe-version-command"
+runtime = "standalone Go binary"
+version_args = ["-V"]
+install_command = "go install github.com/ffuf/ffuf/v2@latest"
+path_fix = "export PATH=\"$PATH:$(go env GOPATH)/bin\""
+wordlist_source = "https://github.com/danielmiessler/SecLists"
+wordlist_install_command = "git clone --depth 1 https://github.com/danielmiessler/SecLists.git /data/CTF/Tools/Wordlists/SecLists"
 
 [binary]
 command = "ffuf"

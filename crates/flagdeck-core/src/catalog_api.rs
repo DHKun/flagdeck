@@ -50,6 +50,48 @@ pub struct CatalogInstallationDto {
     pub homepage: String,
     pub version: String,
     pub health_strategy: String,
+    pub runtime: String,
+    pub version_args: Vec<String>,
+    pub install_command: String,
+    pub path_fix: String,
+    pub wordlist_source: String,
+    pub wordlist_install_command: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum CatalogDiagnosticStatus {
+    Usable,
+    Missing,
+    VersionAbnormal,
+    PathAbnormal,
+    PermissionAbnormal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CatalogDiagnosticCheckDto {
+    pub id: String,
+    pub label: String,
+    pub status: CatalogDiagnosticStatus,
+    pub detail: String,
+    pub source: String,
+    pub fix: String,
+    pub copy_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CatalogToolDiagnosticDto {
+    pub tool_id: String,
+    pub status: CatalogDiagnosticStatus,
+    pub binary_path: String,
+    pub detected_version: String,
+    pub checks: Vec<CatalogDiagnosticCheckDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct DiagnoseCatalogToolRequest {
+    pub tool_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

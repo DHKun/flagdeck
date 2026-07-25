@@ -19,6 +19,7 @@ const commands = [
   "app_status",
   "load_personal_presets",
   "save_personal_presets",
+  "diagnose_catalog_tool",
   "create_project",
   "list_projects",
   "open_project",

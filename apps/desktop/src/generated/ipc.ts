@@ -156,7 +156,15 @@ export type CatalogFieldGroupDto = { id: string, name: string, fields: Array<str
 
 export type CatalogFormFieldDto = { id: string, field_type: string, label: string, required: boolean, default_value: string, from: string, options: Array<string>, hint: string, sensitive: boolean, };
 
-export type CatalogInstallationDto = { distribution: string, license: string, homepage: string, version: string, health_strategy: string, };
+export type CatalogInstallationDto = { distribution: string, license: string, homepage: string, version: string, health_strategy: string, runtime: string, version_args: Array<string>, install_command: string, path_fix: string, wordlist_source: string, wordlist_install_command: string, };
+
+export type CatalogDiagnosticStatus = "usable" | "missing" | "version_abnormal" | "path_abnormal" | "permission_abnormal";
+
+export type CatalogDiagnosticCheckDto = { id: string, label: string, status: CatalogDiagnosticStatus, detail: string, source: string, fix: string, copy_value: string, };
+
+export type CatalogToolDiagnosticDto = { tool_id: string, status: CatalogDiagnosticStatus, binary_path: string, detected_version: string, checks: Array<CatalogDiagnosticCheckDto>, };
+
+export type DiagnoseCatalogToolRequest = { tool_id: string, };
 
 export type CatalogPresetDto = { id: string, name: string, core_fields: Array<string>, defaults: { [key in string]: string }, };
 

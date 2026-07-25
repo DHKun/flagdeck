@@ -4,8 +4,10 @@
   import type { TargetScope, ToolIoKind } from "./generated/contracts";
   import type {
     AppStatus,
+    CatalogDiagnosticStatus,
     CatalogRunPreview,
     CatalogSnapshot,
+    CatalogToolDiagnosticDto,
     CatalogToolDto,
     JobLogStream,
     JobView,
@@ -122,6 +124,8 @@
   let presetTransferOpen = false;
   let presetTransferText = "";
   let advancedFieldsExpanded = false;
+  let toolDiagnostic: CatalogToolDiagnosticDto | null = null;
+  let diagnosticBusy = false;
   let runPreview: CatalogRunPreview | null = null;
   let runPreviewTimer: ReturnType<typeof setTimeout> | undefined;
   let jobFilterToolId = prefs.jobFilterToolId;
@@ -515,6 +519,32 @@
     };
     persistPrefs();
     if (activeNav === "home") activeNav = "tools";
+    toolDiagnostic = null;
+    void loadToolDiagnostic(tool.id, false);
+  }
+
+  async function loadToolDiagnostic(
+    toolId: string,
+    announce: boolean,
+  ): Promise<void> {
+    diagnosticBusy = true;
+    try {
+      const diagnostic = await ipc.diagnoseCatalogTool({ tool_id: toolId });
+      if (selectedToolId !== toolId) return;
+      toolDiagnostic = diagnostic;
+      if (announce) {
+        catalog = await ipc.listCatalog();
+        notice =
+          diagnostic.status === "usable"
+            ? "环境诊断已更新，工具可用"
+            : "环境诊断已更新，请按检查项修复";
+        noticeKind = diagnostic.status === "usable" ? "success" : "info";
+      }
+    } catch (error) {
+      if (selectedToolId === toolId) reportError(error);
+    } finally {
+      if (selectedToolId === toolId) diagnosticBusy = false;
+    }
   }
 
   function openScenario(scenario: Scenario): void {
@@ -960,6 +990,29 @@
     return match ? `Tier ${match[1]}` : tier;
   }
 
+  function diagnosticStatusLabel(status: CatalogDiagnosticStatus): string {
+    return (
+      {
+        usable: "可用",
+        missing: "缺失",
+        version_abnormal: "版本异常",
+        path_abnormal: "路径异常",
+        permission_abnormal: "权限异常",
+      } satisfies Record<CatalogDiagnosticStatus, string>
+    )[status];
+  }
+
+  async function copyDiagnosticValue(value: string): Promise<void> {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      notice = "修复内容已复制";
+      noticeKind = "success";
+    } catch {
+      window.prompt("复制修复内容", value);
+    }
+  }
+
   function installationSummary(tool: CatalogToolDto): string {
     return [
       tool.installation.distribution,
@@ -1399,6 +1452,86 @@
                   输出：{ioKindList(selectedTool.io.outputs)}
                 </p>
               {/if}
+
+              <section class="diagnostic-panel" data-testid="tool-diagnostic">
+                <div class="diagnostic-head">
+                  <div>
+                    <div class="section-label">运行环境诊断</div>
+                    <p class="sub">
+                      检查二进制、路径、权限、版本、运行时与默认字典。
+                    </p>
+                  </div>
+                  <div class="diagnostic-actions">
+                    {#if toolDiagnostic}
+                      <span
+                        class={toolDiagnostic.status === "usable"
+                          ? "pill ok"
+                          : "pill warn"}
+                        data-testid="tool-diagnostic-status"
+                      >
+                        {diagnosticStatusLabel(toolDiagnostic.status)}
+                      </span>
+                    {/if}
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="recheck-tool-diagnostic"
+                      disabled={diagnosticBusy}
+                      onclick={() =>
+                        void loadToolDiagnostic(selectedTool.id, true)}
+                    >
+                      {diagnosticBusy ? "检测中…" : "重新检测"}
+                    </button>
+                  </div>
+                </div>
+
+                {#if toolDiagnostic}
+                  <div class="diagnostic-list">
+                    {#each toolDiagnostic.checks as check}
+                      <article
+                        class="diagnostic-item"
+                        data-testid={`diagnostic-${check.id}`}
+                      >
+                        <div class="diagnostic-item-head">
+                          <strong>{check.label}</strong>
+                          <span
+                            class={check.status === "usable"
+                              ? "pill ok"
+                              : "pill warn"}
+                          >
+                            {diagnosticStatusLabel(check.status)}
+                          </span>
+                        </div>
+                        <p class="sub">{check.detail}</p>
+                        {#if check.source}
+                          <div class="diagnostic-line">
+                            <span>来源</span>
+                            <code>{check.source}</code>
+                          </div>
+                        {/if}
+                        {#if check.fix}
+                          <p class="diagnostic-fix">{check.fix}</p>
+                        {/if}
+                        {#if check.copy_value}
+                          <div class="diagnostic-copy">
+                            <code>{check.copy_value}</code>
+                            <button
+                              class="btn btn-secondary"
+                              type="button"
+                              onclick={() =>
+                                void copyDiagnosticValue(check.copy_value)}
+                            >
+                              复制
+                            </button>
+                          </div>
+                        {/if}
+                      </article>
+                    {/each}
+                  </div>
+                {:else}
+                  <p class="sub">正在读取环境状态…</p>
+                {/if}
+              </section>
 
               <div oninput={scheduleRunPreview} onchange={scheduleRunPreview}>
                 {#if selectedTool.presets.length > 0 || selectedToolPersonalPresets.length > 0}

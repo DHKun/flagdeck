@@ -16,6 +16,7 @@
     "list_scopes",
     "tool_health",
     "list_catalog",
+    "diagnose_catalog_tool",
     "ensure_target",
     "preview_catalog_tool",
     "run_catalog_tool",
@@ -235,6 +236,13 @@
       case "tool_pack_health":
       case "list_import_packages":
         valid = Object.keys(payload).length === 0;
+        break;
+      case "diagnose_catalog_tool":
+        valid =
+          object(request) &&
+          Object.keys(request).length === 1 &&
+          boundedString(request.tool_id, 64) &&
+          /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(request.tool_id);
         break;
       case "save_personal_presets":
         valid =

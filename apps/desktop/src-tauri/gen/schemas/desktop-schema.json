@@ -255,6 +255,12 @@
           "markdownDescription": "Enables the delete_job command without any pre-configured scope."
         },
         {
+          "description": "Enables the diagnose_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnose-catalog-tool",
+          "markdownDescription": "Enables the diagnose_catalog_tool command without any pre-configured scope."
+        },
+        {
           "description": "Enables the diff_http command without any pre-configured scope.",
           "type": "string",
           "const": "allow-diff-http",
@@ -649,6 +655,12 @@
           "type": "string",
           "const": "deny-delete-job",
           "markdownDescription": "Denies the delete_job command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnose_catalog_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnose-catalog-tool",
+          "markdownDescription": "Denies the diagnose_catalog_tool command without any pre-configured scope."
         },
         {
           "description": "Denies the diff_http command without any pre-configured scope.",

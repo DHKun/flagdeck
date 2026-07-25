@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use flagdeck_core::{
-    CoreError, CoreService, CreateProjectRequest, JobLogStream, JobPageRequest,
-    PreviewCatalogToolRequest, PreviewJobLogRequest, RunCatalogToolRequest,
+    CatalogDiagnosticStatus, CoreError, CoreService, CreateProjectRequest,
+    DiagnoseCatalogToolRequest, JobLogStream, JobPageRequest, PreviewCatalogToolRequest,
+    PreviewJobLogRequest, RunCatalogToolRequest,
 };
 use flagdeck_domain::{ExecutionStatus, RiskLevel, ToolInputSource, ToolIoKind};
 use tempfile::tempdir;
@@ -81,6 +83,170 @@ template = ["--", "{url}", "{wordlist}", "{secret}"]
 "#,
     )
     .unwrap();
+}
+
+fn write_diagnostic_catalog(catalog_root: &Path, binary: &str, command: &str) {
+    let tools_dir = catalog_root.join("tools");
+    fs::create_dir_all(&tools_dir).unwrap();
+    fs::write(
+        tools_dir.join("ffuf.toml"),
+        format!(
+            r#"
+id = "ffuf"
+name = "ffuf"
+category = "content_discovery"
+mode = "embedded_cli"
+
+[installation]
+homepage = "https://github.com/ffuf/ffuf"
+version = "2.1.0-dev"
+health_strategy = "safe-version-command"
+runtime = "standalone Go binary"
+version_args = ["-V"]
+install_command = "go install github.com/ffuf/ffuf/v2@latest"
+path_fix = "export PATH=$PATH:$GOPATH/bin"
+
+[binary]
+command = "{command}"
+path = "{binary}"
+resolve = ["path", "system"]
+
+[argv]
+template = ["--help"]
+"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn catalog_diagnostic_distinguishes_all_actionable_health_states() {
+    let temporary = tempdir().unwrap();
+    let catalog_root = temporary.path().join("catalog");
+    let binary = temporary.path().join("ffuf-fixture");
+    let workspaces = temporary.path().join("workspaces");
+    let diagnose = |core: &CoreService| {
+        core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "ffuf".to_owned(),
+        })
+        .unwrap()
+    };
+    let assert_actionable = |diagnostic: &flagdeck_core::CatalogToolDiagnosticDto| {
+        assert!(
+            diagnostic
+                .checks
+                .iter()
+                .filter(|check| check.status != CatalogDiagnosticStatus::Usable)
+                .all(|check| {
+                    !check.source.is_empty()
+                        && !check.fix.is_empty()
+                        && !check.copy_value.is_empty()
+                }),
+            "every abnormal check must expose a source-specific copyable fix"
+        );
+    };
+
+    write_diagnostic_catalog(&catalog_root, "", "flagdeck-definitely-missing");
+    let core = CoreService::with_bundled_resources(
+        &workspaces,
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root.clone()),
+    );
+    let missing = diagnose(&core);
+    assert_eq!(missing.status, CatalogDiagnosticStatus::Missing);
+    assert_actionable(&missing);
+
+    write_diagnostic_catalog(&catalog_root, binary.to_str().unwrap(), "");
+    let path_abnormal = diagnose(&core);
+    assert_eq!(path_abnormal.status, CatalogDiagnosticStatus::PathAbnormal);
+    assert_actionable(&path_abnormal);
+
+    fs::write(&binary, "#!/bin/sh\necho 'ffuf version: old'\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o600)).unwrap();
+    let permission_abnormal = diagnose(&core);
+    assert_eq!(
+        permission_abnormal.status,
+        CatalogDiagnosticStatus::PermissionAbnormal
+    );
+    assert_actionable(&permission_abnormal);
+
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let version_abnormal = diagnose(&core);
+    assert_eq!(
+        version_abnormal.status,
+        CatalogDiagnosticStatus::VersionAbnormal
+    );
+    assert_actionable(&version_abnormal);
+
+    fs::write(&binary, "#!/bin/sh\necho 'ffuf version: 2.1.0-dev'\n").unwrap();
+    assert_eq!(diagnose(&core).status, CatalogDiagnosticStatus::Usable);
+    assert_eq!(
+        diagnose(&core)
+            .checks
+            .iter()
+            .map(|check| check.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "binary",
+            "path",
+            "permission",
+            "version",
+            "runtime",
+            "wordlist"
+        ]
+    );
+}
+
+#[test]
+fn catalog_diagnostic_backfills_actionable_repairs_for_v1_manifests() {
+    let temporary = tempdir().unwrap();
+    let catalog_root = temporary.path().join("catalog");
+    let tools_dir = catalog_root.join("tools");
+    fs::create_dir_all(&tools_dir).unwrap();
+    fs::write(
+        tools_dir.join("legacy.toml"),
+        r#"
+id = "legacy"
+name = "Legacy tool"
+category = "misc"
+mode = "embedded_cli"
+
+[binary]
+command = "flagdeck-definitely-missing"
+resolve = ["system"]
+
+[argv]
+template = ["--help"]
+"#,
+    )
+    .unwrap();
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+
+    let diagnostic = core
+        .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
+            tool_id: "legacy".to_owned(),
+        })
+        .unwrap();
+
+    assert!(
+        diagnostic
+            .checks
+            .iter()
+            .filter(|check| check.status != CatalogDiagnosticStatus::Usable)
+            .all(|check| {
+                !check.source.is_empty() && !check.fix.is_empty() && !check.copy_value.is_empty()
+            })
+    );
 }
 
 #[test]

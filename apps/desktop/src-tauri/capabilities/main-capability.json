@@ -8,6 +8,7 @@
     "allow-app-status",
     "allow-load-personal-presets",
     "allow-save-personal-presets",
+    "allow-diagnose-catalog-tool",
     "allow-create-project",
     "allow-list-projects",
     "allow-open-project",

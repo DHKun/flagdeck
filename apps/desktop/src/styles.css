@@ -503,6 +503,78 @@ button {
   align-items: start;
 }
 
+.diagnostic-panel {
+  margin: 14px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.018);
+}
+
+.diagnostic-head,
+.diagnostic-item-head,
+.diagnostic-actions,
+.diagnostic-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diagnostic-head {
+  align-items: flex-start;
+}
+
+.diagnostic-actions {
+  flex-shrink: 0;
+}
+
+.diagnostic-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.diagnostic-item {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+}
+
+.diagnostic-item strong {
+  font-size: 13px;
+}
+
+.diagnostic-line,
+.diagnostic-copy {
+  margin-top: 8px;
+}
+
+.diagnostic-line {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.diagnostic-line code,
+.diagnostic-copy code {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+.diagnostic-fix {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.diagnostic-copy {
+  align-items: flex-start;
+}
+
 .field {
   display: flex;
   flex-direction: column;

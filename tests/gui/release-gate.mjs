@@ -117,6 +117,9 @@ function validate(result) {
     result.main?.catalogWorkbench?.sensitiveInputPassword === true &&
     result.main?.preferenceEvidence?.targetDenied === true &&
     result.main?.preferenceEvidence?.formSecretDenied === true &&
+    result.main?.ffufDiagnostic?.checkIds?.length === 6 &&
+    result.main?.ffufDiagnostic?.sourceVisible === true &&
+    result.main?.ffufDiagnostic?.recheck === true &&
     result.main?.ffufPersonalPreset?.threads === "41" &&
     result.main?.ffufPersonalPreset?.sensitiveDenied === true &&
     result.main?.ffufPersonalPresetExport?.schemaVersion === 1 &&

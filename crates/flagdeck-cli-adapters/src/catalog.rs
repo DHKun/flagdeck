@@ -161,6 +161,18 @@ pub struct CatalogInstallation {
     pub version: String,
     #[serde(default)]
     pub health_strategy: String,
+    #[serde(default)]
+    pub runtime: String,
+    #[serde(default)]
+    pub version_args: Vec<String>,
+    #[serde(default)]
+    pub install_command: String,
+    #[serde(default)]
+    pub path_fix: String,
+    #[serde(default)]
+    pub wordlist_source: String,
+    #[serde(default)]
+    pub wordlist_install_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -408,6 +420,14 @@ impl ToolCatalog {
     #[must_use]
     pub fn tool(&self, id: &str) -> Option<&CatalogToolManifest> {
         self.tools.iter().find(|tool| tool.id == id)
+    }
+
+    pub fn resolve_tool_binary(&self, id: &str) -> Result<PathBuf, CatalogError> {
+        let tool = self.tool(id).ok_or(CatalogError::NotFound)?;
+        if !tool_supports_current_platform(tool) {
+            return Err(CatalogError::BinaryMissing);
+        }
+        resolve_binary(tool, &self.paths)
     }
 
     #[must_use]
