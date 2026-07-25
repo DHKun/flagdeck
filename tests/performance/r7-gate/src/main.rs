@@ -417,6 +417,26 @@ fn digest_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    let parent = path.parent().context("output path has no parent")?;
+    fs::create_dir_all(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    serde_json::to_writer_pretty(&mut file, value)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&temporary, path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,24 +457,4 @@ mod tests {
             "Ubuntu 24.04 LTS"
         );
     }
-}
-
-fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let parent = path.parent().context("output path has no parent")?;
-    fs::create_dir_all(parent)?;
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    serde_json::to_writer_pretty(&mut file, value)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&temporary, path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    File::open(parent)?.sync_all()?;
-    Ok(())
 }
