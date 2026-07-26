@@ -18,10 +18,11 @@ use std::time::Duration;
 
 use flagdeck_domain::{
     AdapterEntity, Artifact, ArtifactId, ArtifactState, AuditEvent, CommandSpec, DictionaryId,
-    DictionaryIndex, Discovery, DiscoveryId, ExportPolicy, HttpMessage, HttpSource, IntegrityState,
-    IntruderAttempt, IntruderAttemptId, IntruderCampaign, IntruderCampaignId, Job,
-    MessageDirection, MessageId, ProjectId, ProjectSummary, ProxySession, ProxySessionId,
-    Sensitivity, StateChainRun, TargetScope, Timestamp, Validate,
+    DictionaryIndex, Discovery, DiscoveryId, ExecutionStatus, ExportPolicy, HttpMessage,
+    HttpSource, ImportStatus, IntegrityState, IntruderAttempt, IntruderAttemptId, IntruderCampaign,
+    IntruderCampaignId, IntruderCampaignState, Job, MessageDirection, MessageId, ProjectId,
+    ProjectSummary, ProxySession, ProxySessionId, ProxySessionState, Sensitivity, StateChainRun,
+    TargetScope, Timestamp, Validate,
 };
 use fs2::FileExt;
 use nix::sys::stat::{Mode, umask};
@@ -3542,28 +3543,40 @@ fn recover_database_and_files(
 ) -> Result<RecoveryReport, StorageError> {
     let mut report = RecoveryReport::default();
     let now = Timestamp::now();
+
+    // 恢复目标与"进行中"状态集合都取自 flagdeck-domain 的 RESTART_ACTIVE，避免这里的
+    // WHERE 子句与域层规则偏离。状态串用 enum_json 生成，与写入列时的序列化一致。
+    let job_interrupted = enum_json(&ExecutionStatus::Interrupted)?;
+    let job_active = recovery_in_list(ExecutionStatus::RESTART_ACTIVE)?;
+    let import_failed = enum_json(&ImportStatus::ParserFailed)?;
+    let import_active = recovery_in_list(ImportStatus::RESTART_ACTIVE)?;
+    let proxy_interrupted = enum_json(&ProxySessionState::Interrupted)?;
+    let proxy_active = recovery_in_list(ProxySessionState::RESTART_ACTIVE)?;
+    let campaign_interrupted = enum_json(&IntruderCampaignState::Interrupted)?;
+    let campaign_active = recovery_in_list(IntruderCampaignState::RESTART_ACTIVE)?;
+
     report.interrupted_jobs = u64::try_from(connection.execute(
-        "UPDATE jobs SET execution_status='interrupted',stopped_at=?1,payload_json=json_set(payload_json,'$.execution_status','interrupted','$.stopped_at',?1) WHERE execution_status IN ('starting','running','stopping')",
+        &format!("UPDATE jobs SET execution_status='{job_interrupted}',stopped_at=?1,payload_json=json_set(payload_json,'$.execution_status','{job_interrupted}','$.stopped_at',?1) WHERE execution_status IN ({job_active})"),
         [&now.0],
     )?)
     .unwrap_or(0);
     report.interrupted_imports = u64::try_from(connection.execute(
-        "UPDATE jobs SET import_status='parser_failed',payload_json=json_set(payload_json,'$.import_status','parser_failed') WHERE import_status='importing'",
+        &format!("UPDATE jobs SET import_status='{import_failed}',payload_json=json_set(payload_json,'$.import_status','{import_failed}') WHERE import_status IN ({import_active})"),
         [],
     )?)
     .unwrap_or(0);
     report.interrupted_proxy_sessions = u64::try_from(connection.execute(
-        "UPDATE proxy_sessions SET state='interrupted',stopped_at=?1,payload_json=json_set(payload_json,'$.state','interrupted','$.stopped_at',?1,'$.error_summary','proxy session interrupted during restart recovery') WHERE state IN ('starting','ready','stopping')",
+        &format!("UPDATE proxy_sessions SET state='{proxy_interrupted}',stopped_at=?1,payload_json=json_set(payload_json,'$.state','{proxy_interrupted}','$.stopped_at',?1,'$.error_summary','proxy session interrupted during restart recovery') WHERE state IN ({proxy_active})"),
         [&now.0],
     )?)
     .unwrap_or(0);
     report.interrupted_campaigns = u64::try_from(connection.execute(
-        "UPDATE intruder_campaigns SET state='interrupted',stopped_at=?1,payload_json=json_set(payload_json,'$.state','interrupted','$.stopped_at',?1,'$.error_summary','intruder campaign interrupted during restart recovery') WHERE state IN ('queued','running')",
+        &format!("UPDATE intruder_campaigns SET state='{campaign_interrupted}',stopped_at=?1,payload_json=json_set(payload_json,'$.state','{campaign_interrupted}','$.stopped_at',?1,'$.error_summary','intruder campaign interrupted during restart recovery') WHERE state IN ({campaign_active})"),
         [&now.0],
     )?)
     .unwrap_or(0);
     connection.execute(
-        "UPDATE job_imports SET import_status='parser_failed',error_summary='import interrupted during restart recovery',completed_at=?1,payload_json=json_set(payload_json,'$.import_status','parser_failed','$.error_summary','import interrupted during restart recovery','$.completed_at',?1) WHERE import_status='importing'",
+        &format!("UPDATE job_imports SET import_status='{import_failed}',error_summary='import interrupted during restart recovery',completed_at=?1,payload_json=json_set(payload_json,'$.import_status','{import_failed}','$.error_summary','import interrupted during restart recovery','$.completed_at',?1) WHERE import_status IN ({import_active})"),
         [&now.0],
     )?;
 
@@ -3705,6 +3718,17 @@ fn write_artifact_manifest(
 fn enum_json<T: Serialize>(value: &T) -> Result<String, StorageError> {
     let encoded = serde_json::to_string(value)?;
     Ok(encoded.trim_matches('"').to_owned())
+}
+
+/// 把一组枚举状态序列化成 SQL `IN (...)` 的内容，如 `'starting','running','stopping'`。
+/// 状态来自 domain 的 `RESTART_ACTIVE` 常量（固定枚举，非用户输入），用 [`enum_json`] 生成，
+/// 与写入列时的序列化一致。
+fn recovery_in_list<T: Serialize>(states: &[T]) -> Result<String, StorageError> {
+    let mut parts = Vec::with_capacity(states.len());
+    for state in states {
+        parts.push(format!("'{}'", enum_json(state)?));
+    }
+    Ok(parts.join(","))
 }
 
 fn integer_from_u64(value: u64) -> Result<i64, StorageError> {

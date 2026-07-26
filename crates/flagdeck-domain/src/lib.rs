@@ -392,6 +392,12 @@ pub enum ProxySessionState {
     Interrupted,
 }
 
+impl ProxySessionState {
+    /// 崩溃重启时视为"进行中"的状态，recovery 将它们恢复为 [`ProxySessionState::Interrupted`]。
+    pub const RESTART_ACTIVE: &'static [ProxySessionState] =
+        &[Self::Starting, Self::Ready, Self::Stopping];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ProxySession {
     pub proxy_session_id: ProxySessionId,
@@ -613,6 +619,13 @@ pub enum ExecutionStatus {
     Interrupted,
 }
 
+impl ExecutionStatus {
+    /// 崩溃重启时视为"进行中"的状态，recovery 将它们恢复为 [`ExecutionStatus::Interrupted`]。
+    /// 这是"哪些状态会被重启中断"的唯一权威定义，storage recovery 与 [`Job::transition`] 都以此为准。
+    pub const RESTART_ACTIVE: &'static [ExecutionStatus] =
+        &[Self::Starting, Self::Running, Self::Stopping];
+}
+
 impl Display for ExecutionStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -638,6 +651,11 @@ pub enum ImportStatus {
     Imported,
     ParserFailed,
     Skipped,
+}
+
+impl ImportStatus {
+    /// 崩溃重启时视为"进行中"的导入状态，recovery 将它们恢复为 [`ImportStatus::ParserFailed`]。
+    pub const RESTART_ACTIVE: &'static [ImportStatus] = &[Self::Importing];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -942,6 +960,12 @@ pub enum IntruderCampaignState {
     Completed,
     Failed,
     Interrupted,
+}
+
+impl IntruderCampaignState {
+    /// 崩溃重启时视为"进行中"的状态，recovery 将它们恢复为 [`IntruderCampaignState::Interrupted`]。
+    /// Paused 视为稳定态，不在此列。
+    pub const RESTART_ACTIVE: &'static [IntruderCampaignState] = &[Self::Queued, Self::Running];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -1457,6 +1481,30 @@ mod tests {
         assert_eq!(job.execution_status, ExecutionStatus::Succeeded);
         assert_eq!(job.import_status, ImportStatus::ParserFailed);
         assert!(job.transition(ExecutionStatus::Running).is_err());
+    }
+
+    #[test]
+    fn restart_active_states_are_exactly_those_that_interrupt() {
+        // 每个可转到 Interrupted 的状态，恰好是 RESTART_ACTIVE 里的状态。
+        // 这把 storage recovery 依赖的 RESTART_ACTIVE 与 Job::transition 绑在一起，避免两处偏离。
+        let all = [
+            ExecutionStatus::Queued,
+            ExecutionStatus::Starting,
+            ExecutionStatus::Running,
+            ExecutionStatus::Stopping,
+            ExecutionStatus::Succeeded,
+            ExecutionStatus::Failed,
+            ExecutionStatus::TimedOut,
+            ExecutionStatus::Cancelled,
+            ExecutionStatus::Interrupted,
+        ];
+        for state in all {
+            let mut job = sample_job();
+            job.execution_status = state;
+            let can_interrupt = job.transition(ExecutionStatus::Interrupted).is_ok();
+            let is_active = ExecutionStatus::RESTART_ACTIVE.contains(&state);
+            assert_eq!(can_interrupt, is_active, "state {state:?}");
+        }
     }
 
     #[test]
