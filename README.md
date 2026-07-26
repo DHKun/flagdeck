@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/DHKun/flagdeck/actions/workflows/ci.yml/badge.svg)](https://github.com/DHKun/flagdeck/actions/workflows/ci.yml)
 [![Packages](https://github.com/DHKun/flagdeck/actions/workflows/packages.yml/badge.svg)](https://github.com/DHKun/flagdeck/actions/workflows/packages.yml)
-[![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20macOS%20arm64-4f7cff)](#运行环境)
+[![Release](https://img.shields.io/github/v/release/DHKun/flagdeck?label=release&color=4f7cff)](https://github.com/DHKun/flagdeck/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20macOS%20arm64-4f7cff)](#下载与安装)
 [![License](https://img.shields.io/badge/license-MIT-65c99a)](LICENSE)
 
 FlagDeck 是面向 **Linux x86-64** 与 **Apple Silicon macOS** 的本地安全测试工作台。
@@ -24,12 +25,12 @@ FlagDeck 是面向 **Linux x86-64** 与 **Apple Silicon macOS** 的本地安全�
 
 ## 下载与安装
 
-[GitHub Releases](https://github.com/DHKun/flagdeck/releases) 在推送 `v*` 标签后由 Actions 构建：
+安装包从 [GitHub Releases](https://github.com/DHKun/flagdeck/releases) 下载。当前正式版是 v1.0.0，发布门禁在 Fedora 44 x86-64 上验证。
 
-| 平台 | 产物 |
-| --- | --- |
-| Linux x86-64 | AppImage、DEB、RPM |
-| macOS arm64（Apple Silicon） | DMG（macOS 13+） |
+| 平台 | 产物 | 来源 |
+| --- | --- | --- |
+| Linux x86-64 | AppImage、DEB、RPM | 正式版 Release |
+| macOS arm64（Apple Silicon） | DMG（macOS 13+） | 预览版 Prerelease |
 
 ```bash
 # AppImage
@@ -41,7 +42,9 @@ sudo apt install ./FlagDeck_*_amd64.deb
 sudo dnf install ./FlagDeck-*.x86_64.rpm
 ```
 
-发布说明见 [docs/RELEASING.md](docs/RELEASING.md)。macOS 首次启动见 [docs/MACOS_PREVIEW.md](docs/MACOS_PREVIEW.md)。
+RPM 使用 Ed25519 发布密钥做 Header 签名，公钥和 SBOM、审计、门禁证据一并保存在对应 Stable 运行的 `FlagDeck-1.0.0-Stable` 构建产物中，`release-manifest.json` 记录全部文件的 SHA-256。
+
+正式版发布流程见 [docs/stable-release.md](docs/stable-release.md)，预览版见 [docs/RELEASING.md](docs/RELEASING.md)。macOS 首次启动见 [docs/MACOS_PREVIEW.md](docs/MACOS_PREVIEW.md)。
 
 ## 架构（简图）
 
@@ -111,14 +114,17 @@ mise run build       # Release 二进制
 mise run package     # Linux AppImage/DEB/RPM
 ```
 
-## CI 与双平台发布
+## CI 与发布
 
 | Workflow | 触发 | 作用 |
 | --- | --- | --- |
-| [ci.yml](.github/workflows/ci.yml) | `push`/`PR` → `main` | Ubuntu 上 `mise run test` |
-| [packages.yml](.github/workflows/packages.yml) | `v*` 标签、PR、`workflow_dispatch` | **Linux** 与 **macOS arm64** 打包；标签推送时创建 GitHub Release |
+| [ci.yml](.github/workflows/ci.yml) | `push`/`PR` → `main` | Ubuntu 上运行 `mise run test-all` 与供应链审计 |
+| [packages.yml](.github/workflows/packages.yml) | `v*-*` 预览标签、`workflow_dispatch` | Linux 与 macOS arm64 打包，发布为 Prerelease |
+| [stable-release.yml](.github/workflows/stable-release.yml) | `workflow_dispatch` | 无密钥构建、隔离签名、Fedora 目标机取证、发布正式版 |
 
-推送与 `apps/desktop/src-tauri/tauri.conf.json` 中版本一致的标签即可发布，例如 `v1.0.0`。
+预览版推送带后缀的标签发布，例如 `v1.0.0-preview.2`；标签中的基础版本要与 `apps/desktop/src-tauri/tauri.conf.json` 一致。
+
+正式版先把 annotated 标签指向 `main` 上通过 CI 的提交，再手动运行 `Stable Release` 工作流并通过 Environment 审批。工作流在 Fedora 44 KDE/Wayland 目标机运行 10 轮 GUI 门禁、10 轮桌面内存门禁和安装生命周期门禁，证据哈希、签名指纹和运行次数校验通过后才创建 Release。
 
 说明：CI 只构建 FlagDeck 自身，**不会**打包你的 `/data/CTF/Tools` 第三方工具。发布包是工作台；安全工具仍由用户本机安装。
 
