@@ -59,6 +59,11 @@
   } from "./lib/runPlanning";
   import { computeToolDefaults, pickInitialTool } from "./lib/toolSelection";
   import {
+    nextLogOffset,
+    shouldFallbackToStderr,
+    shouldReplaceJobCursor,
+  } from "./lib/jobView";
+  import {
     createPersonalPreset,
     deletePersonalPreset,
     emptyPersonalPresetStore,
@@ -646,13 +651,7 @@
     if (!status?.active_project || !selectedLogJobId || jobLogLoading) return;
     jobLogLoading = true;
     try {
-      const offset =
-        options.mode === "reset"
-          ? 0
-          : (options.offset ??
-            (options.mode === "append"
-              ? (jobLogWindow?.nextOffset ?? 0)
-              : (jobLogWindow?.offset ?? 0)));
+      const offset = nextLogOffset(options.mode, options.offset, jobLogWindow);
       const preview = await ipc.previewJobLog({
         project_id: status.active_project.project_id,
         job_id: selectedLogJobId,
@@ -663,10 +662,12 @@
 
       // Empty stdout on a finished job: surface stderr so failures stay visible.
       if (
-        options.mode === "reset" &&
-        selectedLogStream === "stdout" &&
-        preview.content.trim().length === 0 &&
-        preview.eof
+        shouldFallbackToStderr(
+          options.mode,
+          selectedLogStream,
+          preview.content,
+          preview.eof,
+        )
       ) {
         const err = await ipc.previewJobLog({
           project_id: status.active_project.project_id,
@@ -947,7 +948,9 @@
         mode: "refresh",
       });
       // Keep next_cursor from deeper pages; only replace when history is still the first page.
-      if (!jobNextCursor || jobs.length <= page.items.length) {
+      if (
+        shouldReplaceJobCursor(jobNextCursor, jobs.length, page.items.length)
+      ) {
         jobNextCursor = page.next_cursor;
       }
       const current = selectedJob();
