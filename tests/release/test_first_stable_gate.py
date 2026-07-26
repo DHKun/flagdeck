@@ -149,6 +149,40 @@ class FirstStableGateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(installed_root.exists())
 
+    def test_memory_gate_selects_steady_state_sample_per_run(self) -> None:
+        gate = (ROOT / "tests/gui/desktop-memory-gate.mjs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('from "./steady-state.mjs"', gate)
+        self.assertIn("selectSteadyStateSample", gate)
+
+        probe = (
+            "const { selectSteadyStateSample } ="
+            ' await import("./tests/gui/steady-state.mjs");\n'
+            "const chosen = selectSteadyStateSample([\n"
+            "  { privateKiB: 156528 },\n"
+            "  { privateKiB: 140912 },\n"
+            "  { privateKiB: 140224 },\n"
+            "  { privateKiB: 141104 },\n"
+            "  { privateKiB: 140500 },\n"
+            "]);\n"
+            "if (chosen.privateKiB !== 140224) {\n"
+            "  throw new Error(`transient snapshot won: ${chosen.privateKiB}`);\n"
+            "}\n"
+            'console.log("steady-state-ok");\n'
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", probe],
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("steady-state-ok", result.stdout)
+
     def test_preview_packages_trigger_only_accepts_prerelease_tags(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/packages.yml"
