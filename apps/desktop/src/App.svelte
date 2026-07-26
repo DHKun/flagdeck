@@ -71,6 +71,8 @@
     findPersonalPreset,
     importPersonalPresets,
     personalPresetsForTool,
+    resolvePresetBaseId,
+    isPresetValidForTool,
     renamePersonalPreset,
     resolveDefaultPresetId,
     setDefaultPersonalPreset,
@@ -319,13 +321,7 @@
     selectedPresetId = presetId;
     advancedFieldsExpanded = false;
     const personal = findPersonalPreset(personalPresetStore, presetId);
-    const basePresetId =
-      personal &&
-      tool.presets.some((preset) => preset.id === personal.base_preset_id)
-        ? personal.base_preset_id
-        : personal
-          ? (tool.presets[0]?.id ?? "")
-          : presetId;
+    const basePresetId = resolvePresetBaseId(tool, presetId, personal);
     const plan = buildProgressiveForm(tool, basePresetId, false);
     formValues = {
       ...formValues,
@@ -628,13 +624,11 @@
         }
       }
       if (
-        !selectedPresetId ||
-        (!selectedTool.presets.some(
-          (preset) => preset.id === selectedPresetId,
-        ) &&
-          !personalPresetsForTool(personalPresetStore, selectedTool.id).some(
-            (preset) => preset.id === selectedPresetId,
-          ))
+        !isPresetValidForTool(
+          personalPresetStore,
+          selectedTool,
+          selectedPresetId,
+        )
       ) {
         applyToolPreset(
           selectedTool,

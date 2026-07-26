@@ -58,6 +58,36 @@ export function resolveDefaultPresetId(
   return tool.presets[0]?.id ?? "";
 }
 
+/**
+ * 应用个人预设时，算出它要基于的内置预设 ID：个人预设声明的 base 若在本工具里存在就用它，
+ * 否则退到工具的第一个内置预设；非个人预设（即内置预设本身）直接返回它自己。
+ */
+export function resolvePresetBaseId(
+  tool: CatalogToolDto,
+  presetId: string,
+  personal: PersonalPreset | undefined,
+): string {
+  if (!personal) return presetId;
+  return tool.presets.some((preset) => preset.id === personal.base_preset_id)
+    ? personal.base_preset_id
+    : (tool.presets[0]?.id ?? "");
+}
+
+/** 当前选中的预设 ID 对该工具是否仍有效（是它的内置预设或个人预设之一）。 */
+export function isPresetValidForTool(
+  store: PersonalPresetStore,
+  tool: CatalogToolDto,
+  presetId: string,
+): boolean {
+  if (!presetId) return false;
+  return (
+    tool.presets.some((preset) => preset.id === presetId) ||
+    personalPresetsForTool(store, tool.id).some(
+      (preset) => preset.id === presetId,
+    )
+  );
+}
+
 export function createPersonalPreset(
   store: PersonalPresetStore,
   tool: CatalogToolDto,
