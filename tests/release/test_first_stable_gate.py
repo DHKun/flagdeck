@@ -90,6 +90,20 @@ class FirstStableGateTests(unittest.TestCase):
         self.assertNotIn("TAURI_BINARY=", publish_job)
         self.assertNotIn("fedora_lifecycle_gate.py", publish_job)
 
+    def test_publish_release_attaches_only_installer_assets(self) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+        publish_job = workflow[workflow.index("  validate-and-publish:") :]
+        step = publish_job[
+            publish_job.index("- name: Publish Stable GitHub release") :
+        ]
+
+        self.assertIn("-name '*.AppImage'", step)
+        self.assertIn("-name '*.deb'", step)
+        self.assertIn("-name '*.rpm'", step)
+        self.assertIn("name: FlagDeck-1.0.0-Stable", publish_job)
+
     def test_desktop_memory_gate_reports_its_evidence_on_failure(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/stable-release.yml"

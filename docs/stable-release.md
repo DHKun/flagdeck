@@ -51,6 +51,6 @@ runner 从当前 KDE 会话以前台进程启动，并采用 GitHub Actions 的 
 4. 在 Fedora 44 KDE/Wayland 目标机运行 10 次 GUI 门禁、10 次桌面内存门禁和 first-release 生命周期门禁。
 5. 将目标机证据上传为 `stable-target-evidence`，证据记录 Fedora、KDE、Wayland、SELinux 状态以及候选制品 SHA-256。
 6. 在 GitHub-hosted Job 独立导入公钥验证 RPM 本体，校验目标机环境和证据哈希，生成 `release-manifest.json`。
-7. 上传完整证据并创建 Stable GitHub Release。
+7. 将安装包、公钥、SHA256SUMS 和全部证据上传为 30 天保留的 `FlagDeck-1.0.0-Stable` workflow artifact，并以 AppImage、DEB、RPM 三个安装包作为资产创建 Stable GitHub Release。
 
 任何证据哈希、签名指纹、运行次数、GUI 安全断言、生命周期结果或锁定输入发生偏差，发布都会在创建 GitHub Release 前终止。
