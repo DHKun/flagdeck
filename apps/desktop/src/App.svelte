@@ -57,6 +57,7 @@
     resolveRunTarget,
     toolHasHostField,
   } from "./lib/runPlanning";
+  import { computeToolDefaults, pickInitialTool } from "./lib/toolSelection";
   import {
     createPersonalPreset,
     deletePersonalPreset,
@@ -302,32 +303,11 @@
   }
 
   function applyToolDefaults(tool: CatalogToolDto): void {
-    const remembered = prefs.formByTool[tool.id] ?? {};
-    const next: Record<string, string> = {};
-    for (const field of tool.fields) {
-      const saved = remembered[field.id];
-      if (
-        (field.from === "target_url" ||
-          field.id === "url" ||
-          field.id === "host" ||
-          field.id === "target") &&
-        targetUrl.trim()
-      ) {
-        // Prefer live top-bar target for host/url fields.
-        if (field.id === "host" || field.field_type === "host") {
-          next[field.id] = hostFromTarget(targetUrl);
-        } else {
-          next[field.id] = targetUrl.trim();
-        }
-      } else if (saved != null && saved !== "") {
-        next[field.id] = saved;
-      } else if (field.default_value) {
-        next[field.id] = field.default_value;
-      } else {
-        next[field.id] = "";
-      }
-    }
-    formValues = next;
+    formValues = computeToolDefaults(
+      tool,
+      prefs.formByTool[tool.id] ?? {},
+      targetUrl,
+    );
   }
 
   function applyToolPreset(tool: CatalogToolDto, presetId: string): void {
@@ -515,17 +495,6 @@
     return group?.name ?? "";
   }
 
-  function hostFromTarget(value: string): string {
-    const raw = value.trim();
-    if (!raw) return "";
-    try {
-      if (raw.includes("://")) return new URL(raw).hostname;
-    } catch {
-      /* ignore */
-    }
-    return raw.replace(/\/.*$/, "").replace(/:\d+$/, "");
-  }
-
   function rememberFormForTool(toolId: string): void {
     const tool = catalog?.tools.find((item) => item.id === toolId);
     const persistedValues = Object.fromEntries(
@@ -641,14 +610,7 @@
     scopes = nextScopes.items;
 
     if (!selectedToolId) {
-      const preferred =
-        (prefs.selectedToolId
-          ? catalog.tools.find((tool) => tool.id === prefs.selectedToolId)
-          : undefined) ??
-        featuredTools[0] ??
-        availableTools[0] ??
-        catalog.tools.find((tool) => tool.id === "dddd") ??
-        catalog.tools[0];
+      const preferred = pickInitialTool(catalog.tools, prefs.selectedToolId);
       if (preferred) selectTool(preferred);
     } else if (selectedTool) {
       if (Object.keys(formValues).length === 0) {
