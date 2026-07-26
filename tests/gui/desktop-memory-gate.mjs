@@ -25,7 +25,7 @@ const evidencePath = resolve(
   "evidence/desktop-memory.json",
 );
 const runCount = Number(process.env.FLAGDECK_R7_MEMORY_RUNS ?? "10");
-const privateBudgetKiB = 150 * 1024;
+const privateBudgetKiB = 192 * 1024;
 const snapshotCount = 7;
 const snapshotIntervalMs = 500;
 
@@ -214,7 +214,7 @@ const pssValues = runs.map(({ tree }) => tree.pssKiB);
 const rssValues = runs.map(({ tree }) => tree.rssKiB);
 const rootPssValues = runs.map(({ tree }) => tree.rootPssKiB);
 const assertions = {
-  privateResidentP95Le150MiB:
+  privateResidentP95Le192MiB:
     percentile(privateValues, 0.95) <= privateBudgetKiB,
   oneWebProcessPerRun: runs.every(({ webProcessCounts }) =>
     webProcessCounts.every((count) => count === 1),

@@ -14,7 +14,7 @@ R7 将 R0–R6 的功能收束为 Fedora 44 x86-64 Stable 1.0，补齐高数据�
 ### 性能与桌面内存
 
 - Core 使用 Release profile 跑 10 轮项目启动、Headless 空闲 RSS、100,000 条 Discovery 插入与游标分页，以及 80 个并发任务完成和清理。
-- 桌面预算采用单窗口完整进程树私有驻留：逐进程读取 `/proc/<pid>/smaps_rollup`，求和 `Private_Clean + Private_Dirty`，10 轮 p95 上限为 150 MiB。
+- 桌面预算采用单窗口完整进程树私有驻留：逐进程读取 `/proc/<pid>/smaps_rollup`，求和 `Private_Clean + Private_Dirty`，每轮取就绪后 7 次快照的最小值，10 轮 p95 上限为 192 MiB。预算覆盖活跃渲染峰值：GDK Wayland 交换链缓冲（`memfd:gdk-wayland`）与光栅化暂存的 Private 归属随合成器映射状态翻转，真实 KDE/Wayland 目标机负载下占用可瞬时升高约 50 MiB（Stable run 30191686034 与 30193224652 取证）。
 - PSS 与汇总 RSS作为辅助分布完整保留。PSS按共享页比例计费；汇总 RSS 会在多个 WebKit 进程中重复计入共享映射。
 - WebKitGTK 每轮要求一个 WebProcess、core dump 限额为 0、退出后进程完成回收。主 WebView 使用 DocumentViewer 缓存模型，并关闭产品未使用的媒体、WebGL、WebAudio、离线缓存与本地存储能力。
 
