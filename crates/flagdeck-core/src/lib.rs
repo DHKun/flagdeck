@@ -12,6 +12,7 @@ mod http;
 mod intruder;
 mod metasploit;
 mod payloads;
+mod runner;
 mod tool_output;
 
 use catalog::CatalogWorkbench;
@@ -2498,33 +2499,13 @@ impl CoreService {
         let job_directory = create_job_directory(store.layout().scans.as_path(), &job_id)?;
         let command = external::prepare_command(&manifest, &request.scope_id, &job_directory)?;
         store.save_command_spec(&command)?;
-        let job = Job {
-            job_id: job_id.clone(),
-            parent_job_id: None,
-            command_spec_id: command.command_spec_id.clone(),
-            execution_status: ExecutionStatus::Queued,
-            import_status: ImportStatus::Skipped,
-            created_at: Timestamp::now(),
-            started_at: None,
-            stopped_at: None,
-            pid: None,
-            process_group_id: None,
-            process_start_ticks: None,
-            exit_code: None,
-            exit_reason: None,
-            systemd_unit: None,
-            cgroup_path: None,
-            invocation_id: None,
-            supervisor_backend: None,
-            ownership_verified: false,
-            cleanup_verified: false,
-            residual_processes: 0,
-            cancel_duration_millis: None,
-            stdout_artifact_id: None,
-            stderr_artifact_id: None,
-            retry_count: 0,
-            source_job_id: None,
-        };
+        let job = runner::queued_tool_job(
+            job_id.clone(),
+            command.command_spec_id.clone(),
+            ImportStatus::Skipped,
+            Timestamp::now(),
+            None,
+        );
         store.save_job(&job)?;
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
         self.active_executions
@@ -2947,37 +2928,17 @@ impl CoreService {
 
         let has_parser_identity =
             !prepared.parser_id.is_empty() && !prepared.parser_version.is_empty();
-        let job = Job {
-            job_id: job_id.clone(),
-            parent_job_id: None,
-            command_spec_id: command.command_spec_id.clone(),
-            execution_status: ExecutionStatus::Queued,
-            import_status: if has_parser_identity {
+        let job = runner::queued_tool_job(
+            job_id.clone(),
+            command.command_spec_id.clone(),
+            if has_parser_identity {
                 ImportStatus::Pending
             } else {
                 ImportStatus::Skipped
             },
-            created_at: Timestamp::now(),
-            started_at: None,
-            stopped_at: None,
-            pid: None,
-            process_group_id: None,
-            process_start_ticks: None,
-            exit_code: None,
-            exit_reason: None,
-            systemd_unit: None,
-            cgroup_path: None,
-            invocation_id: None,
-            supervisor_backend: None,
-            ownership_verified: false,
-            cleanup_verified: false,
-            residual_processes: 0,
-            cancel_duration_millis: None,
-            stdout_artifact_id: None,
-            stderr_artifact_id: None,
-            retry_count: 0,
-            source_job_id: request.source_job_id.clone(),
-        };
+            Timestamp::now(),
+            request.source_job_id.clone(),
+        );
         store.save_job(&job)?;
         if has_parser_identity {
             store.write_import_state(
@@ -3072,33 +3033,13 @@ impl CoreService {
         }
         store.save_command_spec(&prepared.spec)?;
         let now = Timestamp::now();
-        let job = Job {
-            job_id: job_id.clone(),
-            parent_job_id: None,
-            command_spec_id: prepared.spec.command_spec_id.clone(),
-            execution_status: ExecutionStatus::Queued,
-            import_status: ImportStatus::Pending,
-            created_at: now,
-            started_at: None,
-            stopped_at: None,
-            pid: None,
-            process_group_id: None,
-            process_start_ticks: None,
-            exit_code: None,
-            exit_reason: None,
-            systemd_unit: None,
-            cgroup_path: None,
-            invocation_id: None,
-            supervisor_backend: None,
-            ownership_verified: false,
-            cleanup_verified: false,
-            residual_processes: 0,
-            cancel_duration_millis: None,
-            stdout_artifact_id: None,
-            stderr_artifact_id: None,
-            retry_count: 0,
-            source_job_id: None,
-        };
+        let job = runner::queued_tool_job(
+            job_id.clone(),
+            prepared.spec.command_spec_id.clone(),
+            ImportStatus::Pending,
+            now,
+            None,
+        );
         store.save_job(&job)?;
         let control = Arc::new(ActiveExecution::new(prepared.spec.stop_grace_millis));
         self.active_executions
