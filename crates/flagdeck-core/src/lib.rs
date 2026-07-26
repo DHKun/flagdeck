@@ -5,12 +5,18 @@
     clippy::too_many_lines
 )]
 
+mod catalog;
 mod catalog_api;
 mod external;
 mod http;
 mod intruder;
 mod metasploit;
 mod payloads;
+mod runner;
+mod tool_output;
+
+use catalog::CatalogWorkbench;
+use runner::JobRunner;
 
 pub use catalog_api::{
     CatalogCategoryDto, CatalogDiagnosticCheckDto, CatalogDiagnosticStatus, CatalogFieldGroupDto,
@@ -27,7 +33,7 @@ pub use payloads::{
     PayloadSourceHealthDto, PreviewPayloadRequest,
 };
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -42,9 +48,9 @@ use std::time::Duration;
 
 use flagdeck_cli_adapters::{
     AdapterError, CatalogError, CatalogPaths, ExpectedOutput, OutputRole, ParsedHttpResponse,
-    PreparedToolCommand, ToolCatalog, ToolId, ToolManifest, manifest, materialize_discoveries,
-    parse_output, prepare_catalog_command_with_sources, prepare_catalog_preview_with_sources,
-    prepare_command, registry, write_wordlist,
+    PreparedToolCommand, ToolId, ToolManifest, manifest, materialize_discoveries, parse_output,
+    prepare_catalog_command_with_sources, prepare_catalog_preview_with_sources, prepare_command,
+    registry, write_wordlist,
 };
 use flagdeck_domain::{
     Artifact, ArtifactId, BodyState, CommandSpec, ConnectionMetadata, DictionaryId,
@@ -52,7 +58,7 @@ use flagdeck_domain::{
     HttpSource, ImportStatus, IntruderCampaign, Job, JobId, MessageDirection, MessageId,
     MultipartDocument, NetworkClass, OrderedValue, PortRange, ProjectId, ProjectSummary,
     ProxySession, RedirectPolicy, RepresentationKind, ScopeId, Sensitivity, TargetScope, Timestamp,
-    ToolInputSource, ToolIoKind, ToolRunIo, Validate,
+    ToolInputSource, ToolRunIo, Validate,
 };
 use flagdeck_exec::{
     CancellationResult, ExecPolicyError, ManagedExecutionResult, ManagedProcessIdentity,
@@ -948,10 +954,10 @@ pub struct CoreEvent {
 
 pub struct CoreService {
     workspaces_root: PathBuf,
-    catalog_paths: CatalogPaths,
+    catalog_workbench: CatalogWorkbench,
     active: Mutex<Option<Arc<ProjectStore>>>,
     active_runs: Arc<AtomicUsize>,
-    active_executions: Mutex<HashMap<JobId, Arc<ActiveExecution>>>,
+    job_runner: JobRunner,
     event_sequence: AtomicU64,
     personal_preset_write_sequence: AtomicU64,
     personal_preset_lock: Mutex<()>,
@@ -1006,10 +1012,10 @@ impl CoreService {
         }
         Self {
             workspaces_root: workspaces_root.into(),
-            catalog_paths,
+            catalog_workbench: CatalogWorkbench::new(catalog_paths),
             active: Mutex::new(None),
             active_runs: Arc::new(AtomicUsize::new(0)),
-            active_executions: Mutex::new(HashMap::new()),
+            job_runner: JobRunner::new(),
             event_sequence: AtomicU64::new(0),
             personal_preset_write_sequence: AtomicU64::new(0),
             personal_preset_lock: Mutex::new(()),
@@ -1521,8 +1527,11 @@ impl CoreService {
                     )
                 });
             let tool_id = stored.command_spec.tool_id.as_str();
-            let kind =
-                structured_result_kind(&stored.command_spec.io, parser_id.as_deref(), tool_id);
+            let kind = tool_output::structured_result_kind(
+                &stored.command_spec.io,
+                parser_id.as_deref(),
+                tool_id,
+            );
             if matches!(
                 stored.job.execution_status,
                 ExecutionStatus::Queued
@@ -1536,7 +1545,7 @@ impl CoreService {
                     parser_id,
                     parser_version,
                     parser_error,
-                    columns: http_discovery_columns(),
+                    columns: tool_output::http_discovery_columns(),
                     rows: Vec::new(),
                     next_cursor: None,
                     source_artifact_ids,
@@ -1549,7 +1558,7 @@ impl CoreService {
                     parser_id,
                     parser_version,
                     parser_error: parser_error.or_else(|| Some("parser failed".to_owned())),
-                    columns: http_discovery_columns(),
+                    columns: tool_output::http_discovery_columns(),
                     rows: Vec::new(),
                     next_cursor: None,
                     source_artifact_ids,
@@ -1582,39 +1591,21 @@ impl CoreService {
                     parser_id,
                     parser_version,
                     parser_error,
-                    columns: http_discovery_columns(),
+                    columns: tool_output::http_discovery_columns(),
                     rows: Vec::new(),
                     next_cursor: None,
                     source_artifact_ids,
                 });
             };
             let bytes = store.read_artifact_bounded(&raw_artifact.artifact_id, 4 * 1024 * 1024)?;
-            let adapter = select_http_discovery_adapter(
+            let parsed = tool_output::parse_http_discovery(
                 parser_id.as_deref(),
                 tool_id,
                 Some(raw_artifact.logical_name.as_str()),
+                &bytes,
             );
-            let columns = match adapter {
-                HttpDiscoveryAdapter::ArjunJson => arjun_result_columns(),
-                HttpDiscoveryAdapter::Wafw00fJson => wafw00f_result_columns(),
-                HttpDiscoveryAdapter::CurlHeaders => curl_result_columns(),
-                HttpDiscoveryAdapter::DdddJsonl | HttpDiscoveryAdapter::FscanJson => {
-                    host_service_result_columns()
-                }
-                _ => http_discovery_columns(),
-            };
-            let parsed_rows = match adapter {
-                HttpDiscoveryAdapter::FfufJson | HttpDiscoveryAdapter::GenericJson => {
-                    parse_ffuf_structured_rows(&bytes)
-                }
-                HttpDiscoveryAdapter::GobusterText => parse_gobuster_structured_rows(&bytes),
-                HttpDiscoveryAdapter::ArjunJson => parse_arjun_structured_rows(&bytes),
-                HttpDiscoveryAdapter::CurlHeaders => parse_curl_headers_structured_rows(&bytes),
-                HttpDiscoveryAdapter::Wafw00fJson => parse_wafw00f_structured_rows(&bytes),
-                HttpDiscoveryAdapter::DdddJsonl => parse_dddd_structured_rows(&bytes),
-                HttpDiscoveryAdapter::FscanJson => parse_fscan_structured_rows(&bytes),
-            };
-            let Ok(mut all_rows) = parsed_rows else {
+            let columns = parsed.columns;
+            let Ok(mut all_rows) = parsed.rows else {
                 return Ok(StructuredResultPage {
                     status: StructuredResultStatus::ParseFailed,
                     kind,
@@ -2024,11 +2015,7 @@ impl CoreService {
         let store = self.project_store(&request.project_id, true)?;
         let stored = store.job(&request.job_id)?;
         if is_active_execution_status(stored.job.execution_status)
-            || self
-                .active_executions
-                .lock()
-                .map_err(|_| CoreError::StateLock)?
-                .contains_key(&request.job_id)
+            || self.job_runner.is_job_active(&request.job_id)?
         {
             return Err(CoreError::ActiveJobs);
         }
@@ -2048,13 +2035,7 @@ impl CoreService {
     pub fn clear_jobs(&self, request: &ClearJobsRequest) -> Result<ClearJobsResult, CoreError> {
         let store = self.project_store(&request.project_id, true)?;
         // Refuse while any job is still active in-memory or running in DB.
-        if self.active_runs.load(Ordering::SeqCst) > 0
-            || !self
-                .active_executions
-                .lock()
-                .map_err(|_| CoreError::StateLock)?
-                .is_empty()
-        {
+        if self.active_runs.load(Ordering::SeqCst) > 0 || self.job_runner.has_active_jobs()? {
             return Err(CoreError::ActiveJobs);
         }
         let (items, _) = store.list_jobs(100, None)?;
@@ -2509,39 +2490,16 @@ impl CoreService {
         let job_directory = create_job_directory(store.layout().scans.as_path(), &job_id)?;
         let command = external::prepare_command(&manifest, &request.scope_id, &job_directory)?;
         store.save_command_spec(&command)?;
-        let job = Job {
-            job_id: job_id.clone(),
-            parent_job_id: None,
-            command_spec_id: command.command_spec_id.clone(),
-            execution_status: ExecutionStatus::Queued,
-            import_status: ImportStatus::Skipped,
-            created_at: Timestamp::now(),
-            started_at: None,
-            stopped_at: None,
-            pid: None,
-            process_group_id: None,
-            process_start_ticks: None,
-            exit_code: None,
-            exit_reason: None,
-            systemd_unit: None,
-            cgroup_path: None,
-            invocation_id: None,
-            supervisor_backend: None,
-            ownership_verified: false,
-            cleanup_verified: false,
-            residual_processes: 0,
-            cancel_duration_millis: None,
-            stdout_artifact_id: None,
-            stderr_artifact_id: None,
-            retry_count: 0,
-            source_job_id: None,
-        };
+        let job = runner::queued_tool_job(
+            job_id.clone(),
+            command.command_spec_id.clone(),
+            ImportStatus::Skipped,
+            Timestamp::now(),
+            None,
+        );
         store.save_job(&job)?;
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .insert(job_id, Arc::clone(&control));
+        self.job_runner.register(job_id, Arc::clone(&control))?;
         let queued = PreparedExternalRun {
             store,
             command,
@@ -2563,13 +2521,7 @@ impl CoreService {
     async fn execute_external_launch(&self, queued: PreparedExternalRun) -> Result<(), CoreError> {
         let job_id = queued.job.job_id.clone();
         let result = self.execute_external_launch_inner(queued).await;
-        let cleanup = self
-            .active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)
-            .map(|mut active| {
-                active.remove(&job_id);
-            });
+        let cleanup = self.job_runner.unregister(&job_id);
         result.and(cleanup)
     }
 
@@ -2670,395 +2622,14 @@ impl CoreService {
     }
 
     pub fn list_catalog(&self) -> Result<CatalogSnapshot, CoreError> {
-        let catalog =
-            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
-        Ok(CatalogSnapshot {
-            tools_root: catalog.paths.tools_root.display().to_string(),
-            wordlists_root: catalog.paths.wordlists_root.display().to_string(),
-            categories: catalog
-                .categories
-                .iter()
-                .map(|category| CatalogCategoryDto {
-                    id: category.id.clone(),
-                    name: category.name.clone(),
-                    summary: category.summary.clone(),
-                    order: category.order,
-                })
-                .collect(),
-            tools: catalog
-                .tool_views()
-                .into_iter()
-                .map(|view| CatalogToolDto {
-                    id: view.id,
-                    name: view.name,
-                    category: view.category,
-                    category_name: view.category_name,
-                    tier: view.tier,
-                    capabilities: view.capabilities,
-                    aliases: view.aliases,
-                    presets: view
-                        .presets
-                        .into_iter()
-                        .map(|preset| CatalogPresetDto {
-                            id: preset.id,
-                            name: preset.name,
-                            core_fields: preset.core_fields,
-                            defaults: preset.defaults,
-                        })
-                        .collect(),
-                    field_groups: view
-                        .field_groups
-                        .into_iter()
-                        .map(|group| CatalogFieldGroupDto {
-                            id: group.id,
-                            name: group.name,
-                            fields: group.fields,
-                        })
-                        .collect(),
-                    risk_level: view.risk_level,
-                    installation: CatalogInstallationDto {
-                        distribution: view.installation.distribution,
-                        license: view.installation.license,
-                        homepage: view.installation.homepage,
-                        version: view.installation.version,
-                        health_strategy: view.installation.health_strategy,
-                        runtime: view.installation.runtime,
-                        version_args: view.installation.version_args,
-                        install_command: view.installation.install_command,
-                        path_fix: view.installation.path_fix,
-                        wordlist_source: view.installation.wordlist_source,
-                        wordlist_install_command: view.installation.wordlist_install_command,
-                    },
-                    io: view.io,
-                    summary: view.summary,
-                    usage: view.usage,
-                    mode: view.mode,
-                    featured: view.featured,
-                    available: view.available,
-                    binary_path: view.binary_path,
-                    detail: view.detail,
-                    icon: view.icon,
-                    accent: view.accent,
-                    needs_target: view.needs_target,
-                    fields: view
-                        .fields
-                        .into_iter()
-                        .map(|field| CatalogFormFieldDto {
-                            id: field.id,
-                            field_type: field.field_type,
-                            label: field.label,
-                            required: field.required,
-                            default_value: field.default,
-                            from: field.from,
-                            options: field.options,
-                            hint: field.hint,
-                            sensitive: field.sensitive,
-                        })
-                        .collect(),
-                })
-                .collect(),
-            wordlists: catalog
-                .wordlist_views()
-                .into_iter()
-                .map(|view| WordlistDto {
-                    id: view.id,
-                    name: view.name,
-                    path: view.path,
-                    available: view.available,
-                    tags: view.tags,
-                })
-                .collect(),
-        })
+        self.catalog_workbench.snapshot()
     }
 
     pub fn diagnose_catalog_tool(
         &self,
         request: &DiagnoseCatalogToolRequest,
     ) -> Result<CatalogToolDiagnosticDto, CoreError> {
-        if request.tool_id.is_empty() || request.tool_id.len() > 64 {
-            return Err(CoreError::InvalidRequest);
-        }
-        let catalog =
-            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
-        let tool = catalog
-            .tool(&request.tool_id)
-            .ok_or(CoreError::InvalidRequest)?;
-        let source = if tool.installation.homepage.trim().is_empty() {
-            format!("Catalog 清单 tools/{}.toml", tool.id)
-        } else {
-            tool.installation.homepage.clone()
-        };
-        let install_fix = if tool.installation.install_command.trim().is_empty() {
-            format!("安装 {} 并确认其二进制可由 PATH 解析", tool.id)
-        } else {
-            tool.installation.install_command.clone()
-        };
-        let path_repair_copy = if tool.installation.path_fix.trim().is_empty() {
-            install_fix.clone()
-        } else {
-            tool.installation.path_fix.clone()
-        };
-        let mut checks = Vec::with_capacity(6);
-        let mut binary_path = String::new();
-        let mut detected_version = String::new();
-
-        let resolved = catalog.resolve_tool_binary(&request.tool_id);
-        let missing_status = if tool.binary.path.is_empty() {
-            CatalogDiagnosticStatus::Missing
-        } else {
-            CatalogDiagnosticStatus::PathAbnormal
-        };
-        match &resolved {
-            Ok(path) => {
-                binary_path = path.display().to_string();
-                checks.push(catalog_diagnostic_check(
-                    "binary",
-                    "二进制解析",
-                    CatalogDiagnosticStatus::Usable,
-                    format!("已解析 {}", path.display()),
-                    &source,
-                    "",
-                    "",
-                ));
-            }
-            Err(_) => checks.push(catalog_diagnostic_check(
-                "binary",
-                "二进制解析",
-                missing_status,
-                "未解析到工具二进制",
-                &source,
-                "从官方来源安装工具后重新检测",
-                &install_fix,
-            )),
-        }
-
-        let path_status = match &resolved {
-            Ok(path) => {
-                if path.is_absolute() && path.is_file() {
-                    CatalogDiagnosticStatus::Usable
-                } else {
-                    CatalogDiagnosticStatus::PathAbnormal
-                }
-            }
-            Err(_) if !tool.binary.path.is_empty() => CatalogDiagnosticStatus::PathAbnormal,
-            Err(_) => CatalogDiagnosticStatus::Missing,
-        };
-        checks.push(catalog_diagnostic_check(
-            "path",
-            "路径",
-            path_status,
-            if path_status == CatalogDiagnosticStatus::Usable {
-                "路径存在且为普通文件"
-            } else {
-                "配置路径无效或工具目录未进入 PATH"
-            },
-            &source,
-            if path_status == CatalogDiagnosticStatus::Usable {
-                ""
-            } else {
-                "修复工具路径后重新检测"
-            },
-            &path_repair_copy,
-        ));
-
-        let permission_status = resolved.as_ref().map_or(missing_status, |path| {
-            fs::metadata(path).map_or(CatalogDiagnosticStatus::PathAbnormal, |metadata| {
-                if metadata.permissions().mode() & 0o111 == 0 {
-                    CatalogDiagnosticStatus::PermissionAbnormal
-                } else {
-                    CatalogDiagnosticStatus::Usable
-                }
-            })
-        });
-        let permission_copy = match permission_status {
-            CatalogDiagnosticStatus::Usable => String::new(),
-            CatalogDiagnosticStatus::PermissionAbnormal => {
-                format!("chmod u+x -- {binary_path}")
-            }
-            _ => path_repair_copy.clone(),
-        };
-        checks.push(catalog_diagnostic_check(
-            "permission",
-            "执行权限",
-            permission_status,
-            if permission_status == CatalogDiagnosticStatus::Usable {
-                "当前用户可执行该文件"
-            } else if permission_status == CatalogDiagnosticStatus::PermissionAbnormal {
-                "文件缺少执行权限"
-            } else {
-                "等待有效二进制路径"
-            },
-            &source,
-            match permission_status {
-                CatalogDiagnosticStatus::Usable => "",
-                CatalogDiagnosticStatus::PermissionAbnormal => "为当前用户添加执行权限",
-                _ => "先修复工具二进制路径",
-            },
-            &permission_copy,
-        ));
-
-        let version_status = if permission_status == CatalogDiagnosticStatus::Usable {
-            if tool.installation.version_args.is_empty() {
-                CatalogDiagnosticStatus::VersionAbnormal
-            } else if let Ok(path) = &resolved {
-                let mut command = Command::new(path);
-                command
-                    .args(&tool.installation.version_args)
-                    .env_clear()
-                    .env("LANG", "C.UTF-8")
-                    .env("LC_ALL", "C.UTF-8")
-                    .stdin(Stdio::null());
-                if let Some(path) = env::var_os("PATH") {
-                    command.env("PATH", path);
-                }
-                let output = command.output();
-                match output {
-                    Ok(output) if output.status.success() => {
-                        let mut evidence = output.stdout;
-                        evidence.extend_from_slice(&output.stderr);
-                        detected_version = bounded_diagnostic_text(&evidence);
-                        if tool.installation.version.is_empty()
-                            || detected_version.contains(&tool.installation.version)
-                        {
-                            CatalogDiagnosticStatus::Usable
-                        } else {
-                            CatalogDiagnosticStatus::VersionAbnormal
-                        }
-                    }
-                    _ => CatalogDiagnosticStatus::VersionAbnormal,
-                }
-            } else {
-                CatalogDiagnosticStatus::PathAbnormal
-            }
-        } else {
-            permission_status
-        };
-        checks.push(catalog_diagnostic_check(
-            "version",
-            "版本",
-            version_status,
-            if version_status == CatalogDiagnosticStatus::Usable {
-                format!("检测到 {detected_version}")
-            } else {
-                format!("期望版本 {}", tool.installation.version)
-            },
-            &source,
-            match version_status {
-                CatalogDiagnosticStatus::Usable => "",
-                CatalogDiagnosticStatus::VersionAbnormal => "从官方来源安装清单声明的版本",
-                CatalogDiagnosticStatus::PermissionAbnormal => "先修复二进制执行权限",
-                _ => "先修复工具二进制路径",
-            },
-            match version_status {
-                CatalogDiagnosticStatus::Usable => "",
-                CatalogDiagnosticStatus::VersionAbnormal => &install_fix,
-                CatalogDiagnosticStatus::PermissionAbnormal => &permission_copy,
-                _ => &path_repair_copy,
-            },
-        ));
-
-        let runtime_status = if tool.installation.runtime.trim().is_empty() {
-            CatalogDiagnosticStatus::VersionAbnormal
-        } else if resolved.is_ok() {
-            CatalogDiagnosticStatus::Usable
-        } else {
-            missing_status
-        };
-        checks.push(catalog_diagnostic_check(
-            "runtime",
-            "运行时",
-            runtime_status,
-            if tool.installation.runtime.is_empty() {
-                "清单未声明运行时".to_owned()
-            } else {
-                tool.installation.runtime.clone()
-            },
-            &source,
-            match runtime_status {
-                CatalogDiagnosticStatus::Usable => "",
-                CatalogDiagnosticStatus::VersionAbnormal => "更新 Catalog 的运行时声明",
-                _ => "先修复工具二进制路径",
-            },
-            match runtime_status {
-                CatalogDiagnosticStatus::Usable => "",
-                CatalogDiagnosticStatus::VersionAbnormal => &install_fix,
-                _ => &path_repair_copy,
-            },
-        ));
-
-        let wordlist_field = tool
-            .form
-            .fields
-            .iter()
-            .find(|field| field.field_type == "wordlist");
-        let default_wordlist = wordlist_field.map_or("", |field| field.default.as_str());
-        let wordlist_source = if tool.installation.wordlist_source.trim().is_empty() {
-            format!("Catalog 清单 tools/{}.toml#默认字典", tool.id)
-        } else {
-            tool.installation.wordlist_source.clone()
-        };
-        let wordlist_repair_copy = if tool.installation.wordlist_install_command.trim().is_empty() {
-            format!("安装工具 {} 声明的默认字典 {}", tool.id, default_wordlist)
-        } else {
-            tool.installation.wordlist_install_command.clone()
-        };
-        let wordlist = catalog
-            .wordlist_views()
-            .into_iter()
-            .find(|entry| entry.id == default_wordlist);
-        let wordlist_status = if wordlist_field.is_none() {
-            CatalogDiagnosticStatus::Usable
-        } else if default_wordlist.is_empty() {
-            CatalogDiagnosticStatus::VersionAbnormal
-        } else if wordlist.as_ref().is_some_and(|entry| entry.available) {
-            CatalogDiagnosticStatus::Usable
-        } else {
-            CatalogDiagnosticStatus::Missing
-        };
-        checks.push(catalog_diagnostic_check(
-            "wordlist",
-            "默认字典",
-            wordlist_status,
-            wordlist.as_ref().map_or_else(
-                || {
-                    if wordlist_field.is_none() {
-                        "该工具无需默认字典".to_owned()
-                    } else {
-                        format!("未找到默认字典 {default_wordlist}")
-                    }
-                },
-                |entry| {
-                    if entry.available {
-                        format!("已找到 {}", entry.name)
-                    } else {
-                        format!("缺少 {}", entry.path)
-                    }
-                },
-            ),
-            &wordlist_source,
-            match wordlist_status {
-                CatalogDiagnosticStatus::Usable => "",
-                CatalogDiagnosticStatus::VersionAbnormal => "补全默认字典清单声明",
-                _ => "从声明来源安装默认字典",
-            },
-            match wordlist_status {
-                CatalogDiagnosticStatus::Usable => "",
-                _ => &wordlist_repair_copy,
-            },
-        ));
-
-        let status = checks
-            .iter()
-            .map(|check| check.status)
-            .max_by_key(|status| catalog_diagnostic_priority(*status))
-            .unwrap_or(CatalogDiagnosticStatus::Missing);
-        Ok(CatalogToolDiagnosticDto {
-            tool_id: request.tool_id.clone(),
-            status,
-            binary_path,
-            detected_version,
-            checks,
-        })
+        self.catalog_workbench.diagnose(request)
     }
 
     pub fn ensure_target_scope(
@@ -3090,8 +2661,7 @@ impl CoreService {
         if request.tool_id.is_empty() || request.tool_id.len() > 128 {
             return Err(CoreError::InvalidRequest);
         }
-        let catalog = ToolCatalog::load(self.catalog_paths.clone())
-            .map_err(|error| map_catalog_error(&error))?;
+        let catalog = self.catalog_workbench.load()?;
         let tool = catalog
             .tool(&request.tool_id)
             .ok_or(CoreError::ToolUnavailable)?;
@@ -3204,8 +2774,7 @@ impl CoreService {
         } else if request.source_result_id.is_some() || request.source_artifact_id.is_some() {
             return Err(CoreError::InvalidRequest);
         }
-        let catalog =
-            ToolCatalog::load(self.catalog_paths.clone()).map_err(|e| map_catalog_error(&e))?;
+        let catalog = self.catalog_workbench.load()?;
         let tool = catalog
             .tool(&request.tool_id)
             .ok_or(CoreError::ToolUnavailable)?;
@@ -3341,37 +2910,17 @@ impl CoreService {
 
         let has_parser_identity =
             !prepared.parser_id.is_empty() && !prepared.parser_version.is_empty();
-        let job = Job {
-            job_id: job_id.clone(),
-            parent_job_id: None,
-            command_spec_id: command.command_spec_id.clone(),
-            execution_status: ExecutionStatus::Queued,
-            import_status: if has_parser_identity {
+        let job = runner::queued_tool_job(
+            job_id.clone(),
+            command.command_spec_id.clone(),
+            if has_parser_identity {
                 ImportStatus::Pending
             } else {
                 ImportStatus::Skipped
             },
-            created_at: Timestamp::now(),
-            started_at: None,
-            stopped_at: None,
-            pid: None,
-            process_group_id: None,
-            process_start_ticks: None,
-            exit_code: None,
-            exit_reason: None,
-            systemd_unit: None,
-            cgroup_path: None,
-            invocation_id: None,
-            supervisor_backend: None,
-            ownership_verified: false,
-            cleanup_verified: false,
-            residual_processes: 0,
-            cancel_duration_millis: None,
-            stdout_artifact_id: None,
-            stderr_artifact_id: None,
-            retry_count: 0,
-            source_job_id: request.source_job_id.clone(),
-        };
+            Timestamp::now(),
+            request.source_job_id.clone(),
+        );
         store.save_job(&job)?;
         if has_parser_identity {
             store.write_import_state(
@@ -3390,10 +2939,7 @@ impl CoreService {
             )?;
         }
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .insert(job_id, Arc::clone(&control));
+        self.job_runner.register(job_id, Arc::clone(&control))?;
 
         // Classic GUI windows detach after a short probe; long-running servers
         // (npm run dev, etc.) set catalog `detach = false` so cancel stays available.
@@ -3466,39 +3012,16 @@ impl CoreService {
         }
         store.save_command_spec(&prepared.spec)?;
         let now = Timestamp::now();
-        let job = Job {
-            job_id: job_id.clone(),
-            parent_job_id: None,
-            command_spec_id: prepared.spec.command_spec_id.clone(),
-            execution_status: ExecutionStatus::Queued,
-            import_status: ImportStatus::Pending,
-            created_at: now,
-            started_at: None,
-            stopped_at: None,
-            pid: None,
-            process_group_id: None,
-            process_start_ticks: None,
-            exit_code: None,
-            exit_reason: None,
-            systemd_unit: None,
-            cgroup_path: None,
-            invocation_id: None,
-            supervisor_backend: None,
-            ownership_verified: false,
-            cleanup_verified: false,
-            residual_processes: 0,
-            cancel_duration_millis: None,
-            stdout_artifact_id: None,
-            stderr_artifact_id: None,
-            retry_count: 0,
-            source_job_id: None,
-        };
+        let job = runner::queued_tool_job(
+            job_id.clone(),
+            prepared.spec.command_spec_id.clone(),
+            ImportStatus::Pending,
+            now,
+            None,
+        );
         store.save_job(&job)?;
         let control = Arc::new(ActiveExecution::new(prepared.spec.stop_grace_millis));
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .insert(job_id, Arc::clone(&control));
+        self.job_runner.register(job_id, Arc::clone(&control))?;
         Ok(PreparedRun {
             store,
             request,
@@ -3512,10 +3035,7 @@ impl CoreService {
     async fn execute_tool_run(&self, queued: PreparedRun) -> Result<RunToolResult, CoreError> {
         let job_id = queued.job.job_id.clone();
         let result = self.execute_tool_run_inner(queued).await;
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .remove(&job_id);
+        self.job_runner.unregister(&job_id)?;
         result
     }
 
@@ -3680,65 +3200,16 @@ impl CoreService {
         &self,
         request: &CancelJobRequest,
     ) -> Result<CancelJobResult, CoreError> {
-        request
-            .job_id
-            .validate()
-            .map_err(|_| CoreError::InvalidRequest)?;
         let store = self.project_store(&request.project_id, true)?;
-        let control = self
-            .active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .get(&request.job_id)
-            .cloned()
-            .ok_or(CoreError::JobNotActive)?;
-        control.cancel_requested.store(true, Ordering::SeqCst);
-        let has_identity = control
-            .identity
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .is_some();
-        if has_identity {
-            let mut job = store.job(&request.job_id)?.job;
-            if matches!(
-                job.execution_status,
-                ExecutionStatus::Queued | ExecutionStatus::Starting | ExecutionStatus::Running
-            ) {
-                job.transition(ExecutionStatus::Stopping)
-                    .map_err(|_| CoreError::InvalidRequest)?;
-                store.save_job(&job)?;
-            }
-        }
-        let cancellation = drive_cancellation(&control).await?;
-        Ok(cancel_job_result(request.job_id.clone(), cancellation))
+        self.job_runner.cancel_job(&store, request).await
     }
 
     pub async fn cancel_all_jobs(
         &self,
         project_id: &ProjectId,
     ) -> Result<CancelAllJobsResult, CoreError> {
-        self.project_store(project_id, true)?;
-        let job_ids = self
-            .active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut results = Vec::with_capacity(job_ids.len());
-        for job_id in &job_ids {
-            results.push(
-                self.cancel_job(&CancelJobRequest {
-                    project_id: project_id.clone(),
-                    job_id: job_id.clone(),
-                })
-                .await?,
-            );
-        }
-        Ok(CancelAllJobsResult {
-            requested: job_ids.len(),
-            results,
-        })
+        let store = self.project_store(project_id, true)?;
+        self.job_runner.cancel_all_jobs(&store, project_id).await
     }
 
     #[must_use]
@@ -3826,18 +3297,18 @@ impl Drop for ActiveRunGuard {
     }
 }
 
-struct ActiveExecution {
-    identity: Mutex<Option<ManagedProcessIdentity>>,
-    cancel_requested: AtomicBool,
-    cancel_started: AtomicBool,
-    cancel_failed: AtomicBool,
-    cancel_result: Mutex<Option<CancellationResult>>,
-    cancel_finished: Notify,
-    stop_grace: Duration,
+pub(crate) struct ActiveExecution {
+    pub(crate) identity: Mutex<Option<ManagedProcessIdentity>>,
+    pub(crate) cancel_requested: AtomicBool,
+    pub(crate) cancel_started: AtomicBool,
+    pub(crate) cancel_failed: AtomicBool,
+    pub(crate) cancel_result: Mutex<Option<CancellationResult>>,
+    pub(crate) cancel_finished: Notify,
+    pub(crate) stop_grace: Duration,
 }
 
 impl ActiveExecution {
-    fn new(stop_grace_millis: u64) -> Self {
+    pub(crate) fn new(stop_grace_millis: u64) -> Self {
         Self {
             identity: Mutex::new(None),
             cancel_requested: AtomicBool::new(false),
@@ -3957,662 +3428,6 @@ fn sanitize_export_basename(logical_name: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HttpDiscoveryAdapter {
-    FfufJson,
-    GobusterText,
-    ArjunJson,
-    CurlHeaders,
-    Wafw00fJson,
-    DdddJsonl,
-    FscanJson,
-    GenericJson,
-}
-
-fn structured_result_kind(
-    io: &ToolRunIo,
-    parser_id: Option<&str>,
-    tool_id: &str,
-) -> StructuredResultKind {
-    if matches!(
-        select_http_discovery_adapter(parser_id, tool_id, None),
-        HttpDiscoveryAdapter::FfufJson
-            | HttpDiscoveryAdapter::GobusterText
-            | HttpDiscoveryAdapter::ArjunJson
-            | HttpDiscoveryAdapter::CurlHeaders
-            | HttpDiscoveryAdapter::Wafw00fJson
-            | HttpDiscoveryAdapter::DdddJsonl
-            | HttpDiscoveryAdapter::FscanJson
-    ) || io
-        .outputs
-        .iter()
-        .any(|output| output.kind == ToolIoKind::HttpDiscovery)
-    {
-        StructuredResultKind::HttpDiscovery
-    } else if io
-        .outputs
-        .iter()
-        .any(|output| output.kind == ToolIoKind::RawArtifact)
-    {
-        StructuredResultKind::RawOnly
-    } else {
-        StructuredResultKind::Unknown
-    }
-}
-
-fn select_http_discovery_adapter(
-    parser_id: Option<&str>,
-    _tool_id: &str,
-    logical_name: Option<&str>,
-) -> HttpDiscoveryAdapter {
-    if let Some(id) = parser_id {
-        if id == "flagdeck.ffuf-json" || id.ends_with(".ffuf-json") || id.contains("ffuf") {
-            return HttpDiscoveryAdapter::FfufJson;
-        }
-        if id == "flagdeck.gobuster-text"
-            || id.ends_with(".gobuster-text")
-            || id.contains("gobuster")
-        {
-            return HttpDiscoveryAdapter::GobusterText;
-        }
-        if id == "flagdeck.arjun-json" || id.ends_with(".arjun-json") || id.contains("arjun") {
-            return HttpDiscoveryAdapter::ArjunJson;
-        }
-        if id == "flagdeck.curl-headers" || id.ends_with(".curl-headers") || id.contains("curl") {
-            return HttpDiscoveryAdapter::CurlHeaders;
-        }
-        if id == "flagdeck.wafw00f-json" || id.ends_with(".wafw00f-json") || id.contains("wafw00f")
-        {
-            return HttpDiscoveryAdapter::Wafw00fJson;
-        }
-        if id == "flagdeck.dddd-jsonl" || id.ends_with(".dddd-jsonl") || id.contains("dddd") {
-            return HttpDiscoveryAdapter::DdddJsonl;
-        }
-        if id == "flagdeck.fscan-json" || id.ends_with(".fscan-json") || id.contains("fscan") {
-            return HttpDiscoveryAdapter::FscanJson;
-        }
-    }
-    if logical_name.is_some_and(|name| name.contains("gobuster")) {
-        return HttpDiscoveryAdapter::GobusterText;
-    }
-    if logical_name.is_some_and(|name| name.contains("arjun")) {
-        return HttpDiscoveryAdapter::ArjunJson;
-    }
-    if logical_name.is_some_and(|name| name.contains("headers") || name.contains("curl")) {
-        return HttpDiscoveryAdapter::CurlHeaders;
-    }
-    if logical_name.is_some_and(|name| name.contains("wafw00f")) {
-        return HttpDiscoveryAdapter::Wafw00fJson;
-    }
-    if logical_name.is_some_and(|name| name.contains("dddd")) {
-        return HttpDiscoveryAdapter::DdddJsonl;
-    }
-    if logical_name.is_some_and(|name| name.contains("fscan")) {
-        return HttpDiscoveryAdapter::FscanJson;
-    }
-    if logical_name.is_some_and(|name| name.contains("ffuf")) {
-        return HttpDiscoveryAdapter::FfufJson;
-    }
-    HttpDiscoveryAdapter::GenericJson
-}
-
-fn http_discovery_columns() -> Vec<StructuredResultColumnDto> {
-    vec![
-        StructuredResultColumnDto {
-            key: "url".to_owned(),
-            label: "URL".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "path".to_owned(),
-            label: "路径".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "status".to_owned(),
-            label: "状态".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "length".to_owned(),
-            label: "长度".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_job".to_owned(),
-            label: "来源任务".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_artifact".to_owned(),
-            label: "来源证据".to_owned(),
-        },
-    ]
-}
-
-fn parse_ffuf_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
-    let records = if let Some(results) = value.get("results").and_then(|item| item.as_array()) {
-        results.clone()
-    } else if let Some(results) = value.as_array() {
-        results.clone()
-    } else {
-        return Err(CoreError::InvalidRequest);
-    };
-    let mut rows = Vec::new();
-    for (index, record) in records.into_iter().enumerate() {
-        let url = record
-            .get("url")
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let path = record
-            .get("input")
-            .and_then(|item| item.get("FUZZ"))
-            .and_then(|item| item.as_str())
-            .map(str::to_owned)
-            .or_else(|| {
-                url::Url::parse(&url)
-                    .ok()
-                    .map(|parsed| parsed.path().to_owned())
-            })
-            .unwrap_or_default();
-        let status = record
-            .get("status")
-            .map(|item| match item {
-                serde_json::Value::Number(number) => number.to_string(),
-                serde_json::Value::String(text) => text.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let length = record
-            .get("length")
-            .map(|item| match item {
-                serde_json::Value::Number(number) => number.to_string(),
-                serde_json::Value::String(text) => text.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let mut cells = BTreeMap::new();
-        cells.insert("url".to_owned(), url);
-        cells.insert("path".to_owned(), path);
-        cells.insert("status".to_owned(), status);
-        cells.insert("length".to_owned(), length);
-        cells.insert("source_job".to_owned(), String::new());
-        cells.insert("source_artifact".to_owned(), String::new());
-        rows.push(StructuredResultRowDto {
-            result_id: format!("row:{index}"),
-            cells,
-            source_job_id: JobId::new(),
-            source_artifact_id: None,
-        });
-    }
-    Ok(rows)
-}
-
-fn arjun_result_columns() -> Vec<StructuredResultColumnDto> {
-    vec![
-        StructuredResultColumnDto {
-            key: "url".to_owned(),
-            label: "URL".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "param".to_owned(),
-            label: "参数".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_job".to_owned(),
-            label: "来源任务".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_artifact".to_owned(),
-            label: "来源证据".to_owned(),
-        },
-    ]
-}
-
-fn parse_gobuster_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
-    let mut rows = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with('=')
-            || trimmed.starts_with("Gobuster")
-            || trimmed.starts_with('[')
-        {
-            continue;
-        }
-        // e.g. /admin              (Status: 200) [Size: 14]
-        let Some(captures) = regex_lite_gobuster_line(trimmed) else {
-            continue;
-        };
-        let mut cells = BTreeMap::new();
-        cells.insert("path".to_owned(), captures.0);
-        cells.insert("status".to_owned(), captures.1);
-        cells.insert("length".to_owned(), captures.2);
-        cells.insert("url".to_owned(), String::new());
-        cells.insert("source_job".to_owned(), String::new());
-        cells.insert("source_artifact".to_owned(), String::new());
-        rows.push(StructuredResultRowDto {
-            result_id: format!("row:{index}"),
-            cells,
-            source_job_id: JobId::new(),
-            source_artifact_id: None,
-        });
-    }
-    if rows.is_empty() {
-        return Err(CoreError::InvalidRequest);
-    }
-    Ok(rows)
-}
-
-fn regex_lite_gobuster_line(line: &str) -> Option<(String, String, String)> {
-    let path_end = line.find(" (Status:")?;
-    let path = line[..path_end].trim().to_owned();
-    let after = &line[path_end + " (Status:".len()..];
-    let status_end = after.find(')')?;
-    let status = after[..status_end].trim().to_owned();
-    let length = after
-        .find("[Size:")
-        .and_then(|start| {
-            let rest = &after[start + "[Size:".len()..];
-            rest.find(']').map(|end| rest[..end].trim().to_owned())
-        })
-        .unwrap_or_default();
-    Some((path, status, length))
-}
-
-fn curl_result_columns() -> Vec<StructuredResultColumnDto> {
-    vec![
-        StructuredResultColumnDto {
-            key: "status".to_owned(),
-            label: "状态".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "url".to_owned(),
-            label: "URL".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "content_type".to_owned(),
-            label: "类型".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "length".to_owned(),
-            label: "长度".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_job".to_owned(),
-            label: "来源任务".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_artifact".to_owned(),
-            label: "来源证据".to_owned(),
-        },
-    ]
-}
-
-fn wafw00f_result_columns() -> Vec<StructuredResultColumnDto> {
-    vec![
-        StructuredResultColumnDto {
-            key: "url".to_owned(),
-            label: "URL".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "detected".to_owned(),
-            label: "检出".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "firewall".to_owned(),
-            label: "WAF".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "manufacturer".to_owned(),
-            label: "厂商".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_job".to_owned(),
-            label: "来源任务".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_artifact".to_owned(),
-            label: "来源证据".to_owned(),
-        },
-    ]
-}
-
-fn parse_curl_headers_structured_rows(
-    bytes: &[u8],
-) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
-    let mut status = String::new();
-    let mut content_type = String::new();
-    let mut length = String::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.to_ascii_uppercase().starts_with("HTTP/") {
-            // HTTP/1.1 200 OK
-            let parts: Vec<_> = trimmed.split_whitespace().collect();
-            if parts.len() >= 2 {
-                parts[1].clone_into(&mut status);
-            }
-            continue;
-        }
-        if let Some(value) = trimmed
-            .split_once(':')
-            .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-            .map(|(_, value)| value.trim().to_owned())
-        {
-            content_type = value;
-        }
-        if let Some(value) = trimmed
-            .split_once(':')
-            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-            .map(|(_, value)| value.trim().to_owned())
-        {
-            length = value;
-        }
-    }
-    if status.is_empty() {
-        return Err(CoreError::InvalidRequest);
-    }
-    let mut cells = BTreeMap::new();
-    cells.insert("status".to_owned(), status);
-    cells.insert("url".to_owned(), String::new());
-    cells.insert("content_type".to_owned(), content_type);
-    cells.insert("length".to_owned(), length);
-    cells.insert("source_job".to_owned(), String::new());
-    cells.insert("source_artifact".to_owned(), String::new());
-    Ok(vec![StructuredResultRowDto {
-        result_id: "row:0".to_owned(),
-        cells,
-        source_job_id: JobId::new(),
-        source_artifact_id: None,
-    }])
-}
-
-fn host_service_result_columns() -> Vec<StructuredResultColumnDto> {
-    vec![
-        StructuredResultColumnDto {
-            key: "host".to_owned(),
-            label: "主机".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "port".to_owned(),
-            label: "端口".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "service".to_owned(),
-            label: "服务".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "url".to_owned(),
-            label: "URL".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "status".to_owned(),
-            label: "状态".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_job".to_owned(),
-            label: "来源任务".to_owned(),
-        },
-        StructuredResultColumnDto {
-            key: "source_artifact".to_owned(),
-            label: "来源证据".to_owned(),
-        },
-    ]
-}
-
-fn parse_dddd_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
-    let mut rows = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let value: serde_json::Value =
-            serde_json::from_str(trimmed).map_err(|_| CoreError::InvalidRequest)?;
-        let url = value
-            .get("uri")
-            .or_else(|| value.get("url"))
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let host = value
-            .get("ip")
-            .or_else(|| value.get("host"))
-            .and_then(|item| item.as_str())
-            .map(str::to_owned)
-            .or_else(|| {
-                url::Url::parse(&url)
-                    .ok()
-                    .and_then(|parsed| parsed.host_str().map(str::to_owned))
-            })
-            .unwrap_or_default();
-        let port = value
-            .get("port")
-            .map(|item| match item {
-                serde_json::Value::Number(number) => number.to_string(),
-                serde_json::Value::String(text) => text.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let service = value
-            .get("type")
-            .or_else(|| value.get("service"))
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let status = value
-            .pointer("/web/status")
-            .or_else(|| value.get("status"))
-            .map(|item| match item {
-                serde_json::Value::Number(number) => number.to_string(),
-                serde_json::Value::String(text) => text.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let mut cells = BTreeMap::new();
-        cells.insert("host".to_owned(), host);
-        cells.insert("port".to_owned(), port);
-        cells.insert("service".to_owned(), service);
-        cells.insert("url".to_owned(), url);
-        cells.insert("status".to_owned(), status);
-        cells.insert("source_job".to_owned(), String::new());
-        cells.insert("source_artifact".to_owned(), String::new());
-        rows.push(StructuredResultRowDto {
-            result_id: format!("row:{index}"),
-            cells,
-            source_job_id: JobId::new(),
-            source_artifact_id: None,
-        });
-    }
-    if rows.is_empty() {
-        return Err(CoreError::InvalidRequest);
-    }
-    Ok(rows)
-}
-
-fn parse_fscan_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
-    let records = if let Some(array) = value.as_array() {
-        array.clone()
-    } else if value.is_object() {
-        vec![value]
-    } else {
-        return Err(CoreError::InvalidRequest);
-    };
-    let mut rows = Vec::new();
-    for (index, record) in records.into_iter().enumerate() {
-        let host = record
-            .get("host")
-            .or_else(|| record.get("ip"))
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let port = record
-            .get("port")
-            .map(|item| match item {
-                serde_json::Value::Number(number) => number.to_string(),
-                serde_json::Value::String(text) => text.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let service = record
-            .get("service")
-            .or_else(|| record.get("protocol"))
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let url = record
-            .get("url")
-            .and_then(|item| item.as_str())
-            .map_or_else(
-                || {
-                    if !host.is_empty() && !port.is_empty() {
-                        format!("http://{host}:{port}/")
-                    } else {
-                        String::new()
-                    }
-                },
-                str::to_owned,
-            );
-        let status = record
-            .get("info")
-            .or_else(|| record.get("status"))
-            .map(|item| match item {
-                serde_json::Value::String(text) => text.clone(),
-                serde_json::Value::Number(number) => number.to_string(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let mut cells = BTreeMap::new();
-        cells.insert("host".to_owned(), host);
-        cells.insert("port".to_owned(), port);
-        cells.insert("service".to_owned(), service);
-        cells.insert("url".to_owned(), url);
-        cells.insert("status".to_owned(), status);
-        cells.insert("source_job".to_owned(), String::new());
-        cells.insert("source_artifact".to_owned(), String::new());
-        rows.push(StructuredResultRowDto {
-            result_id: format!("row:{index}"),
-            cells,
-            source_job_id: JobId::new(),
-            source_artifact_id: None,
-        });
-    }
-    if rows.is_empty() {
-        return Err(CoreError::InvalidRequest);
-    }
-    Ok(rows)
-}
-
-fn parse_wafw00f_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
-    let records = if let Some(array) = value.as_array() {
-        array.clone()
-    } else if value.is_object() {
-        vec![value]
-    } else {
-        return Err(CoreError::InvalidRequest);
-    };
-    let mut rows = Vec::new();
-    for (index, record) in records.into_iter().enumerate() {
-        let url = record
-            .get("url")
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let detected = record
-            .get("detected")
-            .map(|item| match item {
-                serde_json::Value::Bool(flag) => flag.to_string(),
-                serde_json::Value::String(text) => text.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        let firewall = record
-            .get("firewall")
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let manufacturer = record
-            .get("manufacturer")
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let mut cells = BTreeMap::new();
-        cells.insert("url".to_owned(), url);
-        cells.insert("detected".to_owned(), detected);
-        cells.insert("firewall".to_owned(), firewall);
-        cells.insert("manufacturer".to_owned(), manufacturer);
-        cells.insert("source_job".to_owned(), String::new());
-        cells.insert("source_artifact".to_owned(), String::new());
-        rows.push(StructuredResultRowDto {
-            result_id: format!("row:{index}"),
-            cells,
-            source_job_id: JobId::new(),
-            source_artifact_id: None,
-        });
-    }
-    if rows.is_empty() {
-        return Err(CoreError::InvalidRequest);
-    }
-    Ok(rows)
-}
-
-fn parse_arjun_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| CoreError::InvalidRequest)?;
-    let object = value.as_object().ok_or(CoreError::InvalidRequest)?;
-    let mut rows = Vec::new();
-    let mut index = 0_usize;
-    for (url, params) in object {
-        if url == "headers" || url == "method" {
-            continue;
-        }
-        let param_list = if let Some(map) = params.as_object() {
-            // Shape: { "http://x": { "params": ["a","b"] } } or nested values
-            if let Some(list) = map.get("params").and_then(|item| item.as_array()) {
-                list.iter()
-                    .filter_map(|item| item.as_str().map(str::to_owned))
-                    .collect::<Vec<_>>()
-            } else {
-                map.keys().cloned().collect()
-            }
-        } else if let Some(list) = params.as_array() {
-            list.iter()
-                .filter_map(|item| item.as_str().map(str::to_owned))
-                .collect()
-        } else if let Some(text) = params.as_str() {
-            vec![text.to_owned()]
-        } else {
-            continue;
-        };
-        for param in param_list {
-            let mut cells = BTreeMap::new();
-            cells.insert("url".to_owned(), url.clone());
-            cells.insert("param".to_owned(), param);
-            cells.insert("source_job".to_owned(), String::new());
-            cells.insert("source_artifact".to_owned(), String::new());
-            rows.push(StructuredResultRowDto {
-                result_id: format!("row:{index}"),
-                cells,
-                source_job_id: JobId::new(),
-                source_artifact_id: None,
-            });
-            index += 1;
-        }
-    }
-    if rows.is_empty() {
-        return Err(CoreError::InvalidRequest);
-    }
-    Ok(rows)
-}
-
 fn unique_export_basename(
     exports_dir: &Path,
     logical_name: &str,
@@ -4680,44 +3495,6 @@ fn valid_personal_preset_id_part(value: &str) -> bool {
                 || byte.is_ascii_digit()
                 || (index > 0 && matches!(byte, b'_' | b'-'))
         })
-}
-
-fn catalog_diagnostic_check(
-    id: &str,
-    label: &str,
-    status: CatalogDiagnosticStatus,
-    detail: impl Into<String>,
-    source: &str,
-    fix: &str,
-    copy_value: &str,
-) -> CatalogDiagnosticCheckDto {
-    CatalogDiagnosticCheckDto {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        status,
-        detail: detail.into(),
-        source: source.chars().take(512).collect(),
-        fix: fix.chars().take(512).collect(),
-        copy_value: copy_value.chars().take(1024).collect(),
-    }
-}
-
-fn catalog_diagnostic_priority(status: CatalogDiagnosticStatus) -> u8 {
-    match status {
-        CatalogDiagnosticStatus::Usable => 0,
-        CatalogDiagnosticStatus::VersionAbnormal => 1,
-        CatalogDiagnosticStatus::Missing => 2,
-        CatalogDiagnosticStatus::PathAbnormal => 3,
-        CatalogDiagnosticStatus::PermissionAbnormal => 4,
-    }
-}
-
-fn bounded_diagnostic_text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.len().min(512)])
-        .split_whitespace()
-        .take(32)
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn append_job_log(path: &Path, text: &str) -> Result<(), CoreError> {
@@ -5167,7 +3944,7 @@ fn set_active_identity(
     Ok(())
 }
 
-async fn drive_cancellation(
+pub(crate) async fn drive_cancellation(
     control: &ActiveExecution,
 ) -> Result<Option<CancellationResult>, CoreError> {
     if !control.cancel_requested.load(Ordering::SeqCst) {
@@ -5215,7 +3992,10 @@ async fn drive_cancellation(
     }
 }
 
-fn cancel_job_result(job_id: JobId, cancellation: Option<CancellationResult>) -> CancelJobResult {
+pub(crate) fn cancel_job_result(
+    job_id: JobId,
+    cancellation: Option<CancellationResult>,
+) -> CancelJobResult {
     cancellation.map_or(
         CancelJobResult {
             job_id: job_id.clone(),
@@ -5784,6 +4564,8 @@ pub fn typescript_declarations() -> String {
 
 #[cfg(test)]
 mod tests {
+    use flagdeck_domain::ToolIoKind;
+
     use super::*;
 
     struct FixtureProcess(std::process::Child);
@@ -5799,22 +4581,6 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let service = CoreService::new(temporary.path().join("workspaces"));
         (temporary, service)
-    }
-
-    #[test]
-    fn structured_result_adapter_is_selected_by_parser_id() {
-        assert!(matches!(
-            select_http_discovery_adapter(
-                Some("flagdeck.ffuf-json"),
-                "renamed-content-discovery",
-                None
-            ),
-            HttpDiscoveryAdapter::FfufJson
-        ));
-        assert!(matches!(
-            select_http_discovery_adapter(None, "ffuf", None),
-            HttpDiscoveryAdapter::GenericJson
-        ));
     }
 
     #[test]
@@ -8189,7 +6955,7 @@ mod tests {
                 && event.adapter_id.as_deref() == Some("external.shiro")
         }));
         assert_eq!(core.active_runs.load(Ordering::SeqCst), 0);
-        assert!(core.active_executions.lock().unwrap().is_empty());
+        assert!(!core.job_runner.has_active_jobs().unwrap());
     }
 
     #[tokio::test]
