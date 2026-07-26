@@ -885,7 +885,7 @@ impl ProjectStore {
         self.commit_artifact_with_fault(request, reader, CommitFault::None)
     }
 
-    pub fn commit_artifact_with_fault<R: Read>(
+    pub(crate) fn commit_artifact_with_fault<R: Read>(
         &self,
         request: &ArtifactWriteRequest,
         mut reader: R,
@@ -3186,8 +3186,10 @@ pub struct ArtifactWriteRequest {
     pub expected_sha256: Option<String>,
 }
 
+/// 仅供 crate 内测试使用的故障注入点：让 Artifact 提交流程在 file sync 后、或在
+/// content-addressed rename 后中断，以驱动重启恢复路径。不属于公开接口。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommitFault {
+pub(crate) enum CommitFault {
     None,
     AfterFileSync,
     AfterRename,
