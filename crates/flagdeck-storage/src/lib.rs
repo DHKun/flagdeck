@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::time::Duration;
 
 use flagdeck_domain::{
@@ -21,7 +21,6 @@ use flagdeck_domain::{
     ProjectSummary, ProxySession, ProxySessionId, ProxySessionState, Sensitivity, StateChainRun,
     TargetScope, Timestamp, Validate,
 };
-use fs2::FileExt;
 use nix::sys::stat::{Mode, umask};
 use rusqlite::backup::Backup;
 use rusqlite::{
@@ -34,6 +33,7 @@ use uuid::Uuid;
 
 mod archive;
 mod migrations;
+mod workspace;
 mod writer;
 
 use archive::{
@@ -42,6 +42,8 @@ use archive::{
     write_project_archive,
 };
 use migrations::{assert_schema_current, run_migrations};
+use workspace::WorkspaceLock;
+pub use workspace::{LockMetadata, WorkspaceLayout};
 use writer::WriterRuntime;
 
 pub const SCHEMA_VERSION: u32 = 6;
@@ -178,165 +180,6 @@ pub struct ProjectImportEvidence {
 pub enum OpenMode {
     ReadWrite,
     ReadOnly,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LockMetadata {
-    pub instance_id: String,
-    pub pid: u32,
-    pub process_start_ticks: u64,
-    pub hostname: String,
-    pub acquired_at: Timestamp,
-}
-
-#[derive(Debug, Clone)]
-pub struct WorkspaceLayout {
-    pub root: PathBuf,
-    pub database: PathBuf,
-    pub lock: PathBuf,
-    pub blobs: PathBuf,
-    pub artifacts: PathBuf,
-    pub scans: PathBuf,
-    pub notes: PathBuf,
-    pub exports: PathBuf,
-    pub backups: PathBuf,
-    pub runtime: PathBuf,
-    pub tmp: PathBuf,
-    pub browser_home: PathBuf,
-    pub browser_profile: PathBuf,
-    pub mitm_confdir: PathBuf,
-    pub metasploit: PathBuf,
-}
-
-impl WorkspaceLayout {
-    #[must_use]
-    pub fn for_project(workspaces_root: &Path, project_id: &ProjectId) -> Self {
-        Self::for_root(workspaces_root.join(&project_id.0))
-    }
-
-    #[must_use]
-    fn for_root(root: PathBuf) -> Self {
-        Self {
-            database: root.join("project.sqlite"),
-            lock: root.join(".flagdeck.lock"),
-            blobs: root.join("blobs/sha256"),
-            artifacts: root.join("artifacts"),
-            scans: root.join("scans"),
-            notes: root.join("notes"),
-            exports: root.join("exports"),
-            backups: root.join("backups"),
-            runtime: root.join("runtime"),
-            tmp: root.join("tmp"),
-            browser_home: root.join("browser-home"),
-            browser_profile: root.join("browser-profile"),
-            mitm_confdir: root.join("mitm-confdir"),
-            metasploit: root.join("metasploit"),
-            root,
-        }
-    }
-
-    fn create(&self) -> Result<(), StorageError> {
-        create_private_dir(&self.root)?;
-        for directory in [
-            &self.blobs,
-            &self.artifacts,
-            &self.scans,
-            &self.notes,
-            &self.exports,
-            &self.backups,
-            &self.runtime,
-            &self.tmp,
-            &self.browser_home,
-            &self.browser_profile,
-            &self.mitm_confdir,
-            &self.metasploit,
-        ] {
-            create_private_dir(directory)?;
-        }
-        sync_directory(&self.root)?;
-        Ok(())
-    }
-
-    pub fn verify(&self) -> Result<(), StorageError> {
-        for directory in [
-            &self.root,
-            &self.blobs,
-            &self.artifacts,
-            &self.scans,
-            &self.notes,
-            &self.exports,
-            &self.backups,
-            &self.runtime,
-            &self.tmp,
-            &self.browser_home,
-            &self.browser_profile,
-            &self.mitm_confdir,
-            &self.metasploit,
-        ] {
-            let metadata = fs::symlink_metadata(directory)?;
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(StorageError::InvalidLayout(directory.display().to_string()));
-            }
-            if metadata.permissions().mode() & 0o077 != 0 {
-                return Err(StorageError::InvalidLayout(format!(
-                    "{} mode {:o}",
-                    directory.display(),
-                    metadata.permissions().mode() & 0o777
-                )));
-            }
-        }
-        if self.database.exists() && fs::metadata(&self.database)?.permissions().mode() & 0o077 != 0
-        {
-            return Err(StorageError::InvalidLayout(
-                self.database.display().to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-struct WorkspaceLock {
-    file: File,
-}
-
-impl WorkspaceLock {
-    fn acquire(path: &Path) -> Result<Self, StorageError> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                StorageError::WriterLocked
-            } else {
-                StorageError::Io(error)
-            }
-        })?;
-        let metadata = LockMetadata {
-            instance_id: Uuid::new_v4().to_string(),
-            pid: std::process::id(),
-            process_start_ticks: current_process_start_ticks().unwrap_or(0),
-            hostname: fs::read_to_string("/etc/hostname")
-                .unwrap_or_else(|_| "unknown".to_owned())
-                .trim()
-                .to_owned(),
-            acquired_at: Timestamp::now(),
-        };
-        file.set_len(0)?;
-        file.write_all(&serde_json::to_vec_pretty(&metadata)?)?;
-        file.sync_all()?;
-        Ok(Self { file })
-    }
-}
-
-impl Drop for WorkspaceLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
