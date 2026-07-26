@@ -92,6 +92,11 @@ jobs:
           install: true
           cache: true
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-workspace
+          save-if: false
+
       - name: Sync dependencies
         run: mise run sync-all
 
@@ -194,6 +199,10 @@ jobs:
         with:
           install: true
           cache: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-workspace
 
       - name: Sync dependencies
         run: mise run sync-all

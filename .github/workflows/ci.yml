@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -36,6 +40,11 @@ jobs:
           install: true
           cache: true
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-workspace
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Sync dependencies
         run: mise run sync-all
 
@@ -46,6 +55,32 @@ jobs:
 
       - name: Run checks
         run: mise run test-all
+
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-audit
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Restore locked audit tools
+        uses: actions/cache@v4
+        with:
+          path: .release-tools
+          key: release-tools-${{ runner.os }}-${{ hashFiles('scripts/run_release_audits.py') }}
+
+      - name: Sync dependencies
+        run: mise run sync-all
 
       - name: Audit production dependencies
         run: mise run r7-audits

@@ -74,6 +74,17 @@ jobs:
           install: true
           cache: true
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-workspace
+          save-if: false
+
+      - name: Restore locked audit tools
+        uses: actions/cache/restore@v4
+        with:
+          path: .release-tools
+          key: release-tools-${{ runner.os }}-${{ hashFiles('scripts/run_release_audits.py') }}
+
       - name: Sync locked dependencies
         run: mise run sync-all
 
