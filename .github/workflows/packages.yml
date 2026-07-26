@@ -92,9 +92,14 @@ jobs:
           install: true
           cache: true
 
+      # Distinct key from ci.yml's linux-workspace: CI saves that cache on
+      # ubuntu-24.04 (GLIBC 2.39), and rust-cache keys on the OS name (Linux),
+      # not the Ubuntu version. Restoring it on this 22.04 AppImage-baseline job
+      # brought in build-script binaries linked against GLIBC_2.39 that fail to
+      # run here. A separate key means a correct cold build on 22.04.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-workspace
+          shared-key: linux-workspace-ubuntu2204
           save-if: false
 
       - name: Sync dependencies
