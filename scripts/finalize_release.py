@@ -115,6 +115,21 @@ def validate_fedora_lifecycle(
     rpm_hash: str,
     public_key_hash: str,
 ) -> str:
+    host = lifecycle.get("host")
+    if not isinstance(host, dict):
+        raise RuntimeError("Fedora target host evidence is invalid")
+    platform = host.get("platform")
+    fedora = host.get("fedora")
+    if (
+        not isinstance(platform, str)
+        or "x86_64" not in platform
+        or not isinstance(fedora, str)
+        or re.match(r"^Fedora release 44(?:\s|$)", fedora) is None
+        or host.get("desktop") != "KDE"
+        or host.get("session") != "wayland"
+        or host.get("selinux") != "Enforcing"
+    ):
+        raise RuntimeError("Fedora target host evidence is invalid")
     artifacts = lifecycle.get("artifacts", {})
     if lifecycle.get("passed") is not True or lifecycle.get("failure") is not None:
         raise RuntimeError("Fedora lifecycle evidence failed")

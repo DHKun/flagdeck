@@ -9,6 +9,9 @@ rmdir /usr/lib/FlagDeck/workers 2>/dev/null || :
 rmdir /usr/lib/FlagDeck/adapters/metasploit/schemas 2>/dev/null || :
 rmdir /usr/lib/FlagDeck/adapters/metasploit 2>/dev/null || :
 rmdir /usr/lib/FlagDeck/adapters 2>/dev/null || :
+rmdir /usr/lib/FlagDeck/config/tool-catalog/tools 2>/dev/null || :
+rmdir /usr/lib/FlagDeck/config/tool-catalog 2>/dev/null || :
 rmdir /usr/lib/FlagDeck/config 2>/dev/null || :
+rmdir /usr/lib/FlagDeck/docs 2>/dev/null || :
 rmdir /usr/lib/FlagDeck 2>/dev/null || :
 exit 0
