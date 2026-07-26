@@ -6,14 +6,11 @@
     clippy::too_many_lines
 )]
 
-use std::any::Any;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use flagdeck_domain::{
@@ -37,6 +34,7 @@ use uuid::Uuid;
 
 mod archive;
 mod migrations;
+mod writer;
 
 use archive::{
     ArchiveSource, all_committed_artifacts, extract_project_archive, insert_archive_source,
@@ -44,6 +42,7 @@ use archive::{
     write_project_archive,
 };
 use migrations::{assert_schema_current, run_migrations};
+use writer::WriterRuntime;
 
 pub const SCHEMA_VERSION: u32 = 6;
 pub const MIN_SAFE_SQLITE_VERSION: i32 = 3_051_003;
@@ -337,89 +336,6 @@ impl WorkspaceLock {
 impl Drop for WorkspaceLock {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.file);
-    }
-}
-
-type WriteResult = Result<Box<dyn Any + Send>, StorageError>;
-type WriteOperation = Box<dyn FnOnce(&mut Connection) -> WriteResult + Send>;
-
-enum WriterCommand {
-    Execute(WriteOperation, SyncSender<WriteResult>),
-    Shutdown,
-}
-
-struct WriterRuntime {
-    sender: SyncSender<WriterCommand>,
-    join: Option<JoinHandle<()>>,
-}
-
-impl WriterRuntime {
-    fn start(database: PathBuf) -> Result<Self, StorageError> {
-        let (sender, receiver) = sync_channel(WRITER_QUEUE_CAPACITY);
-        let (ready_sender, ready_receiver) = sync_channel(1);
-        let join = thread::spawn(move || writer_loop(&database, &receiver, &ready_sender));
-        ready_receiver
-            .recv()
-            .map_err(|_| StorageError::WriterStopped)??;
-        Ok(Self {
-            sender,
-            join: Some(join),
-        })
-    }
-
-    fn call<T, F>(&self, operation: F) -> Result<T, StorageError>
-    where
-        T: Any + Send,
-        F: FnOnce(&mut Connection) -> Result<T, StorageError> + Send + 'static,
-    {
-        let (response_sender, response_receiver) = sync_channel(1);
-        let erased: WriteOperation = Box::new(move |connection| {
-            operation(connection).map(|value| Box::new(value) as Box<dyn Any + Send>)
-        });
-        self.sender
-            .send(WriterCommand::Execute(erased, response_sender))
-            .map_err(|_| StorageError::WriterStopped)?;
-        let value = response_receiver
-            .recv()
-            .map_err(|_| StorageError::WriterStopped)??;
-        value
-            .downcast::<T>()
-            .map(|value| *value)
-            .map_err(|_| StorageError::WriterType)
-    }
-}
-
-impl Drop for WriterRuntime {
-    fn drop(&mut self) {
-        let _ = self.sender.send(WriterCommand::Shutdown);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
-    }
-}
-
-fn writer_loop(
-    database: &Path,
-    receiver: &Receiver<WriterCommand>,
-    ready: &SyncSender<Result<(), StorageError>>,
-) {
-    let mut connection = match open_writer_connection(database) {
-        Ok(connection) => {
-            let _ = ready.send(Ok(()));
-            connection
-        }
-        Err(error) => {
-            let _ = ready.send(Err(error));
-            return;
-        }
-    };
-    while let Ok(command) = receiver.recv() {
-        match command {
-            WriterCommand::Execute(operation, response) => {
-                let _ = response.send(operation(&mut connection));
-            }
-            WriterCommand::Shutdown => break,
-        }
     }
 }
 
