@@ -57,6 +57,12 @@
     resolveRunTarget,
     toolHasHostField,
   } from "./lib/runPlanning";
+  import { computeToolDefaults, pickInitialTool } from "./lib/toolSelection";
+  import {
+    nextLogOffset,
+    shouldFallbackToStderr,
+    shouldReplaceJobCursor,
+  } from "./lib/jobView";
   import {
     createPersonalPreset,
     deletePersonalPreset,
@@ -65,6 +71,8 @@
     findPersonalPreset,
     importPersonalPresets,
     personalPresetsForTool,
+    resolvePresetBaseId,
+    isPresetValidForTool,
     renamePersonalPreset,
     resolveDefaultPresetId,
     setDefaultPersonalPreset,
@@ -302,45 +310,18 @@
   }
 
   function applyToolDefaults(tool: CatalogToolDto): void {
-    const remembered = prefs.formByTool[tool.id] ?? {};
-    const next: Record<string, string> = {};
-    for (const field of tool.fields) {
-      const saved = remembered[field.id];
-      if (
-        (field.from === "target_url" ||
-          field.id === "url" ||
-          field.id === "host" ||
-          field.id === "target") &&
-        targetUrl.trim()
-      ) {
-        // Prefer live top-bar target for host/url fields.
-        if (field.id === "host" || field.field_type === "host") {
-          next[field.id] = hostFromTarget(targetUrl);
-        } else {
-          next[field.id] = targetUrl.trim();
-        }
-      } else if (saved != null && saved !== "") {
-        next[field.id] = saved;
-      } else if (field.default_value) {
-        next[field.id] = field.default_value;
-      } else {
-        next[field.id] = "";
-      }
-    }
-    formValues = next;
+    formValues = computeToolDefaults(
+      tool,
+      prefs.formByTool[tool.id] ?? {},
+      targetUrl,
+    );
   }
 
   function applyToolPreset(tool: CatalogToolDto, presetId: string): void {
     selectedPresetId = presetId;
     advancedFieldsExpanded = false;
     const personal = findPersonalPreset(personalPresetStore, presetId);
-    const basePresetId =
-      personal &&
-      tool.presets.some((preset) => preset.id === personal.base_preset_id)
-        ? personal.base_preset_id
-        : personal
-          ? (tool.presets[0]?.id ?? "")
-          : presetId;
+    const basePresetId = resolvePresetBaseId(tool, presetId, personal);
     const plan = buildProgressiveForm(tool, basePresetId, false);
     formValues = {
       ...formValues,
@@ -515,17 +496,6 @@
     return group?.name ?? "";
   }
 
-  function hostFromTarget(value: string): string {
-    const raw = value.trim();
-    if (!raw) return "";
-    try {
-      if (raw.includes("://")) return new URL(raw).hostname;
-    } catch {
-      /* ignore */
-    }
-    return raw.replace(/\/.*$/, "").replace(/:\d+$/, "");
-  }
-
   function rememberFormForTool(toolId: string): void {
     const tool = catalog?.tools.find((item) => item.id === toolId);
     const persistedValues = Object.fromEntries(
@@ -641,14 +611,7 @@
     scopes = nextScopes.items;
 
     if (!selectedToolId) {
-      const preferred =
-        (prefs.selectedToolId
-          ? catalog.tools.find((tool) => tool.id === prefs.selectedToolId)
-          : undefined) ??
-        featuredTools[0] ??
-        availableTools[0] ??
-        catalog.tools.find((tool) => tool.id === "dddd") ??
-        catalog.tools[0];
+      const preferred = pickInitialTool(catalog.tools, prefs.selectedToolId);
       if (preferred) selectTool(preferred);
     } else if (selectedTool) {
       if (Object.keys(formValues).length === 0) {
@@ -661,13 +624,11 @@
         }
       }
       if (
-        !selectedPresetId ||
-        (!selectedTool.presets.some(
-          (preset) => preset.id === selectedPresetId,
-        ) &&
-          !personalPresetsForTool(personalPresetStore, selectedTool.id).some(
-            (preset) => preset.id === selectedPresetId,
-          ))
+        !isPresetValidForTool(
+          personalPresetStore,
+          selectedTool,
+          selectedPresetId,
+        )
       ) {
         applyToolPreset(
           selectedTool,
@@ -684,13 +645,7 @@
     if (!status?.active_project || !selectedLogJobId || jobLogLoading) return;
     jobLogLoading = true;
     try {
-      const offset =
-        options.mode === "reset"
-          ? 0
-          : (options.offset ??
-            (options.mode === "append"
-              ? (jobLogWindow?.nextOffset ?? 0)
-              : (jobLogWindow?.offset ?? 0)));
+      const offset = nextLogOffset(options.mode, options.offset, jobLogWindow);
       const preview = await ipc.previewJobLog({
         project_id: status.active_project.project_id,
         job_id: selectedLogJobId,
@@ -701,10 +656,12 @@
 
       // Empty stdout on a finished job: surface stderr so failures stay visible.
       if (
-        options.mode === "reset" &&
-        selectedLogStream === "stdout" &&
-        preview.content.trim().length === 0 &&
-        preview.eof
+        shouldFallbackToStderr(
+          options.mode,
+          selectedLogStream,
+          preview.content,
+          preview.eof,
+        )
       ) {
         const err = await ipc.previewJobLog({
           project_id: status.active_project.project_id,
@@ -985,7 +942,9 @@
         mode: "refresh",
       });
       // Keep next_cursor from deeper pages; only replace when history is still the first page.
-      if (!jobNextCursor || jobs.length <= page.items.length) {
+      if (
+        shouldReplaceJobCursor(jobNextCursor, jobs.length, page.items.length)
+      ) {
         jobNextCursor = page.next_cursor;
       }
       const current = selectedJob();
