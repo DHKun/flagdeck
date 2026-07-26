@@ -52,6 +52,12 @@
   } from "./lib/toolSearch";
   import { buildProgressiveForm } from "./lib/progressiveForm";
   import {
+    buildRunPlan,
+    reconcileTargetUrl,
+    resolveRunTarget,
+    toolHasHostField,
+  } from "./lib/runPlanning";
+  import {
     createPersonalPreset,
     deletePersonalPreset,
     emptyPersonalPresetStore,
@@ -997,14 +1003,7 @@
   }
 
   function contextTargetForRun(): string {
-    if (!selectedTool) return targetUrl.trim();
-    const fromForm =
-      formValues.url?.trim() ||
-      formValues.target?.trim() ||
-      formValues.host?.trim() ||
-      "";
-    if (fromForm) return fromForm;
-    return selectedTool.needs_target ? targetUrl.trim() : "";
+    return resolveRunTarget(selectedTool, formValues, targetUrl);
   }
 
   function scheduleRunPreview(): void {
@@ -1037,21 +1036,15 @@
       noticeKind = "error";
       return;
     }
-    const hasSensitiveArgv = selectedTool.fields.some(
-      (field) => field.sensitive && Boolean(formValues[field.id]),
-    );
-    const riskLevel = hasSensitiveArgv
-      ? "l3"
-      : (runPreview?.risk_level ?? selectedTool.risk_level.toLowerCase());
+    const plan = buildRunPlan(selectedTool, formValues, runPreview?.risk_level);
     let confirmL2 = false;
     let l3Confirmation: string | null = null;
-    if (riskLevel === "l2") {
+    if (plan.tier === "l2") {
       if (!window.confirm("确认运行此 L2 工具？")) return;
       confirmL2 = true;
-    } else if (riskLevel === "l3") {
-      const expected = `RUN CATALOG ${selectedTool.id}`;
-      l3Confirmation = window.prompt(`输入 ${expected} 以确认 L3 操作`);
-      if (l3Confirmation !== expected) {
+    } else if (plan.tier === "l3") {
+      l3Confirmation = window.prompt(`输入 ${plan.l3Phrase} 以确认 L3 操作`);
+      if (l3Confirmation !== plan.l3Phrase) {
         notice = "L3 确认短语不匹配";
         noticeKind = "error";
         return;
@@ -1059,34 +1052,16 @@
     }
     await guarded(async () => {
       if (contextTarget) {
-        if (contextTarget.startsWith("http")) {
-          targetUrl = contextTarget;
-        } else if (
-          selectedTool!.fields.some(
-            (field) => field.id === "host" || field.field_type === "host",
-          )
-        ) {
-          // keep existing url scheme if only host was edited
-          try {
-            const u = new URL(
-              targetUrl.startsWith("http") ? targetUrl : `http://${targetUrl}/`,
-            );
-            u.hostname = contextTarget;
-            targetUrl = u.toString();
-          } catch {
-            targetUrl = `http://${contextTarget}/`;
-          }
-        } else {
-          targetUrl = contextTarget.startsWith("http")
-            ? contextTarget
-            : `http://${contextTarget}/`;
-        }
+        const reconciled = reconcileTargetUrl(
+          contextTarget,
+          targetUrl,
+          toolHasHostField(selectedTool!),
+        );
+        targetUrl = reconciled.targetUrl;
         persistPrefs();
         await ipc.ensureTarget({
           project_id: status!.active_project!.project_id,
-          base_url: contextTarget.startsWith("http")
-            ? contextTarget
-            : `http://${contextTarget}/`,
+          base_url: reconciled.ensureBaseUrl,
         });
       }
       rememberFormForTool(selectedTool!.id);
@@ -1095,7 +1070,7 @@
         tool_id: selectedTool!.id,
         target_url: contextTarget,
         form: { ...formValues },
-        confirm_sensitive_argv: hasSensitiveArgv,
+        confirm_sensitive_argv: plan.hasSensitiveArgv,
         confirm_l2: confirmL2,
         l3_confirmation: l3Confirmation,
         source_job_id: pendingSendTo?.sourceJobId ?? null,
