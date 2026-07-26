@@ -248,7 +248,8 @@ jobs:
       - name: Run signed desktop memory gate on the Fedora 44 target
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          status=0
           podman run --rm \
             --volume "$PWD/target/release/flagdeck-desktop:/release/flagdeck-desktop:ro" \
             --volume "$PWD/tests/gui:/release/gui" \
@@ -265,7 +266,19 @@ jobs:
                 FLAGDECK_R7_MEMORY_RUNS=10 \
                 TAURI_BINARY=/usr/local/bin/flagdeck-desktop \
                 node /release/gui/desktop-memory-gate.mjs
-            '
+            ' || status=$?
+          if [[ -f tests/gui/evidence/desktop-memory.json ]]; then
+            jq '{
+              status,
+              runs,
+              assertions,
+              privateResidentP95KiB: .privateResident.p95,
+              privateResidentMaxKiB: .privateResident.maximum,
+              privateBudgetKiB,
+              privateSamplesKiB: .privateResident.samples
+            }' tests/gui/evidence/desktop-memory.json
+          fi
+          exit "$status"
 
       - name: Reject unsupported lifecycle baseline
         if: inputs.tag != 'v1.0.0'

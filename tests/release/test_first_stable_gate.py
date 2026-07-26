@@ -81,6 +81,21 @@ class FirstStableGateTests(unittest.TestCase):
         self.assertIn("desktop-memory-gate.mjs", step)
         self.assertIn("FLAGDECK_R7_MEMORY_RUNS=10", step)
 
+    def test_desktop_memory_gate_reports_its_evidence_on_failure(self) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+        validate_job = workflow[workflow.index("  validate-and-publish:") :]
+        step = validate_job[
+            validate_job.index("- name: Run signed desktop memory gate") :
+        ]
+        step = step[: step.index("\n      - ")]
+
+        self.assertIn("tests/gui/evidence/desktop-memory.json", step)
+        self.assertIn("assertions", step)
+        self.assertIn("privateBudgetKiB", step)
+        self.assertIn('exit "$status"', step)
+
     def test_package_structure_check_reads_listings_without_broken_pipes(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
