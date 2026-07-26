@@ -14,6 +14,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
+import { percentile, selectSteadyStateSample } from "./steady-state.mjs";
 
 const workspace = resolve(import.meta.dirname, "../..");
 const application = process.env.TAURI_BINARY
@@ -25,11 +26,8 @@ const evidencePath = resolve(
 );
 const runCount = Number(process.env.FLAGDECK_R7_MEMORY_RUNS ?? "10");
 const privateBudgetKiB = 150 * 1024;
-
-function percentile(values, quantile) {
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.max(0, Math.ceil(quantile * sorted.length) - 1)];
-}
+const snapshotCount = 7;
+const snapshotIntervalMs = 500;
 
 function distribution(values) {
   return {
@@ -125,11 +123,24 @@ async function waitForTree(rootPid) {
     const tree = await processTree(rootPid);
     if (tree.webProcessCount === 1) {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_500));
-      return processTree(rootPid);
+      return;
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 80));
   }
   throw new Error("single-window WebKit process did not become ready");
+}
+
+async function steadySnapshots(rootPid) {
+  const snapshots = [];
+  for (let snapshot = 1; snapshot <= snapshotCount; snapshot += 1) {
+    if (snapshot > 1) {
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, snapshotIntervalMs),
+      );
+    }
+    snapshots.push(await processTree(rootPid));
+  }
+  return snapshots;
 }
 
 async function stop(child) {
@@ -174,7 +185,9 @@ for (let index = 1; index <= runCount; index += 1) {
   });
   let sample;
   try {
-    const tree = await waitForTree(child.pid);
+    await waitForTree(child.pid);
+    const snapshots = await steadySnapshots(child.pid);
+    const tree = selectSteadyStateSample(snapshots);
     const limits = await readFile(`/proc/${child.pid}/limits`, "utf8");
     const coreLimitLine = limits
       .split("\n")
@@ -182,6 +195,8 @@ for (let index = 1; index <= runCount; index += 1) {
     sample = {
       index,
       tree,
+      privateSnapshotsKiB: snapshots.map(({ privateKiB }) => privateKiB),
+      webProcessCounts: snapshots.map(({ webProcessCount }) => webProcessCount),
       coreLimitZero:
         coreLimitLine?.trim().split(/\s+/u).slice(-3).join(" ") === "0 0 bytes",
     };
@@ -201,13 +216,15 @@ const rootPssValues = runs.map(({ tree }) => tree.rootPssKiB);
 const assertions = {
   privateResidentP95Le150MiB:
     percentile(privateValues, 0.95) <= privateBudgetKiB,
-  oneWebProcessPerRun: runs.every(({ tree }) => tree.webProcessCount === 1),
+  oneWebProcessPerRun: runs.every(({ webProcessCounts }) =>
+    webProcessCounts.every((count) => count === 1),
+  ),
   coreLimitZero: runs.every(({ coreLimitZero }) => coreLimitZero),
   cleanupPassed: runs.every(({ cleanupPassed }) => cleanupPassed),
 };
 const binary = await readFile(application);
 const result = {
-  schema: "flagdeck.desktop-memory.r7.v1",
+  schema: "flagdeck.desktop-memory.r7.v2",
   status: Object.values(assertions).every(Boolean) ? "PASS" : "FAIL",
   generatedAt: new Date().toISOString(),
   environment: {
@@ -218,7 +235,7 @@ const result = {
   applicationSha256: createHash("sha256").update(binary).digest("hex"),
   runs: runCount,
   measurement:
-    "single-window process-tree private resident memory; PSS and summed RSS are preserved as supporting distributions",
+    "single-window process-tree private resident memory; each run reports the minimum of seven post-ready snapshots so released transients are excluded while retained allocations stay visible; PSS and summed RSS are preserved as supporting distributions",
   privateBudgetKiB,
   privateResident: distribution(privateValues),
   proportionalSet: distribution(pssValues),
