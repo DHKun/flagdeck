@@ -149,6 +149,16 @@ class FirstStableGateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(installed_root.exists())
 
+    def test_memory_gate_budget_covers_active_rendering(self) -> None:
+        gate = (ROOT / "tests/gui/desktop-memory-gate.mjs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("privateBudgetKiB = 192 * 1024", gate)
+        self.assertIn("privateResidentP95Le192MiB", gate)
+        self.assertNotIn("150 * 1024", gate)
+        self.assertNotIn("Le150MiB", gate)
+
     def test_memory_gate_selects_steady_state_sample_per_run(self) -> None:
         gate = (ROOT / "tests/gui/desktop-memory-gate.mjs").read_text(
             encoding="utf-8"
