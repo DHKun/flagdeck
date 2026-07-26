@@ -190,9 +190,122 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  validate-and-publish:
-    name: Validate signed candidate and publish
+  target-evidence:
+    name: Validate candidate on Fedora KDE/Wayland
     needs: sign
+    runs-on: [self-hosted, linux, x64, flagdeck-fedora44-kde-wayland]
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-unsigned-input
+          path: .
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-signed-input
+          path: .
+
+      - name: Restore executable modes
+        run: |
+          chmod 755 target/release/flagdeck-desktop
+          chmod 755 stable-input/tauri-driver
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.22.2
+
+      - name: Validate Fedora desktop target
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -qx 'ID=fedora' /etc/os-release
+          grep -qx 'VERSION_ID=44' /etc/os-release
+          test "$(uname -m)" = x86_64
+          test "${XDG_CURRENT_DESKTOP:-}" = KDE
+          test "${XDG_SESSION_TYPE:-}" = wayland
+          test "$(getenforce)" = Enforcing
+          test -n "${XDG_RUNTIME_DIR:-}"
+          test -n "${WAYLAND_DISPLAY:-}"
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          test -n "${DBUS_SESSION_BUS_ADDRESS:-}"
+          command -v WebKitWebDriver
+          command -v jq
+          command -v podman
+          command -v python3
+          podman info >/dev/null
+
+      - name: Reset target evidence outputs
+        shell: bash
+        run: |
+          rm -rf -- tests/gui/evidence
+          rm -f -- release/evidence/fedora-lifecycle.json
+
+      - name: Run signed GUI gate on Fedora KDE/Wayland
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLAGDECK_R7_GUI_RUNS=10 \
+          TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
+          TAURI_DRIVER="$PWD/stable-input/tauri-driver" \
+          TAURI_PACKAGE="$PWD/target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm" \
+          node tests/gui/release-gate.mjs
+
+      - name: Run signed desktop memory gate on the Fedora 44 target
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          FLAGDECK_R7_MEMORY_RUNS=10 \
+          TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
+          node tests/gui/desktop-memory-gate.mjs || status=$?
+          if [[ -f tests/gui/evidence/desktop-memory.json ]]; then
+            jq '{
+              status,
+              runs,
+              assertions,
+              privateResidentP95KiB: .privateResident.p95,
+              privateResidentMaxKiB: .privateResident.maximum,
+              privateBudgetKiB,
+              privateSamplesKiB: .privateResident.samples
+            }' tests/gui/evidence/desktop-memory.json
+          fi
+          exit "$status"
+
+      - name: Reject unsupported lifecycle baseline
+        if: inputs.tag != 'v1.0.0'
+        run: |
+          echo "this workflow revision supports the v1.0.0 first Stable lifecycle" >&2
+          exit 1
+
+      - name: Run Fedora lifecycle evidence
+        run: |
+          python3 scripts/fedora_lifecycle_gate.py \
+            --first-release \
+            --new-rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm \
+            --public-key release/FlagDeck-1.0.0-signing-key.asc \
+            --output release/evidence/fedora-lifecycle.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stable-target-evidence
+          path: |
+            tests/gui/evidence
+            release/evidence/fedora-lifecycle.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  validate-and-publish:
+    name: Validate evidence and publish
+    needs: target-evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -214,85 +327,21 @@ jobs:
           name: stable-signed-input
           path: .
 
-      - name: Restore executable modes
-        run: |
-          chmod 755 target/release/flagdeck-desktop
-          chmod 755 target/release/bundle/appimage/*.AppImage
-          chmod 755 stable-input/tauri-driver
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-target-evidence
+          path: .
 
-      - name: Install signed-candidate validation dependencies
+      - name: Restore executable modes
+        run: chmod 755 target/release/bundle/appimage/*.AppImage
+
+      - name: Install release finalization dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes \
-            gnupg \
-            podman \
-            rpm \
-            webkit2gtk-driver \
-            xvfb
+          sudo apt-get install --yes gnupg rpm
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22.22.2
-
-      - name: Run signed GUI gate
-        shell: bash
+      - name: Finalize target evidence
         run: |
-          set -euo pipefail
-          xvfb-run -a env \
-            FLAGDECK_R7_GUI_RUNS=10 \
-            TAURI_BINARY="$PWD/target/release/flagdeck-desktop" \
-            TAURI_DRIVER="$PWD/stable-input/tauri-driver" \
-            TAURI_PACKAGE="$PWD/target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm" \
-            node tests/gui/release-gate.mjs
-
-      - name: Run signed desktop memory gate on the Fedora 44 target
-        shell: bash
-        run: |
-          set -uo pipefail
-          status=0
-          podman run --rm \
-            --volume "$PWD/target/release/flagdeck-desktop:/release/flagdeck-desktop:ro" \
-            --volume "$PWD/tests/gui:/release/gui" \
-            registry.fedoraproject.org/fedora:44 \
-            bash -euo pipefail -c '
-              dnf install -y --setopt=install_weak_deps=False \
-                webkit2gtk4.1 \
-                libappindicator-gtk3 \
-                xorg-x11-server-Xvfb \
-                nodejs \
-                procps-ng
-              install -m 755 /release/flagdeck-desktop /usr/local/bin/flagdeck-desktop
-              xvfb-run -a env \
-                FLAGDECK_R7_MEMORY_RUNS=10 \
-                TAURI_BINARY=/usr/local/bin/flagdeck-desktop \
-                node /release/gui/desktop-memory-gate.mjs
-            ' || status=$?
-          if [[ -f tests/gui/evidence/desktop-memory.json ]]; then
-            jq '{
-              status,
-              runs,
-              assertions,
-              privateResidentP95KiB: .privateResident.p95,
-              privateResidentMaxKiB: .privateResident.maximum,
-              privateBudgetKiB,
-              privateSamplesKiB: .privateResident.samples
-            }' tests/gui/evidence/desktop-memory.json
-          fi
-          exit "$status"
-
-      - name: Reject unsupported lifecycle baseline
-        if: inputs.tag != 'v1.0.0'
-        run: |
-          echo "this workflow revision supports the v1.0.0 first Stable lifecycle" >&2
-          exit 1
-
-      - name: Run Fedora lifecycle and finalize evidence
-        run: |
-          python3 scripts/fedora_lifecycle_gate.py \
-            --first-release \
-            --new-rpm target/release/bundle/rpm/FlagDeck-1.0.0-1.x86_64.rpm \
-            --public-key release/FlagDeck-1.0.0-signing-key.asc \
-            --output release/evidence/fedora-lifecycle.json
           python3 scripts/finalize_release.py \
             --output release/evidence/release-manifest.json
 

@@ -50,45 +50,56 @@ class FirstStableGateTests(unittest.TestCase):
 
         self.assertIn("runs-on: ubuntu-24.04", build_job)
 
-    def test_validation_job_runs_the_build_runner_that_produced_the_binary(self) -> None:
+    def test_target_evidence_job_runs_on_the_release_target_host(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
         ).read_text(encoding="utf-8")
-        build_job = workflow[workflow.index("  build:") : workflow.index("  sign:")]
-        validate_job = workflow[workflow.index("  validate-and-publish:") :]
-
-        self.assertIn("TAURI_BINARY=", validate_job)
-        build_runner = next(
-            line.strip() for line in build_job.splitlines() if "runs-on:" in line
-        )
-        validate_runner = next(
-            line.strip() for line in validate_job.splitlines() if "runs-on:" in line
-        )
-        self.assertEqual(validate_runner, build_runner)
-
-    def test_desktop_memory_gate_runs_on_the_release_target_platform(self) -> None:
-        workflow = (
-            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
-        ).read_text(encoding="utf-8")
-        validate_job = workflow[workflow.index("  validate-and-publish:") :]
-        step = validate_job[
-            validate_job.index("- name: Run signed desktop memory gate") :
+        target_job = workflow[
+            workflow.index("  target-evidence:") : workflow.index(
+                "  validate-and-publish:"
+            )
         ]
-        step = step[: step.index("\n      - ")]
 
-        self.assertIn("podman run", step)
-        self.assertIn("registry.fedoraproject.org/fedora:44", step)
-        self.assertIn("desktop-memory-gate.mjs", step)
-        self.assertIn("FLAGDECK_R7_MEMORY_RUNS=10", step)
+        self.assertIn("needs: sign", target_job)
+        self.assertIn(
+            "runs-on: [self-hosted, linux, x64, flagdeck-fedora44-kde-wayland]",
+            target_job,
+        )
+        self.assertIn("node tests/gui/release-gate.mjs", target_job)
+        self.assertIn("node tests/gui/desktop-memory-gate.mjs", target_job)
+        self.assertIn("python3 scripts/fedora_lifecycle_gate.py", target_job)
+        self.assertIn("XDG_CURRENT_DESKTOP", target_job)
+        self.assertIn("XDG_SESSION_TYPE", target_job)
+        self.assertIn("getenforce", target_job)
+
+    def test_publish_job_consumes_hash_bound_target_evidence(self) -> None:
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
+        ).read_text(encoding="utf-8")
+        target_job = workflow[
+            workflow.index("  target-evidence:") : workflow.index(
+                "  validate-and-publish:"
+            )
+        ]
+        publish_job = workflow[workflow.index("  validate-and-publish:") :]
+
+        self.assertIn("name: stable-target-evidence", target_job)
+        self.assertIn("needs: target-evidence", publish_job)
+        self.assertIn("name: stable-target-evidence", publish_job)
+        self.assertIn("python3 scripts/finalize_release.py", publish_job)
+        self.assertNotIn("TAURI_BINARY=", publish_job)
+        self.assertNotIn("fedora_lifecycle_gate.py", publish_job)
 
     def test_desktop_memory_gate_reports_its_evidence_on_failure(self) -> None:
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/stable-release.yml"
         ).read_text(encoding="utf-8")
-        validate_job = workflow[workflow.index("  validate-and-publish:") :]
-        step = validate_job[
-            validate_job.index("- name: Run signed desktop memory gate") :
+        target_job = workflow[
+            workflow.index("  target-evidence:") : workflow.index(
+                "  validate-and-publish:"
+            )
         ]
+        step = target_job[target_job.index("- name: Run signed desktop memory gate") :]
         step = step[: step.index("\n      - ")]
 
         self.assertIn("tests/gui/evidence/desktop-memory.json", step)
@@ -106,6 +117,37 @@ class FirstStableGateTests(unittest.TestCase):
         self.assertNotIn('-qpl "$rpm_package" | grep', build_job)
         self.assertIn('--contents "$deb" > deb-contents.txt', build_job)
         self.assertIn('-qpl "$rpm_package" > rpm-contents.txt', build_job)
+
+    def test_rpm_post_remove_cleans_nested_resource_directories(self) -> None:
+        script = (
+            ROOT / "apps/desktop/src-tauri/scripts/rpm-post-remove.sh"
+        ).read_text(encoding="utf-8")
+
+        with TemporaryDirectory() as directory:
+            installed_root = Path(directory) / "usr/lib/FlagDeck"
+            for relative in (
+                "adapters/metasploit/schemas",
+                "config/tool-catalog/tools",
+                "docs",
+                "workers/mitmproxy/src/flagdeck_mitm",
+            ):
+                (installed_root / relative).mkdir(parents=True, exist_ok=True)
+            isolated_script = script.replace(
+                "/usr/lib/FlagDeck",
+                str(installed_root),
+            )
+
+            result = subprocess.run(
+                ["sh"],
+                input=isolated_script,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(installed_root.exists())
 
     def test_preview_packages_trigger_only_accepts_prerelease_tags(self) -> None:
         workflow = (
@@ -191,6 +233,13 @@ class FirstStableGateTests(unittest.TestCase):
             "reason": "no prior stable RPM release exists",
             "passed": True,
             "failure": None,
+            "host": {
+                "platform": "Linux-7.1.3-200.fc44.x86_64-x86_64-with-glibc2.43",
+                "fedora": "Fedora release 44 (Forty Four)",
+                "desktop": "KDE",
+                "session": "wayland",
+                "selinux": "Enforcing",
+            },
             "artifacts": {
                 "previousRpmSha256": None,
                 "stableRpmSha256": rpm_hash,
@@ -219,6 +268,17 @@ class FirstStableGateTests(unittest.TestCase):
             "wrong mode": ("mode", "upgrade"),
             "wrong status": ("status", "PASS"),
             "wrong reason": ("reason", "missing prior package"),
+            "wrong architecture": ("host.platform", "Linux-aarch64"),
+            "wrong Fedora release": ("host.fedora", "Fedora release 45"),
+            "host not a mapping": (
+                "host",
+                "Fedora release 44 x86_64 KDE wayland Enforcing",
+            ),
+            "platform not a string": ("host.platform", ["x86_64"]),
+            "Fedora release not a string": ("host.fedora", 44),
+            "wrong desktop": ("host.desktop", "GNOME"),
+            "wrong session": ("host.session", "x11"),
+            "SELinux not enforcing": ("host.selinux", "Permissive"),
             "previous hash present": (
                 "artifacts.previousRpmSha256",
                 "c" * 64,
