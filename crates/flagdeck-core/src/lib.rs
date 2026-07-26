@@ -16,6 +16,7 @@ mod runner;
 mod tool_output;
 
 use catalog::CatalogWorkbench;
+use runner::JobRunner;
 
 pub use catalog_api::{
     CatalogCategoryDto, CatalogDiagnosticCheckDto, CatalogDiagnosticStatus, CatalogFieldGroupDto,
@@ -32,7 +33,7 @@ pub use payloads::{
     PayloadSourceHealthDto, PreviewPayloadRequest,
 };
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -956,7 +957,7 @@ pub struct CoreService {
     catalog_workbench: CatalogWorkbench,
     active: Mutex<Option<Arc<ProjectStore>>>,
     active_runs: Arc<AtomicUsize>,
-    active_executions: Mutex<HashMap<JobId, Arc<ActiveExecution>>>,
+    job_runner: JobRunner,
     event_sequence: AtomicU64,
     personal_preset_write_sequence: AtomicU64,
     personal_preset_lock: Mutex<()>,
@@ -1014,7 +1015,7 @@ impl CoreService {
             catalog_workbench: CatalogWorkbench::new(catalog_paths),
             active: Mutex::new(None),
             active_runs: Arc::new(AtomicUsize::new(0)),
-            active_executions: Mutex::new(HashMap::new()),
+            job_runner: JobRunner::new(),
             event_sequence: AtomicU64::new(0),
             personal_preset_write_sequence: AtomicU64::new(0),
             personal_preset_lock: Mutex::new(()),
@@ -2014,11 +2015,7 @@ impl CoreService {
         let store = self.project_store(&request.project_id, true)?;
         let stored = store.job(&request.job_id)?;
         if is_active_execution_status(stored.job.execution_status)
-            || self
-                .active_executions
-                .lock()
-                .map_err(|_| CoreError::StateLock)?
-                .contains_key(&request.job_id)
+            || self.job_runner.is_job_active(&request.job_id)?
         {
             return Err(CoreError::ActiveJobs);
         }
@@ -2038,13 +2035,7 @@ impl CoreService {
     pub fn clear_jobs(&self, request: &ClearJobsRequest) -> Result<ClearJobsResult, CoreError> {
         let store = self.project_store(&request.project_id, true)?;
         // Refuse while any job is still active in-memory or running in DB.
-        if self.active_runs.load(Ordering::SeqCst) > 0
-            || !self
-                .active_executions
-                .lock()
-                .map_err(|_| CoreError::StateLock)?
-                .is_empty()
-        {
+        if self.active_runs.load(Ordering::SeqCst) > 0 || self.job_runner.has_active_jobs()? {
             return Err(CoreError::ActiveJobs);
         }
         let (items, _) = store.list_jobs(100, None)?;
@@ -2508,10 +2499,7 @@ impl CoreService {
         );
         store.save_job(&job)?;
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .insert(job_id, Arc::clone(&control));
+        self.job_runner.register(job_id, Arc::clone(&control))?;
         let queued = PreparedExternalRun {
             store,
             command,
@@ -2533,13 +2521,7 @@ impl CoreService {
     async fn execute_external_launch(&self, queued: PreparedExternalRun) -> Result<(), CoreError> {
         let job_id = queued.job.job_id.clone();
         let result = self.execute_external_launch_inner(queued).await;
-        let cleanup = self
-            .active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)
-            .map(|mut active| {
-                active.remove(&job_id);
-            });
+        let cleanup = self.job_runner.unregister(&job_id);
         result.and(cleanup)
     }
 
@@ -2957,10 +2939,7 @@ impl CoreService {
             )?;
         }
         let control = Arc::new(ActiveExecution::new(command.stop_grace_millis));
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .insert(job_id, Arc::clone(&control));
+        self.job_runner.register(job_id, Arc::clone(&control))?;
 
         // Classic GUI windows detach after a short probe; long-running servers
         // (npm run dev, etc.) set catalog `detach = false` so cancel stays available.
@@ -3042,10 +3021,7 @@ impl CoreService {
         );
         store.save_job(&job)?;
         let control = Arc::new(ActiveExecution::new(prepared.spec.stop_grace_millis));
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .insert(job_id, Arc::clone(&control));
+        self.job_runner.register(job_id, Arc::clone(&control))?;
         Ok(PreparedRun {
             store,
             request,
@@ -3059,10 +3035,7 @@ impl CoreService {
     async fn execute_tool_run(&self, queued: PreparedRun) -> Result<RunToolResult, CoreError> {
         let job_id = queued.job.job_id.clone();
         let result = self.execute_tool_run_inner(queued).await;
-        self.active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .remove(&job_id);
+        self.job_runner.unregister(&job_id)?;
         result
     }
 
@@ -3227,65 +3200,16 @@ impl CoreService {
         &self,
         request: &CancelJobRequest,
     ) -> Result<CancelJobResult, CoreError> {
-        request
-            .job_id
-            .validate()
-            .map_err(|_| CoreError::InvalidRequest)?;
         let store = self.project_store(&request.project_id, true)?;
-        let control = self
-            .active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .get(&request.job_id)
-            .cloned()
-            .ok_or(CoreError::JobNotActive)?;
-        control.cancel_requested.store(true, Ordering::SeqCst);
-        let has_identity = control
-            .identity
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .is_some();
-        if has_identity {
-            let mut job = store.job(&request.job_id)?.job;
-            if matches!(
-                job.execution_status,
-                ExecutionStatus::Queued | ExecutionStatus::Starting | ExecutionStatus::Running
-            ) {
-                job.transition(ExecutionStatus::Stopping)
-                    .map_err(|_| CoreError::InvalidRequest)?;
-                store.save_job(&job)?;
-            }
-        }
-        let cancellation = drive_cancellation(&control).await?;
-        Ok(cancel_job_result(request.job_id.clone(), cancellation))
+        self.job_runner.cancel_job(&store, request).await
     }
 
     pub async fn cancel_all_jobs(
         &self,
         project_id: &ProjectId,
     ) -> Result<CancelAllJobsResult, CoreError> {
-        self.project_store(project_id, true)?;
-        let job_ids = self
-            .active_executions
-            .lock()
-            .map_err(|_| CoreError::StateLock)?
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut results = Vec::with_capacity(job_ids.len());
-        for job_id in &job_ids {
-            results.push(
-                self.cancel_job(&CancelJobRequest {
-                    project_id: project_id.clone(),
-                    job_id: job_id.clone(),
-                })
-                .await?,
-            );
-        }
-        Ok(CancelAllJobsResult {
-            requested: job_ids.len(),
-            results,
-        })
+        let store = self.project_store(project_id, true)?;
+        self.job_runner.cancel_all_jobs(&store, project_id).await
     }
 
     #[must_use]
@@ -3373,18 +3297,18 @@ impl Drop for ActiveRunGuard {
     }
 }
 
-struct ActiveExecution {
-    identity: Mutex<Option<ManagedProcessIdentity>>,
-    cancel_requested: AtomicBool,
-    cancel_started: AtomicBool,
-    cancel_failed: AtomicBool,
-    cancel_result: Mutex<Option<CancellationResult>>,
-    cancel_finished: Notify,
-    stop_grace: Duration,
+pub(crate) struct ActiveExecution {
+    pub(crate) identity: Mutex<Option<ManagedProcessIdentity>>,
+    pub(crate) cancel_requested: AtomicBool,
+    pub(crate) cancel_started: AtomicBool,
+    pub(crate) cancel_failed: AtomicBool,
+    pub(crate) cancel_result: Mutex<Option<CancellationResult>>,
+    pub(crate) cancel_finished: Notify,
+    pub(crate) stop_grace: Duration,
 }
 
 impl ActiveExecution {
-    fn new(stop_grace_millis: u64) -> Self {
+    pub(crate) fn new(stop_grace_millis: u64) -> Self {
         Self {
             identity: Mutex::new(None),
             cancel_requested: AtomicBool::new(false),
@@ -4020,7 +3944,7 @@ fn set_active_identity(
     Ok(())
 }
 
-async fn drive_cancellation(
+pub(crate) async fn drive_cancellation(
     control: &ActiveExecution,
 ) -> Result<Option<CancellationResult>, CoreError> {
     if !control.cancel_requested.load(Ordering::SeqCst) {
@@ -4068,7 +3992,10 @@ async fn drive_cancellation(
     }
 }
 
-fn cancel_job_result(job_id: JobId, cancellation: Option<CancellationResult>) -> CancelJobResult {
+pub(crate) fn cancel_job_result(
+    job_id: JobId,
+    cancellation: Option<CancellationResult>,
+) -> CancelJobResult {
     cancellation.map_or(
         CancelJobResult {
             job_id: job_id.clone(),
@@ -7028,7 +6955,7 @@ mod tests {
                 && event.adapter_id.as_deref() == Some("external.shiro")
         }));
         assert_eq!(core.active_runs.load(Ordering::SeqCst), 0);
-        assert!(core.active_executions.lock().unwrap().is_empty());
+        assert!(!core.job_runner.has_active_jobs().unwrap());
     }
 
     #[tokio::test]
