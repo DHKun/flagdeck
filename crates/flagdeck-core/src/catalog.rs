@@ -6,31 +6,67 @@
 //! 诊断用到的构造与排序留在模块内部。
 
 use std::env;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use flagdeck_cli_adapters::{CatalogPaths, ToolCatalog};
+use flagdeck_cli_adapters::catalog::file_sha256;
+use flagdeck_cli_adapters::{CatalogPaths, CatalogToolManifest, ToolCatalog};
+use sha2::{Digest, Sha256};
 
 use crate::{
     CatalogCategoryDto, CatalogDiagnosticCheckDto, CatalogDiagnosticStatus, CatalogFieldGroupDto,
-    CatalogFormFieldDto, CatalogInstallationDto, CatalogPresetDto, CatalogSnapshot,
-    CatalogToolDiagnosticDto, CatalogToolDto, CoreError, DiagnoseCatalogToolRequest, WordlistDto,
-    map_catalog_error,
+    CatalogFormFieldDto, CatalogFormOptionDto, CatalogFormRelationDto, CatalogHelpSnapshotDto,
+    CatalogInstallationDto, CatalogPresetDto, CatalogSnapshot, CatalogToolDiagnosticDto,
+    CatalogToolDto, CoreError, DiagnoseCatalogToolRequest, WordlistDto, map_catalog_error,
 };
 
 pub(crate) struct CatalogWorkbench {
     paths: CatalogPaths,
+    cache: Mutex<Option<CachedCatalog>>,
 }
+
+struct CachedCatalog {
+    loaded_at: Instant,
+    catalog: ToolCatalog,
+}
+
+const CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
 impl CatalogWorkbench {
     pub(crate) fn new(paths: CatalogPaths) -> Self {
-        Self { paths }
+        Self {
+            paths,
+            cache: Mutex::new(None),
+        }
     }
 
     /// 加载当前 `CatalogPaths` 下的工具目录。这是目录唯一的加载点，launch 路径也经此加载。
     pub(crate) fn load(&self) -> Result<ToolCatalog, CoreError> {
-        ToolCatalog::load(self.paths.clone()).map_err(|error| map_catalog_error(&error))
+        if let Ok(cache) = self.cache.lock()
+            && let Some(cached) = cache.as_ref()
+            && cached.loaded_at.elapsed() < CATALOG_CACHE_TTL
+        {
+            return Ok(cached.catalog.clone());
+        }
+        self.load_fresh()
+    }
+
+    fn load_fresh(&self) -> Result<ToolCatalog, CoreError> {
+        let catalog =
+            ToolCatalog::load(self.paths.clone()).map_err(|error| map_catalog_error(&error))?;
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = Some(CachedCatalog {
+                loaded_at: Instant::now(),
+                catalog: catalog.clone(),
+            });
+        }
+        Ok(catalog)
     }
 
     pub(crate) fn snapshot(&self) -> Result<CatalogSnapshot, CoreError> {
@@ -38,6 +74,7 @@ impl CatalogWorkbench {
         Ok(CatalogSnapshot {
             tools_root: catalog.paths.tools_root.display().to_string(),
             wordlists_root: catalog.paths.wordlists_root.display().to_string(),
+            user_catalog_root: catalog.paths.user_catalog_root.display().to_string(),
             categories: catalog
                 .categories
                 .iter()
@@ -78,6 +115,19 @@ impl CatalogWorkbench {
                             fields: group.fields,
                         })
                         .collect(),
+                    relations: view
+                        .relations
+                        .into_iter()
+                        .map(|relation| CatalogFormRelationDto {
+                            kind: relation.kind,
+                            field: relation.field,
+                            equals: relation.equals,
+                            other: relation.other,
+                            other_equals: relation.other_equals,
+                            severity: relation.severity,
+                            message: relation.message,
+                        })
+                        .collect(),
                     risk_level: view.risk_level,
                     installation: CatalogInstallationDto {
                         distribution: view.installation.distribution,
@@ -114,7 +164,20 @@ impl CatalogWorkbench {
                             default_value: field.default,
                             from: field.from,
                             options: field.options,
+                            flag: field.flag,
                             hint: field.hint,
+                            examples: field.examples,
+                            option_details: field
+                                .option_details
+                                .into_iter()
+                                .map(|option| CatalogFormOptionDto {
+                                    value: option.value,
+                                    label: option.label,
+                                    summary: option.summary,
+                                    tags: option.tags,
+                                })
+                                .collect(),
+                            recommend_from: field.recommend_from,
                             sensitive: field.sensitive,
                         })
                         .collect(),
@@ -141,7 +204,11 @@ impl CatalogWorkbench {
         if request.tool_id.is_empty() || request.tool_id.len() > 64 {
             return Err(CoreError::InvalidRequest);
         }
-        let catalog = self.load()?;
+        let catalog = if request.refresh_help {
+            self.load_fresh()?
+        } else {
+            self.load()?
+        };
         let tool = catalog
             .tool(&request.tool_id)
             .ok_or(CoreError::InvalidRequest)?;
@@ -263,22 +330,20 @@ impl CatalogWorkbench {
             if tool.installation.version_args.is_empty() {
                 CatalogDiagnosticStatus::VersionAbnormal
             } else if let Ok(path) = &resolved {
-                let mut command = Command::new(path);
-                command
-                    .args(&tool.installation.version_args)
-                    .env_clear()
-                    .env("LANG", "C.UTF-8")
-                    .env("LC_ALL", "C.UTF-8")
-                    .stdin(Stdio::null());
-                if let Some(path) = env::var_os("PATH") {
-                    command.env("PATH", path);
-                }
-                let output = command.output();
+                let runtime_home = catalog.paths.cache_root.join("diagnostics").join(&tool.id);
+                let output = ensure_private_directory(&runtime_home).ok().and_then(|()| {
+                    capture_bounded_command(
+                        path,
+                        &tool.installation.version_args,
+                        &runtime_home,
+                        5_000,
+                        4 * 1024,
+                    )
+                    .ok()
+                });
                 match output {
-                    Ok(output) if output.status.success() => {
-                        let mut evidence = output.stdout;
-                        evidence.extend_from_slice(&output.stderr);
-                        detected_version = bounded_diagnostic_text(&evidence);
+                    Some((true, evidence)) => {
+                        detected_version = bounded_diagnostic_text(evidence.as_bytes());
                         if tool.installation.version.is_empty()
                             || detected_version.contains(&tool.installation.version)
                         {
@@ -414,14 +479,313 @@ impl CatalogWorkbench {
             .map(|check| check.status)
             .max_by_key(|status| catalog_diagnostic_priority(*status))
             .unwrap_or(CatalogDiagnosticStatus::Missing);
+        let help = resolved.as_ref().map_or_else(
+            |_| CatalogHelpSnapshotDto {
+                available: false,
+                cached: false,
+                command: String::new(),
+                detected_version: detected_version.clone(),
+                binary_sha256: String::new(),
+                captured_at_epoch_secs: None,
+                content: String::new(),
+                detail: "修复工具路径后读取完整帮助".to_owned(),
+            },
+            |binary| {
+                capture_help_snapshot(
+                    &catalog,
+                    tool,
+                    binary,
+                    &detected_version,
+                    request.refresh_help,
+                )
+            },
+        );
         Ok(CatalogToolDiagnosticDto {
             tool_id: request.tool_id.clone(),
             status,
             binary_path,
             detected_version,
             checks,
+            help,
         })
     }
+}
+
+fn capture_help_snapshot(
+    catalog: &ToolCatalog,
+    tool: &CatalogToolManifest,
+    binary: &Path,
+    detected_version: &str,
+    refresh: bool,
+) -> CatalogHelpSnapshotDto {
+    if tool.help.args.is_empty() {
+        return CatalogHelpSnapshotDto {
+            available: false,
+            cached: false,
+            command: String::new(),
+            detected_version: detected_version.to_owned(),
+            binary_sha256: String::new(),
+            captured_at_epoch_secs: None,
+            content: String::new(),
+            detail: "Catalog 未声明安全帮助命令".to_owned(),
+        };
+    }
+    let command = std::iter::once(binary.display().to_string())
+        .chain(tool.help.args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let Ok(binary_sha256) = file_sha256(binary) else {
+        return unavailable_help_snapshot(
+            command,
+            detected_version,
+            String::new(),
+            "无法计算工具哈希",
+        );
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(tool.id.as_bytes());
+    hasher.update([0]);
+    hasher.update(binary_sha256.as_bytes());
+    hasher.update([0]);
+    hasher.update(detected_version.as_bytes());
+    for arg in &tool.help.args {
+        hasher.update([0]);
+        hasher.update(arg.as_bytes());
+    }
+    let cache_key = format!("{:x}", hasher.finalize());
+    let cache_dir = catalog.paths.cache_root.join("tool-help");
+    let cache_path = cache_dir.join(format!("{}-{cache_key}.txt", tool.id));
+    if !refresh
+        && let Some((content, captured_at)) = read_help_cache(&cache_path, tool.help.max_bytes)
+    {
+        return CatalogHelpSnapshotDto {
+            available: true,
+            cached: true,
+            command,
+            detected_version: detected_version.to_owned(),
+            binary_sha256,
+            captured_at_epoch_secs: captured_at,
+            content,
+            detail: "已读取版本匹配的帮助缓存".to_owned(),
+        };
+    }
+
+    if let Err(error) = ensure_private_directory(&cache_dir) {
+        return unavailable_help_snapshot(
+            command,
+            detected_version,
+            binary_sha256,
+            &format!("无法创建帮助缓存：{error}"),
+        );
+    }
+    let runtime_home = cache_dir.join(format!("runtime-{}", tool.id));
+    if let Err(error) = ensure_private_directory(&runtime_home) {
+        return unavailable_help_snapshot(
+            command,
+            detected_version,
+            binary_sha256,
+            &format!("无法创建帮助运行目录：{error}"),
+        );
+    }
+    match capture_bounded_command(
+        binary,
+        &tool.help.args,
+        &runtime_home,
+        tool.help.timeout_millis,
+        tool.help.max_bytes,
+    )
+    .and_then(require_successful_help_capture)
+    {
+        Ok(content) => {
+            let captured_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_secs());
+            let detail = if write_help_cache(&cache_path, content.as_bytes()).is_ok() {
+                "已刷新版本匹配的帮助缓存"
+            } else {
+                "已读取帮助，缓存写入失败"
+            };
+            CatalogHelpSnapshotDto {
+                available: true,
+                cached: false,
+                command,
+                detected_version: detected_version.to_owned(),
+                binary_sha256,
+                captured_at_epoch_secs: captured_at,
+                content,
+                detail: detail.to_owned(),
+            }
+        }
+        Err(detail) => unavailable_help_snapshot(command, detected_version, binary_sha256, &detail),
+    }
+}
+
+fn require_successful_help_capture(capture: (bool, String)) -> Result<String, String> {
+    let (success, content) = capture;
+    if success {
+        Ok(content)
+    } else {
+        Err(format!(
+            "帮助命令执行失败：{}",
+            bounded_diagnostic_text(content.as_bytes())
+        ))
+    }
+}
+
+fn unavailable_help_snapshot(
+    command: String,
+    detected_version: &str,
+    binary_sha256: String,
+    detail: &str,
+) -> CatalogHelpSnapshotDto {
+    CatalogHelpSnapshotDto {
+        available: false,
+        cached: false,
+        command,
+        detected_version: detected_version.to_owned(),
+        binary_sha256,
+        captured_at_epoch_secs: None,
+        content: String::new(),
+        detail: detail.chars().take(512).collect(),
+    }
+}
+
+fn ensure_private_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+fn read_help_cache(path: &Path, maximum: usize) -> Option<(String, Option<u64>)> {
+    let mut file = File::options()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > maximum as u64 {
+        return None;
+    }
+    let length = usize::try_from(metadata.len()).ok()?;
+    let mut bytes = Vec::with_capacity(length);
+    file.read_to_end(&mut bytes).ok()?;
+    let content = String::from_utf8(bytes).ok()?;
+    let captured_at = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs());
+    Some((content, captured_at))
+}
+
+fn write_help_cache(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "cache path has no parent")
+    })?;
+    ensure_private_directory(parent)?;
+    let temporary = parent.join(format!(
+        ".help-cache-{}-{}.tmp",
+        std::process::id(),
+        path.file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("entry")
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn capture_bounded_command(
+    binary: &Path,
+    args: &[String],
+    runtime_home: &Path,
+    timeout_millis: u64,
+    maximum: usize,
+) -> Result<(bool, String), String> {
+    let mut command = Command::new(binary);
+    command
+        .args(args)
+        .env_clear()
+        .env("LANG", "C.UTF-8")
+        .env("LC_ALL", "C.UTF-8")
+        .env("HOME", runtime_home)
+        .env("XDG_CONFIG_HOME", runtime_home.join("config"))
+        .current_dir(runtime_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(path) = env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("命令启动失败：{error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "命令缺少 stdout".to_owned())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "命令缺少 stderr".to_owned())?;
+    let stdout_reader = thread::spawn(move || read_stream_bounded(stdout, maximum));
+    let stderr_reader = thread::spawn(move || read_stream_bounded(stderr, maximum));
+    let deadline = Instant::now() + Duration::from_millis(timeout_millis);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("命令超时".to_owned());
+            }
+            Err(error) => return Err(format!("命令等待失败：{error}")),
+        }
+    };
+    let mut bytes = stdout_reader
+        .join()
+        .map_err(|_| "读取 stdout 失败".to_owned())?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "读取 stderr 失败".to_owned())?;
+    if !bytes.is_empty() && !stderr.is_empty() && bytes.len() < maximum {
+        bytes.push(b'\n');
+    }
+    let remaining = maximum.saturating_sub(bytes.len());
+    bytes.extend_from_slice(&stderr[..stderr.len().min(remaining)]);
+    if bytes.is_empty() {
+        return Err(format!("命令未返回内容，退出状态 {status}"));
+    }
+    Ok((
+        status.success(),
+        String::from_utf8_lossy(&bytes).into_owned(),
+    ))
+}
+
+fn read_stream_bounded(mut stream: impl Read, maximum: usize) -> Vec<u8> {
+    let mut retained = Vec::with_capacity(maximum.min(64 * 1024));
+    let mut buffer = [0_u8; 8192];
+    while let Ok(read) = stream.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        let remaining = maximum.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+    retained
 }
 
 fn catalog_diagnostic_check(
@@ -460,4 +824,128 @@ fn bounded_diagnostic_text(bytes: &[u8]) -> String {
         .take(32)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_load_reuses_short_lived_cache_and_supports_explicit_refresh() {
+        let temporary = tempfile::tempdir().unwrap();
+        let catalog_root = temporary.path().join("catalog");
+        let tools = catalog_root.join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        let manifest = tools.join("fixture.toml");
+        let write_manifest = |name: &str| {
+            fs::write(
+                &manifest,
+                format!(
+                    r#"
+id = "fixture"
+name = "{name}"
+category = "test"
+mode = "embedded_cli"
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[argv]
+template = ["--help"]
+"#
+                ),
+            )
+            .unwrap();
+        };
+        write_manifest("first");
+        let workbench = CatalogWorkbench::new(CatalogPaths {
+            tools_root: temporary.path().join("tool-root"),
+            wordlists_root: temporary.path().join("wordlists"),
+            catalog_root,
+            user_catalog_root: temporary.path().join("user-catalog"),
+            cache_root: temporary.path().join("cache"),
+        });
+
+        assert_eq!(
+            workbench.load().unwrap().tool("fixture").unwrap().name,
+            "first"
+        );
+        write_manifest("second");
+        assert_eq!(
+            workbench.load().unwrap().tool("fixture").unwrap().name,
+            "first"
+        );
+        assert_eq!(
+            workbench
+                .load_fresh()
+                .unwrap()
+                .tool("fixture")
+                .unwrap()
+                .name,
+            "second"
+        );
+    }
+
+    #[test]
+    fn help_capture_uses_private_runtime_and_bounded_cache() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime_home = temporary.path().join("runtime");
+        ensure_private_directory(&runtime_home).unwrap();
+        let script = temporary.path().join("help-fixture");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$HOME\" \"$1\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let (success, output) =
+            capture_bounded_command(&script, &["--help".to_owned()], &runtime_home, 1_000, 1_024)
+                .unwrap();
+        assert!(success);
+        let runtime = runtime_home.display().to_string();
+        assert_eq!(
+            output.lines().collect::<Vec<_>>(),
+            [runtime.as_str(), runtime.as_str(), "--help"]
+        );
+
+        let cache_path = temporary.path().join("cache").join("fixture.txt");
+        write_help_cache(&cache_path, output.as_bytes()).unwrap();
+        let (cached, captured_at) = read_help_cache(&cache_path, 1_024).unwrap();
+        assert_eq!(cached, output);
+        assert!(captured_at.is_some());
+        assert!(read_help_cache(&cache_path, 4).is_none());
+
+        let cache_link = temporary.path().join("cache-link.txt");
+        std::os::unix::fs::symlink(&cache_path, &cache_link).unwrap();
+        assert!(read_help_cache(&cache_link, 1_024).is_none());
+    }
+
+    #[test]
+    fn failed_help_command_is_detected_and_keeps_bounded_diagnostics() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime_home = temporary.path().join("runtime");
+        ensure_private_directory(&runtime_home).unwrap();
+        let script = temporary.path().join("failed-help-fixture");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'missing dependency\\n' >&2\nexit 2\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let (success, output) =
+            capture_bounded_command(&script, &["--help".to_owned()], &runtime_home, 1_000, 1_024)
+                .unwrap();
+        assert!(!success);
+        assert_eq!(
+            bounded_diagnostic_text(output.as_bytes()),
+            "missing dependency"
+        );
+        assert_eq!(
+            require_successful_help_capture((success, output)).unwrap_err(),
+            "帮助命令执行失败：missing dependency"
+        );
+    }
 }

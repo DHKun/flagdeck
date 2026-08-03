@@ -45,6 +45,8 @@ pub enum ExecPolicyError {
     ProgramWritable,
     #[error("program SHA-256 differs from CommandSpec")]
     ProgramHash,
+    #[error("output path must resolve to a private current-user file location")]
+    OutputPath,
     #[error("environment key is outside the CommandSpec allowlist")]
     EnvironmentKey,
     #[error("argument or environment contains NUL")]
@@ -76,6 +78,7 @@ pub enum ExecPolicyError {
 const SYSTEMD_RUN: &str = "/usr/bin/systemd-run";
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const ENV: &str = "/usr/bin/env";
+const UNIX_SOCKET_PATH_LIMIT: usize = 104;
 #[cfg(target_os = "linux")]
 const SETSID: &str = "/usr/bin/setsid";
 #[cfg(target_os = "linux")]
@@ -229,12 +232,13 @@ pub fn start_one_shot_credential(
         return Err(ExecPolicyError::CredentialInput);
     }
     let runtime = validate_private_runtime_directory(runtime_directory)?;
-    let socket_path = runtime.join(format!("credential-{}.sock", Uuid::new_v4().simple()));
-    if socket_path.as_os_str().as_bytes().len() >= 104 {
-        return Err(ExecPolicyError::CredentialInput);
-    }
+    let socket_path = credential_socket_path(&runtime)?;
     let listener = UnixListener::bind(&socket_path)?;
-    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
+    if let Err(error) = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)) {
+        drop(listener);
+        let _ = fs::remove_file(&socket_path);
+        return Err(ExecPolicyError::Io(error));
+    }
     let task_path = socket_path.clone();
     let task_id = credential_id.to_owned();
     let delivery = tokio::spawn(async move {
@@ -252,6 +256,39 @@ pub fn start_one_shot_credential(
         socket_path,
         delivery: Some(delivery),
     })
+}
+
+fn credential_socket_path(runtime: &Path) -> Result<PathBuf, ExecPolicyError> {
+    let file_name = format!("c-{}.sock", Uuid::new_v4().simple());
+    let direct = runtime.join(&file_name);
+    if direct.as_os_str().as_bytes().len() < UNIX_SOCKET_PATH_LIMIT {
+        return Ok(direct);
+    }
+
+    let uid = Uid::current().as_raw();
+    let candidates = [
+        PathBuf::from(format!("/run/user/{uid}/flagdeck-credentials")),
+        PathBuf::from(format!("/tmp/flagdeck-credentials-{uid}")),
+    ];
+    for candidate in candidates {
+        if prepare_private_socket_directory(&candidate).is_err() {
+            continue;
+        }
+        let path = candidate.join(&file_name);
+        if path.as_os_str().as_bytes().len() < UNIX_SOCKET_PATH_LIMIT {
+            return Ok(path);
+        }
+    }
+    Err(ExecPolicyError::CredentialInput)
+}
+
+fn prepare_private_socket_directory(path: &Path) -> Result<PathBuf, ExecPolicyError> {
+    match fs::create_dir(path) {
+        Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(0o700))?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(ExecPolicyError::Io(error)),
+    }
+    validate_private_runtime_directory(path)
 }
 
 async fn deliver_one_shot_credential(
@@ -1120,24 +1157,26 @@ fn append_environment(command: &mut tokio::process::Command, environment: &[(Str
 }
 
 fn validate_output_path(cwd: &Path, output: &Path) -> Result<(), ExecPolicyError> {
-    if output.file_name().is_none() {
-        return Err(ExecPolicyError::ProgramPath);
+    if !output.is_absolute() || output.file_name().is_none() {
+        return Err(ExecPolicyError::OutputPath);
     }
-    // Compare canonical parents so pre-created log files (launch banners) are accepted.
-    let parent = output.parent().ok_or(ExecPolicyError::ProgramPath)?;
+    let parent = output.parent().ok_or(ExecPolicyError::OutputPath)?;
     let canonical_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let canonical_parent = if parent.exists() {
-        fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf())
-    } else {
-        parent.to_path_buf()
-    };
+    let parent_link_metadata = fs::symlink_metadata(parent)?;
+    if parent_link_metadata.file_type().is_symlink() || !parent_link_metadata.is_dir() {
+        return Err(ExecPolicyError::OutputPath);
+    }
+    let canonical_parent = fs::canonicalize(parent)?;
     if canonical_parent != canonical_cwd {
-        return Err(ExecPolicyError::ProgramPath);
+        let metadata = fs::metadata(&canonical_parent)?;
+        if metadata.uid() != Uid::current().as_raw() || metadata.mode() & 0o077 != 0 {
+            return Err(ExecPolicyError::OutputPath);
+        }
     }
     if output.exists() {
-        let metadata = fs::metadata(output)?;
-        if !metadata.is_file() {
-            return Err(ExecPolicyError::ProgramPath);
+        let metadata = fs::symlink_metadata(output)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(ExecPolicyError::OutputPath);
         }
     }
     Ok(())
@@ -1615,6 +1654,47 @@ mod tests {
     }
 
     #[test]
+    fn long_private_runtime_uses_a_short_private_socket_path() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime_directory = temporary.path().join("nested-runtime-directory".repeat(5));
+        fs::create_dir(&runtime_directory).unwrap();
+        fs::set_permissions(&runtime_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let secret = b"short-path-secret".to_vec();
+            let server = start_one_shot_credential(
+                &runtime_directory,
+                "long-path",
+                secret.clone(),
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            let socket_path = server.socket_path().to_path_buf();
+            assert!(socket_path.as_os_str().as_bytes().len() < UNIX_SOCKET_PATH_LIMIT);
+            assert!(!socket_path.starts_with(&runtime_directory));
+            assert!(
+                server
+                    .systemd_load_credential_property()
+                    .contains(socket_path.to_str().unwrap())
+            );
+            let parent = fs::metadata(socket_path.parent().unwrap()).unwrap();
+            assert_eq!(parent.uid(), Uid::current().as_raw());
+            assert_eq!(parent.permissions().mode() & 0o077, 0);
+
+            let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            let delivery = server.wait().await.unwrap();
+            assert_eq!(received, secret);
+            assert!(delivery.source_removed);
+            assert!(!socket_path.exists());
+        });
+    }
+
+    #[test]
     fn command_requires_hash_path_and_environment_allowlist() {
         let accepted =
             validate_command(&fixture_spec("/usr/bin/true", vec!["--help".to_owned()])).unwrap();
@@ -1685,6 +1765,59 @@ mod tests {
             fs::metadata(stderr).unwrap().permissions().mode() & 0o077,
             0
         );
+    }
+
+    #[test]
+    fn pgid_backend_accepts_private_logs_outside_tool_working_directory() {
+        let tool_directory = tempfile::tempdir().unwrap();
+        let private_logs = tempfile::tempdir().unwrap();
+        fs::set_permissions(private_logs.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let mut spec = fixture_spec("/usr/bin/true", vec!["--help".to_owned()]);
+        spec.cwd = tool_directory.path().display().to_string();
+        let stdout = private_logs.path().join("stdout.log");
+        let stderr = private_logs.path().join("stderr.log");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(execute_managed_with_backend(
+                &spec,
+                &stdout,
+                &stderr,
+                SupervisorBackend::PgidFallback,
+            ))
+            .unwrap();
+        assert_eq!(result.exit_code, Some(0));
+        assert!(stdout.is_file());
+        assert!(stderr.is_file());
+    }
+
+    #[test]
+    fn managed_output_rejects_shared_or_symlinked_log_directories() {
+        let tool_directory = tempfile::tempdir().unwrap();
+        let shared_logs = tempfile::tempdir().unwrap();
+        fs::set_permissions(shared_logs.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = {
+            let mut spec = fixture_spec("/usr/bin/true", Vec::new());
+            spec.cwd = tool_directory.path().display().to_string();
+            spec
+        };
+        assert!(matches!(
+            validate_output_path(
+                &PathBuf::from(&spec.cwd),
+                &shared_logs.path().join("stdout.log")
+            ),
+            Err(ExecPolicyError::OutputPath)
+        ));
+
+        let link_root = tempfile::tempdir().unwrap();
+        let link = link_root.path().join("logs");
+        std::os::unix::fs::symlink(tool_directory.path(), &link).unwrap();
+        assert!(matches!(
+            validate_output_path(&PathBuf::from(&spec.cwd), &link.join("stdout.log")),
+            Err(ExecPolicyError::OutputPath)
+        ));
     }
 
     #[test]

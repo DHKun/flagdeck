@@ -2,8 +2,8 @@ id = "sqlmap"
 name = "sqlmap"
 category = "web_exploit"
 tier = "tier_1"
-capabilities = ["sqli", "database_enumeration"]
-aliases = ["SQL 注入", "注测", "sqlmap", "数据库"]
+capabilities = ["sqli", "database_enumeration", "waf_bypass"]
+aliases = ["SQL 注入", "注入检测", "注测", "绕过 WAF", "tamper", "sqlmap", "数据库"]
 risk_level = "l3"
 summary = "自动化 SQL 注入检测与利用（PATH）"
 
@@ -61,17 +61,30 @@ fields = ["url", "data", "cookie", "param", "request_file"]
 [[field_groups]]
 id = "injection"
 name = "注入参数"
-fields = ["level", "risk", "dbms", "technique", "tamper"]
+fields = ["level", "risk", "dbms", "technique"]
+
+[[field_groups]]
+id = "evasion"
+name = "WAF 与请求特征"
+fields = ["waf", "tamper", "headers", "user_agent", "random_agent", "prefix", "suffix"]
 
 [[field_groups]]
 id = "enumeration"
 name = "枚举"
-fields = ["dbs", "tables", "columns", "dump"]
+fields = ["db", "table", "enum"]
 
 [[field_groups]]
 id = "execution"
 name = "执行"
-fields = ["batch", "threads", "proxy", "timeout"]
+fields = ["batch", "threads", "proxy", "timeout", "delay", "additional_args"]
+
+[[relations]]
+kind = "conflicts"
+field = "user_agent"
+other = "random_agent"
+other_equals = "yes"
+severity = "error"
+message = "自定义 User-Agent 与随机 User-Agent 只能启用一项"
 
 [io]
 schema_version = 1
@@ -93,7 +106,7 @@ kind = "raw_artifact"
 distribution = "hybrid"
 license = "GPL-2.0"
 homepage = "https://sqlmap.org/"
-version = "1.8"
+version = "1.10.7"
 health_strategy = "safe-version-command"
 runtime = "Python"
 version_args = ["--version"]
@@ -101,6 +114,11 @@ install_command = "pipx install sqlmap"
 path_fix = "export PATH=\"$PATH:$HOME/.local/bin\""
 wordlist_source = ""
 wordlist_install_command = ""
+
+[help]
+args = ["-hh"]
+timeout_millis = 8000
+max_bytes = 524288
 
 [binary]
 command = "sqlmap"
@@ -115,15 +133,18 @@ accent = "red"
 id = "url"
 type = "url"
 label = "目标 URL -u"
+flag = "-u"
 required = true
 from = "target_url"
 hint = "含注入点的地址，例 http://target/vuln.php?id=1"
+examples = ["http://target/vuln.php?id=1"]
 
 
 [[form.fields]]
 id = "request_file"
 type = "text"
 label = "请求文件 -r（可选）"
+flag = "-r"
 default = ""
 required = false
 hint = "仅支持当前项目 HTTP 请求 Artifact 逻辑名/任务侧车，不接受任意本地路径"
@@ -133,6 +154,7 @@ id = "data"
 type = "text"
 sensitive = true
 label = "POST 体 --data（可选）"
+flag = "--data"
 default = ""
 required = false
 hint = "POST 注入时填，例 id=1&user=a；会改为请求体传参"
@@ -142,6 +164,7 @@ id = "cookie"
 type = "text"
 sensitive = true
 label = "Cookie --cookie（可选）"
+flag = "--cookie"
 default = ""
 required = false
 hint = "会话 Cookie，例 PHPSESSID=xxx；也可测 Cookie 注入"
@@ -150,6 +173,7 @@ hint = "会话 Cookie，例 PHPSESSID=xxx；也可测 Cookie 注入"
 id = "param"
 type = "text"
 label = "测试参数 -p（可选）"
+flag = "-p"
 default = ""
 required = false
 hint = "只测指定参数，例 id 或 id,user；留空=自动发现"
@@ -159,6 +183,7 @@ id = "headers"
 type = "text"
 sensitive = true
 label = "额外头 --headers（可选）"
+flag = "--headers"
 default = ""
 required = false
 hint = "多行用 \\n 分隔，例 X-Forwarded-For: 127.0.0.1"
@@ -167,6 +192,7 @@ hint = "多行用 \\n 分隔，例 X-Forwarded-For: 127.0.0.1"
 id = "user_agent"
 type = "text"
 label = "User-Agent（可选）"
+flag = "--user-agent"
 default = ""
 required = false
 hint = "自定义 UA；与「随机 UA」二选一即可"
@@ -175,6 +201,7 @@ hint = "自定义 UA；与「随机 UA」二选一即可"
 id = "random_agent"
 type = "select"
 label = "随机 UA --random-agent"
+flag = "--random-agent"
 default = "no"
 options = ["no", "yes"]
 required = true
@@ -184,6 +211,7 @@ hint = "yes=每次请求随机浏览器 UA，降低简单指纹拦截"
 id = "level"
 type = "select"
 label = "检测等级 --level"
+flag = "--level"
 default = "1"
 options = ["1", "2", "3", "4", "5"]
 required = true
@@ -193,6 +221,7 @@ hint = "1 最快/最浅；越高测试的参数位置与 payload 越多（更慢
 id = "risk"
 type = "select"
 label = "风险等级 --risk"
+flag = "--risk"
 default = "1"
 options = ["1", "2", "3"]
 required = true
@@ -202,22 +231,55 @@ hint = "1 最安全；2/3 含更重的 OR/UPDATE 等可能改数据的 payload"
 id = "technique"
 type = "text"
 label = "技术 --technique（可选）"
+flag = "--technique"
 default = "BEUSTQ"
 required = false
 hint = "B布尔/E报错/U联合/S堆叠/T时间/Q内联；子集如 BU 只测布尔+联合"
 
 [[form.fields]]
 id = "dbms"
-type = "text"
+type = "select"
 label = "强制 DBMS --dbms（可选）"
+flag = "--dbms"
 default = ""
+options = ["", "MySQL", "PostgreSQL", "Microsoft SQL Server", "Oracle", "SQLite", "MariaDB"]
 required = false
 hint = "已知后端时加速，例 MySQL、PostgreSQL、Microsoft SQL Server、Oracle"
+
+[[form.fields.option_details]]
+value = ""
+label = "自动识别"
+summary = "由 sqlmap 探测后端数据库"
+
+[[form.fields.option_details]]
+value = "MySQL"
+summary = "MySQL 与兼容实现"
+
+[[form.fields.option_details]]
+value = "PostgreSQL"
+summary = "PostgreSQL"
+
+[[form.fields.option_details]]
+value = "Microsoft SQL Server"
+summary = "Microsoft SQL Server"
+
+[[form.fields.option_details]]
+value = "Oracle"
+summary = "Oracle Database"
+
+[[form.fields.option_details]]
+value = "SQLite"
+summary = "SQLite"
+
+[[form.fields.option_details]]
+value = "MariaDB"
+summary = "MariaDB"
 
 [[form.fields]]
 id = "threads"
 type = "number"
 label = "线程 --threads（可选）"
+flag = "--threads"
 default = ""
 required = false
 hint = "并发请求数，默认 1；盲目注入可适当提高（靶场）"
@@ -226,6 +288,7 @@ hint = "并发请求数，默认 1；盲目注入可适当提高（靶场）"
 id = "timeout"
 type = "number"
 label = "连接超时 --timeout（可选）"
+flag = "--timeout"
 default = ""
 required = false
 hint = "单请求等待秒数，默认约 30；网络差可调大"
@@ -234,6 +297,7 @@ hint = "单请求等待秒数，默认约 30；网络差可调大"
 id = "delay"
 type = "number"
 label = "请求间隔 --delay（可选）"
+flag = "--delay"
 default = ""
 required = false
 hint = "两次请求间隔秒数，用于降速防 WAF/限流"
@@ -243,22 +307,122 @@ id = "proxy"
 type = "text"
 sensitive = true
 label = "代理 --proxy（可选）"
+flag = "--proxy"
 default = ""
 required = false
 hint = "例 http://127.0.0.1:8080 走 Burp 观察流量"
 
 [[form.fields]]
+id = "waf"
+type = "select"
+label = "已知 WAF"
+default = "unknown"
+options = ["unknown", "generic", "ModSecurity", "Cloudflare", "Nginx", "Imperva"]
+required = true
+hint = "只用于本地推荐 tamper，不会生成命令参数"
+
+[[form.fields.option_details]]
+value = "unknown"
+label = "未知"
+summary = "尚未识别 WAF"
+
+[[form.fields.option_details]]
+value = "generic"
+label = "通用规则"
+summary = "按常见关键字、空白符和编码规则推荐"
+
+[[form.fields.option_details]]
+value = "ModSecurity"
+summary = "ModSecurity 与 OWASP CRS"
+
+[[form.fields.option_details]]
+value = "Cloudflare"
+summary = "Cloudflare WAF"
+
+[[form.fields.option_details]]
+value = "Nginx"
+summary = "Nginx/Lua 规则"
+
+[[form.fields.option_details]]
+value = "Imperva"
+summary = "Imperva WAF"
+
+[[form.fields]]
 id = "tamper"
-type = "text"
+type = "multiselect"
 label = "Tamper --tamper（可选）"
+flag = "--tamper"
 default = ""
+options = ["between", "space2comment", "randomcase", "charencode", "chardoubleencode", "versionedkeywords", "modsecurityversioned", "space2mysqlblank", "space2mssqlblank", "unionalltounion", "equaltolike", "xforwardedfor"]
+recommend_from = ["dbms", "waf"]
 required = false
-hint = "绕过脚本名，例 space2comment,between；多个逗号分隔"
+hint = "按选择顺序生成逗号分隔值。组合会在运行前校验"
+
+[[form.fields.option_details]]
+value = "between"
+summary = "把大于号和等号改写为 BETWEEN 表达式"
+tags = ["generic", "dbms:mysql", "dbms:postgresql", "waf:generic", "waf:modsecurity"]
+
+[[form.fields.option_details]]
+value = "space2comment"
+summary = "用 /**/ 替换空格"
+tags = ["generic", "waf:generic", "waf:modsecurity", "waf:cloudflare"]
+
+[[form.fields.option_details]]
+value = "randomcase"
+summary = "随机改变 SQL 关键字大小写"
+tags = ["generic", "waf:generic"]
+
+[[form.fields.option_details]]
+value = "charencode"
+summary = "对 payload 字符做 URL 编码"
+tags = ["generic", "waf:generic", "waf:cloudflare"]
+
+[[form.fields.option_details]]
+value = "chardoubleencode"
+summary = "对 payload 字符做双重 URL 编码"
+tags = ["waf:modsecurity", "waf:cloudflare"]
+
+[[form.fields.option_details]]
+value = "versionedkeywords"
+summary = "使用 MySQL 版本注释包裹关键字"
+tags = ["dbms:mysql", "dbms:mariadb", "waf:modsecurity"]
+
+[[form.fields.option_details]]
+value = "modsecurityversioned"
+summary = "使用 MySQL 版本注释包裹完整查询"
+tags = ["dbms:mysql", "dbms:mariadb", "waf:modsecurity"]
+
+[[form.fields.option_details]]
+value = "space2mysqlblank"
+summary = "用 MySQL 可识别的空白字符替换空格"
+tags = ["dbms:mysql", "dbms:mariadb", "waf:generic"]
+
+[[form.fields.option_details]]
+value = "space2mssqlblank"
+summary = "用 SQL Server 可识别的空白字符替换空格"
+tags = ["dbms:microsoft sql server", "waf:generic"]
+
+[[form.fields.option_details]]
+value = "unionalltounion"
+summary = "把 UNION ALL SELECT 改写为 UNION SELECT"
+tags = ["generic", "waf:generic", "waf:modsecurity"]
+
+[[form.fields.option_details]]
+value = "equaltolike"
+summary = "把等号改写为 LIKE"
+tags = ["generic", "waf:generic"]
+
+[[form.fields.option_details]]
+value = "xforwardedfor"
+summary = "增加伪造的 X-Forwarded-For 请求头"
+tags = ["waf:nginx", "waf:imperva", "waf:cloudflare"]
 
 [[form.fields]]
 id = "prefix"
 type = "text"
 label = "前缀 --prefix（可选）"
+flag = "--prefix"
 default = ""
 required = false
 hint = "payload 前拼接字符串，用于闭合引号/括号等特殊上下文"
@@ -267,6 +431,7 @@ hint = "payload 前拼接字符串，用于闭合引号/括号等特殊上下文
 id = "suffix"
 type = "text"
 label = "后缀 --suffix（可选）"
+flag = "--suffix"
 default = ""
 required = false
 hint = "payload 后拼接，例 -- 或 # 做注释收尾"
@@ -275,6 +440,7 @@ hint = "payload 后拼接，例 -- 或 # 做注释收尾"
 id = "db"
 type = "text"
 label = "库名 -D（可选）"
+flag = "-D"
 default = ""
 required = false
 hint = "枚举/导出时指定数据库名（配合 tables/columns/dump）"
@@ -283,6 +449,7 @@ hint = "枚举/导出时指定数据库名（配合 tables/columns/dump）"
 id = "table"
 type = "text"
 label = "表名 -T（可选）"
+flag = "-T"
 default = ""
 required = false
 hint = "指定表；dump/columns 时常用"
@@ -300,6 +467,7 @@ hint = "none=只检测是否可注；其余在确认可注后拉信息/数据"
 id = "batch"
 type = "select"
 label = "非交互 --batch"
+flag = "--batch"
 default = "yes"
 options = ["yes", "no"]
 required = true
@@ -309,10 +477,20 @@ hint = "yes=自动选默认答案，适合无人值守；no=可能卡在提问�
 id = "force_ssl"
 type = "select"
 label = "强制 HTTPS --force-ssl"
+flag = "--force-ssl"
 default = "no"
 options = ["no", "yes"]
 required = true
 hint = "yes=强制按 SSL 访问（目标只接受 HTTPS 时）"
+
+[[form.fields]]
+id = "additional_args"
+type = "args"
+label = "附加参数"
+default = ""
+required = false
+hint = "按 argv 解析，不经过 shell。支持单引号、双引号和反斜杠转义"
+examples = ["--flush-session --fresh-queries"]
 
 [argv]
 template = [
@@ -451,6 +629,10 @@ args = ["--dump-all"]
 [[argv.optional]]
 field = "request_file"
 args = ["-r", "{request_file}"]
+
+[[argv.optional]]
+field = "additional_args"
+args = ["{additional_args}"]
 
 [parser]
 kind = "sqlmap-text"

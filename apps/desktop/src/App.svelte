@@ -1,5 +1,20 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import {
+    ArrowDown,
+    ArrowUp,
+    CircleHelp,
+    Eye,
+    EyeOff,
+    House,
+    LibraryBig,
+    ListChecks,
+    Pin,
+    PinOff,
+    Search,
+    Settings,
+    X,
+  } from "@lucide/svelte";
 
   import type {
     Artifact,
@@ -9,6 +24,7 @@
   import type {
     AppStatus,
     CatalogDiagnosticStatus,
+    CatalogFormFieldDto,
     CatalogRunPreview,
     CatalogSnapshot,
     CatalogToolDiagnosticDto,
@@ -46,11 +62,29 @@
     type WorkbenchPrefs,
   } from "./lib/workbenchPrefs";
   import {
+    executionStatusLabel,
+    exportPolicyLabel,
+    logStreamLabel,
+    riskLevelLabel,
+    sensitivityLabel,
+    structuredResultKindLabel,
+  } from "./lib/uiLabels";
+  import {
     capabilityLabel,
     searchTools,
     type InstallationFilter,
   } from "./lib/toolSearch";
   import { buildProgressiveForm } from "./lib/progressiveForm";
+  import {
+    arrangeToolFields,
+    evaluateRelations,
+    filterToolFields,
+    recommendedOptionValues,
+    searchHelpText,
+    splitMultiValue,
+    toggleMultiValue,
+    type FieldLayout,
+  } from "./lib/guidedTool";
   import {
     buildRunPlan,
     reconcileTargetUrl,
@@ -82,6 +116,16 @@
 
   type NavId = "home" | "tools" | "jobs" | "settings";
   type OutputTab = "log" | "result" | "evidence";
+  type DiagnosticCacheEntry = {
+    diagnostic: CatalogToolDiagnosticDto;
+    checkedAt: number;
+  };
+
+  const DIAGNOSTIC_TTL_MS = 30_000;
+  const JOB_POLL_INTERVAL_MS = 1_000;
+  const LOG_APPEND_BYTES = 32_768;
+  const LOG_PAGE_BYTES = 65_536;
+  const PREFS_PERSIST_DELAY_MS = 300;
 
   type Scenario = {
     id: string;
@@ -91,11 +135,11 @@
     category?: string;
   };
 
-  const navItems: Array<{ id: NavId; label: string; icon: string }> = [
-    { id: "home", label: "工作台", icon: "⌂" },
-    { id: "tools", label: "工具库", icon: "▦" },
-    { id: "jobs", label: "任务", icon: "◉" },
-    { id: "settings", label: "设置", icon: "⚙" },
+  const navItems: Array<{ id: NavId; label: string }> = [
+    { id: "home", label: "工作台" },
+    { id: "tools", label: "工具库" },
+    { id: "jobs", label: "任务" },
+    { id: "settings", label: "设置" },
   ];
 
   const scenarios: Scenario[] = [
@@ -150,7 +194,10 @@
   let jobArtifacts: Artifact[] = [];
   let jobEvidenceNotice = "";
   let lastJobExport: ExportJobArtifactResult | null = null;
+  let evidenceLoadedForJobId = "";
+  let resultLoadedForJobId = "";
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  let prefsPersistTimer: ReturnType<typeof setTimeout> | undefined;
   let toolQuery = "";
   let categoryFilter = "";
   let capabilityFilter = "";
@@ -162,9 +209,16 @@
   let presetTransferOpen = false;
   let presetTransferText = "";
   let advancedFieldsExpanded = false;
+  let parameterQuery = "";
+  let helpQuery = "";
+  let helpOpen = false;
+  let showHiddenFields = false;
   let toolDiagnostic: CatalogToolDiagnosticDto | null = null;
   let diagnosticBusy = false;
+  let diagnosticUpdatedAt = "";
+  const diagnosticCache = new Map<string, DiagnosticCacheEntry>();
   let runPreview: CatalogRunPreview | null = null;
+  let runPreviewError = "";
   let runPreviewTimer: ReturnType<typeof setTimeout> | undefined;
   let jobFilterToolId = prefs.jobFilterToolId;
   let autoScrollLog = prefs.autoScrollLog;
@@ -203,6 +257,40 @@
         advancedFieldsExpanded,
       )
     : null;
+  $: selectedFieldLayout = selectedTool
+    ? prefs.fieldLayoutByTool[selectedTool.id]
+    : undefined;
+  $: progressiveFields = selectedTool
+    ? (progressiveForm?.visibleFields ?? selectedTool.fields)
+    : [];
+  $: parameterSourceFields = selectedTool
+    ? parameterQuery.trim()
+      ? selectedTool.fields
+      : [
+          ...progressiveFields,
+          ...selectedTool.fields.filter(
+            (field) =>
+              selectedFieldLayout?.pinned.includes(field.id) &&
+              !progressiveFields.some((visible) => visible.id === field.id),
+          ),
+        ]
+    : [];
+  $: visibleToolFields = arrangeToolFields(
+    filterToolFields(parameterSourceFields, parameterQuery),
+    selectedFieldLayout,
+    showHiddenFields || Boolean(parameterQuery.trim()),
+  );
+  $: relationNotices = evaluateRelations(selectedTool, formValues);
+  $: relationErrors = relationNotices.filter(
+    (item) => item.severity === "error",
+  );
+  $: relationWarnings = relationNotices.filter(
+    (item) => item.severity === "warning",
+  );
+  $: helpSearchResult = searchHelpText(
+    toolDiagnostic?.help.content ?? "",
+    helpQuery,
+  );
   $: selectedToolPersonalPresets = selectedTool
     ? personalPresetsForTool(personalPresetStore, selectedTool.id)
     : [];
@@ -219,6 +307,12 @@
     tier: tierFilter,
     installation: installationFilter,
   });
+  $: toolsByCategory = filteredTools.reduce((grouped, tool) => {
+    const items = grouped.get(tool.category) ?? [];
+    items.push(tool);
+    grouped.set(tool.category, items);
+    return grouped;
+  }, new Map<string, CatalogToolDto[]>());
   $: capabilityOptions = [
     ...new Set(catalogTools.flatMap((tool) => tool.capabilities)),
   ].sort();
@@ -241,7 +335,7 @@
     : [];
   $: resultColumns = structuredResult?.columns ?? [];
 
-  function persistPrefs(): void {
+  function updatePrefsContext(): void {
     prefs = {
       ...prefs,
       targetUrl,
@@ -249,7 +343,20 @@
       jobFilterToolId,
       autoScrollLog,
     };
+  }
+
+  function persistPrefs(): void {
+    updatePrefsContext();
     saveWorkbenchPrefs(prefs);
+  }
+
+  function schedulePrefsPersist(): void {
+    updatePrefsContext();
+    if (prefsPersistTimer) clearTimeout(prefsPersistTimer);
+    prefsPersistTimer = setTimeout(() => {
+      prefsPersistTimer = undefined;
+      saveWorkbenchPrefs(prefs);
+    }, PREFS_PERSIST_DELAY_MS);
   }
 
   function jobIsActive(item: JobView): boolean {
@@ -496,7 +603,91 @@
     return group?.name ?? "";
   }
 
-  function rememberFormForTool(toolId: string): void {
+  function fieldUsesFullRow(field: CatalogFormFieldDto): boolean {
+    return (
+      ["url", "wordlist", "textarea", "multiselect", "args"].includes(
+        field.field_type,
+      ) || ["headers", "request_file"].includes(field.id)
+    );
+  }
+
+  function currentFieldLayout(): FieldLayout {
+    return selectedTool
+      ? (prefs.fieldLayoutByTool[selectedTool.id] ?? {
+          pinned: [],
+          hidden: [],
+          order: selectedTool.fields.map((field) => field.id),
+        })
+      : { pinned: [], hidden: [], order: [] };
+  }
+
+  function saveFieldLayout(layout: FieldLayout): void {
+    if (!selectedTool) return;
+    prefs = {
+      ...prefs,
+      fieldLayoutByTool: {
+        ...prefs.fieldLayoutByTool,
+        [selectedTool.id]: layout,
+      },
+    };
+    persistPrefs();
+  }
+
+  function toggleFieldPin(fieldId: string): void {
+    const layout = currentFieldLayout();
+    const pinned = layout.pinned.includes(fieldId)
+      ? layout.pinned.filter((id) => id !== fieldId)
+      : [...layout.pinned, fieldId];
+    saveFieldLayout({ ...layout, pinned });
+  }
+
+  function toggleFieldHidden(fieldId: string): void {
+    const layout = currentFieldLayout();
+    const hidden = layout.hidden.includes(fieldId)
+      ? layout.hidden.filter((id) => id !== fieldId)
+      : [...layout.hidden, fieldId];
+    saveFieldLayout({ ...layout, hidden });
+  }
+
+  function moveField(fieldId: string, direction: -1 | 1): void {
+    const layout = currentFieldLayout();
+    const order = selectedTool?.fields.map((field) => field.id) ?? [];
+    order.sort((left, right) => {
+      const leftIndex = layout.order.indexOf(left);
+      const rightIndex = layout.order.indexOf(right);
+      return (
+        (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) -
+        (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex)
+      );
+    });
+    const index = order.indexOf(fieldId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= order.length) return;
+    [order[index], order[target]] = [order[target], order[index]];
+    saveFieldLayout({ ...layout, order });
+  }
+
+  function optionLabel(fieldId: string, value: string): string {
+    const field = selectedTool?.fields.find((item) => item.id === fieldId);
+    const detail = field?.option_details.find((item) => item.value === value);
+    return detail?.label || value || "自动";
+  }
+
+  function updateMultiValue(
+    fieldId: string,
+    option: string,
+    enabled: boolean,
+  ): void {
+    formValues[fieldId] = toggleMultiValue(
+      formValues[fieldId] ?? "",
+      option,
+      enabled,
+    );
+    if (selectedToolId) rememberFormForTool(selectedToolId);
+    scheduleRunPreview();
+  }
+
+  function rememberFormForTool(toolId: string, deferred = false): void {
     const tool = catalog?.tools.find((item) => item.id === toolId);
     const persistedValues = Object.fromEntries(
       Object.entries(formValues).filter(
@@ -512,7 +703,8 @@
       },
       recentToolIds: rememberTool(prefs, toolId),
     };
-    persistPrefs();
+    if (deferred) schedulePrefsPersist();
+    else persistPrefs();
   }
 
   function selectTool(tool: CatalogToolDto): void {
@@ -530,6 +722,11 @@
     persistPrefs();
     if (activeNav === "home") activeNav = "tools";
     toolDiagnostic = null;
+    diagnosticUpdatedAt = "";
+    parameterQuery = "";
+    helpQuery = "";
+    helpOpen = false;
+    showHiddenFields = false;
     void loadToolDiagnostic(tool.id, false);
   }
 
@@ -537,13 +734,38 @@
     toolId: string,
     announce: boolean,
   ): Promise<void> {
+    const cached = diagnosticCache.get(toolId);
+    if (
+      !announce &&
+      cached &&
+      Date.now() - cached.checkedAt < DIAGNOSTIC_TTL_MS
+    ) {
+      if (selectedToolId === toolId) {
+        toolDiagnostic = cached.diagnostic;
+        diagnosticUpdatedAt = new Date(cached.checkedAt).toLocaleTimeString(
+          "zh-CN",
+          { hour12: false },
+        );
+      }
+      return;
+    }
     diagnosticBusy = true;
     try {
-      const diagnostic = await ipc.diagnoseCatalogTool({ tool_id: toolId });
+      const diagnostic = await ipc.diagnoseCatalogTool({
+        tool_id: toolId,
+        refresh_help: announce,
+      });
+      const checkedAt = Date.now();
+      diagnosticCache.set(toolId, { diagnostic, checkedAt });
       if (selectedToolId !== toolId) return;
       toolDiagnostic = diagnostic;
+      diagnosticUpdatedAt = new Date(checkedAt).toLocaleTimeString("zh-CN", {
+        hour12: false,
+      });
       if (announce) {
-        catalog = await ipc.listCatalog();
+        const nextCatalog = await ipc.listCatalog();
+        if (selectedToolId !== toolId) return;
+        catalog = nextCatalog;
         notice =
           diagnostic.status === "usable"
             ? "环境诊断已更新，工具可用"
@@ -636,6 +858,9 @@
         );
       }
     }
+    if (selectedToolId && !diagnosticBusy) {
+      await loadToolDiagnostic(selectedToolId, false);
+    }
   }
 
   async function loadJobLog(options: {
@@ -651,7 +876,7 @@
         job_id: selectedLogJobId,
         stream: selectedLogStream,
         offset,
-        limit: 65536,
+        limit: options.mode === "append" ? LOG_APPEND_BYTES : LOG_PAGE_BYTES,
       });
 
       // Empty stdout on a finished job: surface stderr so failures stay visible.
@@ -683,13 +908,20 @@
         }
       }
 
-      jobLogWindow = applyJobLogPage({
+      const nextWindow = applyJobLogPage({
         previous: options.mode === "append" ? jobLogWindow : null,
         content: preview.content,
         offset,
         nextOffset: preview.next_offset,
         eof: preview.eof,
       });
+      const logChanged =
+        !jobLogWindow ||
+        jobLogWindow.content !== nextWindow.content ||
+        jobLogWindow.nextOffset !== nextWindow.nextOffset ||
+        jobLogWindow.eof !== nextWindow.eof;
+      if (!logChanged) return;
+      jobLogWindow = nextWindow;
       if (
         autoScrollLog &&
         (options.mode === "append" || options.mode === "reset")
@@ -724,19 +956,23 @@
     }
   }
 
-  async function loadJobEvidence(): Promise<void> {
+  async function loadJobEvidence(force = false): Promise<void> {
+    if (!status?.active_project || !selectedLogJobId) return;
+    const jobId = selectedLogJobId;
+    if (!force && evidenceLoadedForJobId === jobId) return;
     jobArtifacts = [];
     jobEvidenceNotice = "";
     lastJobExport = null;
-    if (!status?.active_project || !selectedLogJobId) return;
     try {
       const page = await ipc.listJobArtifacts({
         project_id: status.active_project.project_id,
-        job_id: selectedLogJobId,
+        job_id: jobId,
         cursor: null,
         limit: 100,
       });
+      if (selectedLogJobId !== jobId) return;
       jobArtifacts = page.items;
+      evidenceLoadedForJobId = jobId;
     } catch (error) {
       reportError(error);
     }
@@ -788,16 +1024,21 @@
     }
   }
 
-  async function loadJobResult(): Promise<void> {
-    structuredResult = null;
+  async function loadJobResult(force = false): Promise<void> {
     if (!status?.active_project || !selectedLogJobId) return;
+    const jobId = selectedLogJobId;
+    if (!force && resultLoadedForJobId === jobId) return;
+    structuredResult = null;
     try {
-      structuredResult = await ipc.listStructuredResults({
+      const result = await ipc.listStructuredResults({
         project_id: status.active_project.project_id,
-        job_id: selectedLogJobId,
+        job_id: jobId,
         cursor: null,
         limit: 500,
       });
+      if (selectedLogJobId !== jobId) return;
+      structuredResult = result;
+      resultLoadedForJobId = jobId;
     } catch (error) {
       reportError(error);
     }
@@ -901,7 +1142,7 @@
   function jobStatusLabel(item: JobView | null): string {
     if (!item) return "未选择任务";
     const reason = item.job.exit_reason ? ` · ${item.job.exit_reason}` : "";
-    return `${item.tool_id} · ${item.job.execution_status}${reason}`;
+    return `${item.tool_id} · ${executionStatusLabel(item.job.execution_status)}${reason}`;
   }
 
   async function selectJobLog(item: JobView): Promise<void> {
@@ -911,13 +1152,14 @@
       jobLogWindow = null;
       structuredResult = null;
       jobArtifacts = [];
+      resultLoadedForJobId = "";
+      evidenceLoadedForJobId = "";
       lastJobExport = null;
       jobEvidenceNotice = "";
       outputTab = "log";
     }
     await loadJobLog({ mode: "reset" });
-    await loadJobResult();
-    await loadJobEvidence();
+    await Promise.all([loadJobResult(), loadJobEvidence()]);
   }
 
   function scheduleJobPoll(): void {
@@ -925,12 +1167,13 @@
     pollTimer = setTimeout(() => {
       pollTimer = undefined;
       void pollJobs();
-    }, 400);
+    }, JOB_POLL_INTERVAL_MS);
   }
 
   async function pollJobs(): Promise<void> {
     try {
       if (!status?.active_project) return;
+      const previous = selectedJob();
       const page = await ipc.listJobs({
         project_id: status.active_project.project_id,
         cursor: null,
@@ -950,10 +1193,15 @@
       const current = selectedJob();
       if (current && jobIsActive(current)) {
         await loadJobLog({ mode: "append" });
-      } else {
+      } else if (
+        previous &&
+        current &&
+        previous.job.job_id === current.job.job_id &&
+        jobIsActive(previous)
+      ) {
         await loadJobLog({ mode: "reset" });
-        await loadJobResult();
-        await loadJobEvidence();
+        await loadJobResult(true);
+        await loadJobEvidence(true);
       }
     } catch (error) {
       reportError(error);
@@ -968,6 +1216,7 @@
   function scheduleRunPreview(): void {
     if (runPreviewTimer) clearTimeout(runPreviewTimer);
     runPreview = null;
+    runPreviewError = "";
     runPreviewTimer = setTimeout(() => {
       void refreshRunPreview();
     }, 250);
@@ -982,13 +1231,35 @@
         target_url: contextTargetForRun(),
         form: { ...formValues },
       });
-    } catch {
+    } catch (error) {
       runPreview = null;
+      runPreviewError = commandErrorMessage(error);
     }
   }
 
   async function runSelectedTool(): Promise<void> {
     if (!status?.active_project || !selectedTool) return;
+    if (!selectedTool.available) {
+      notice = selectedTool.detail
+        ? `${selectedTool.name} 当前不可用：${selectedTool.detail}`
+        : `${selectedTool.name} 当前不可用，请查看运行环境诊断`;
+      noticeKind = "error";
+      await loadToolDiagnostic(selectedTool.id, false);
+      return;
+    }
+    if (relationErrors.length > 0) {
+      notice = relationErrors.map((item) => item.message).join("；");
+      noticeKind = "error";
+      return;
+    }
+    if (
+      relationWarnings.length > 0 &&
+      !window.confirm(
+        `参数提示：\n${relationWarnings.map((item) => `• ${item.message}`).join("\n")}\n\n确认继续？`,
+      )
+    ) {
+      return;
+    }
     const contextTarget = contextTargetForRun();
     if (selectedTool.needs_target && !contextTarget) {
       notice = "请先填写目标（URL / 主机）";
@@ -1002,12 +1273,7 @@
       if (!window.confirm("确认运行此 L2 工具？")) return;
       confirmL2 = true;
     } else if (plan.tier === "l3") {
-      l3Confirmation = window.prompt(`输入 ${plan.l3Phrase} 以确认 L3 操作`);
-      if (l3Confirmation !== plan.l3Phrase) {
-        notice = "L3 确认短语不匹配";
-        noticeKind = "error";
-        return;
-      }
+      l3Confirmation = plan.l3Phrase;
     }
     await guarded(async () => {
       if (contextTarget) {
@@ -1042,13 +1308,17 @@
       jobLogWindow = null;
       structuredResult = null;
       jobArtifacts = [];
+      resultLoadedForJobId = "";
+      evidenceLoadedForJobId = "";
       lastJobExport = null;
       jobEvidenceNotice = "";
       outputTab = "log";
       await refresh();
       await loadJobLog({ mode: "reset" });
-      await loadJobResult();
-      await loadJobEvidence();
+      const current = selectedJob();
+      if (current && !jobIsActive(current)) {
+        await Promise.all([loadJobResult(true), loadJobEvidence(true)]);
+      }
       scheduleJobPoll();
       activeNav = "tools";
     }, `${selectedTool.name} 已开始运行`);
@@ -1076,7 +1346,10 @@
       if (selectedLogJobId === jobId) {
         selectedLogJobId = "";
         jobLogWindow = null;
+        structuredResult = null;
         jobArtifacts = [];
+        resultLoadedForJobId = "";
+        evidenceLoadedForJobId = "";
         lastJobExport = null;
         jobEvidenceNotice = "";
       }
@@ -1100,7 +1373,10 @@
       });
       selectedLogJobId = "";
       jobLogWindow = null;
+      structuredResult = null;
       jobArtifacts = [];
+      resultLoadedForJobId = "";
+      evidenceLoadedForJobId = "";
       lastJobExport = null;
       jobEvidenceNotice = "";
       await refresh();
@@ -1109,7 +1385,7 @@
   }
 
   function toolsInCategory(categoryId: string): CatalogToolDto[] {
-    return filteredTools.filter((tool) => tool.category === categoryId);
+    return toolsByCategory.get(categoryId) ?? [];
   }
 
   function wordlistLabel(item: WordlistDto): string {
@@ -1117,16 +1393,7 @@
   }
 
   function jobTabLabel(item: JobView): string {
-    const status = item.job.execution_status;
-    const short =
-      status === "succeeded"
-        ? "ok"
-        : status === "failed"
-          ? "fail"
-          : status === "running" || status === "starting" || status === "queued"
-            ? "run"
-            : status.slice(0, 4);
-    return `${item.tool_id} · ${short}`;
+    return `${item.tool_id} · ${executionStatusLabel(item.job.execution_status)}`;
   }
 
   function toolUsage(tool: CatalogToolDto | null | undefined): string {
@@ -1184,6 +1451,12 @@
   }
 
   onMount(() => {
+    const refreshDiagnosticOnFocus = () => {
+      if (selectedToolId && !diagnosticBusy) {
+        void loadToolDiagnostic(selectedToolId, false);
+      }
+    };
+    window.addEventListener("focus", refreshDiagnosticOnFocus);
     void guarded(async () => {
       await refresh();
       scheduleJobPoll();
@@ -1191,6 +1464,12 @@
     return () => {
       if (pollTimer) clearTimeout(pollTimer);
       if (runPreviewTimer) clearTimeout(runPreviewTimer);
+      if (prefsPersistTimer) {
+        clearTimeout(prefsPersistTimer);
+        prefsPersistTimer = undefined;
+        persistPrefs();
+      }
+      window.removeEventListener("focus", refreshDiagnosticOnFocus);
     };
   });
 </script>
@@ -1209,15 +1488,26 @@
       </div>
     </div>
 
-    <nav class="nav">
+    <nav class="nav" aria-label="主导航">
       {#each navItems as item}
         <button
           data-testid={`nav-${item.id}`}
           class:active={activeNav === item.id}
+          aria-current={activeNav === item.id ? "page" : undefined}
           type="button"
           onclick={() => (activeNav = item.id)}
         >
-          <span class="nav-icon">{item.icon}</span>
+          <span class="nav-icon" aria-hidden="true">
+            {#if item.id === "home"}
+              <House size={18} />
+            {:else if item.id === "tools"}
+              <LibraryBig size={18} />
+            {:else if item.id === "jobs"}
+              <ListChecks size={18} />
+            {:else}
+              <Settings size={18} />
+            {/if}
+          </span>
           {item.label}
         </button>
       {/each}
@@ -1244,7 +1534,7 @@
           <input
             id="target-url"
             bind:value={targetUrl}
-            oninput={() => persistPrefs()}
+            oninput={() => schedulePrefsPersist()}
             placeholder="https://example.com 或 192.168.1.1"
             spellcheck="false"
           />
@@ -1273,6 +1563,9 @@
         class:success={noticeKind === "success"}
         class:error={noticeKind === "error"}
         class="notice"
+        role={noticeKind === "error" ? "alert" : "status"}
+        aria-live={noticeKind === "error" ? "assertive" : "polite"}
+        aria-atomic="true"
       >
         {notice}
       </div>
@@ -1316,7 +1609,7 @@
               <input
                 id="home-url"
                 bind:value={targetUrl}
-                oninput={() => persistPrefs()}
+                oninput={() => schedulePrefsPersist()}
               />
             </div>
             <div class="actions">
@@ -1361,7 +1654,7 @@
                   >
                     <strong>{item.tool_id}</strong>
                     <small
-                      >{item.job.execution_status} · {item.command_preview.slice(
+                      >{executionStatusLabel(item.job.execution_status)} · {item.command_preview.slice(
                         0,
                         80,
                       )}</small
@@ -1383,7 +1676,7 @@
                 class:disabled={!tool.available}
               >
                 <button
-                  data-testid={`tool-${tool.id}`}
+                  data-testid={`home-recent-tool-${tool.id}`}
                   class="tool-card-main"
                   type="button"
                   disabled={!tool.available}
@@ -1408,7 +1701,7 @@
               class:disabled={!tool.available}
             >
               <button
-                data-testid={`tool-${tool.id}`}
+                data-testid={`home-featured-tool-${tool.id}`}
                 class="tool-card-main"
                 type="button"
                 disabled={!tool.available}
@@ -1431,47 +1724,52 @@
       {:else if activeNav === "tools"}
         <div class="page-header">
           <h1>工具库</h1>
-          <p>选择工具、填写参数并运行。输出在右侧，用标签切换不同任务。</p>
+          <p>选择工具，填写参数，查看命令与输出。</p>
         </div>
 
         <div class="filter-row">
-          <div class="field" style="max-width: 280px; margin-bottom: 0">
-            <label for="tool-query">搜索</label>
-            <input
-              id="tool-query"
-              bind:value={toolQuery}
-              placeholder="工具名、任务、参数"
-            />
+          <div class="filter-primary">
+            <div class="field">
+              <label for="tool-query">搜索工具</label>
+              <input
+                id="tool-query"
+                bind:value={toolQuery}
+                placeholder="名称、用途、参数"
+              />
+            </div>
           </div>
-          <div class="field" style="max-width: 180px; margin-bottom: 0">
-            <label for="tool-capability-filter">能力</label>
-            <select id="tool-capability-filter" bind:value={capabilityFilter}>
-              <option value="">全部能力</option>
-              {#each capabilityOptions as capability}
-                <option value={capability}>{capabilityLabel(capability)}</option
-                >
-              {/each}
-            </select>
-          </div>
-          <div class="field" style="max-width: 140px; margin-bottom: 0">
-            <label for="tool-tier-filter">Tier</label>
-            <select id="tool-tier-filter" bind:value={tierFilter}>
-              <option value="">全部 Tier</option>
-              {#each tierOptions as tier}
-                <option value={tier}>{tierLabel(tier)}</option>
-              {/each}
-            </select>
-          </div>
-          <div class="field" style="max-width: 150px; margin-bottom: 0">
-            <label for="tool-installation-filter">安装</label>
-            <select
-              id="tool-installation-filter"
-              bind:value={installationFilter}
-            >
-              <option value="">全部状态</option>
-              <option value="available">可用</option>
-              <option value="missing">缺失</option>
-            </select>
+          <div class="filter-selects">
+            <div class="field">
+              <label for="tool-capability-filter">能力</label>
+              <select id="tool-capability-filter" bind:value={capabilityFilter}>
+                <option value="">全部</option>
+                {#each capabilityOptions as capability}
+                  <option value={capability}
+                    >{capabilityLabel(capability)}</option
+                  >
+                {/each}
+              </select>
+            </div>
+            <div class="field">
+              <label for="tool-tier-filter">层级</label>
+              <select id="tool-tier-filter" bind:value={tierFilter}>
+                <option value="">全部</option>
+                {#each tierOptions as tier}
+                  <option value={tier}>{tierLabel(tier)}</option>
+                {/each}
+              </select>
+            </div>
+            <div class="field">
+              <label for="tool-installation-filter">状态</label>
+              <select
+                id="tool-installation-filter"
+                bind:value={installationFilter}
+              >
+                <option value="">全部</option>
+                <option value="available">可用</option>
+                <option value="missing">缺失</option>
+              </select>
+            </div>
           </div>
           <div class="chip-row">
             <button
@@ -1494,15 +1792,22 @@
           </div>
         </div>
 
-        <div class="workspace">
-          <section class="stack">
+        <div class="workspace tools-workspace">
+          <section class="stack tool-catalog-panel">
+            <div class="catalog-panel-head">
+              <div>
+                <strong>工具索引</strong>
+                <small>{filteredTools.length} / {catalogTools.length}</small>
+              </div>
+              <span>{availableTools.length} 可用</span>
+            </div>
             {#if filteredTools.length === 0}
               <div class="empty">没有匹配工具。</div>
             {/if}
             {#each categories as category}
               {@const items = toolsInCategory(category.id)}
               {#if items.length > 0}
-                <div>
+                <div class="tool-category">
                   <div class="section-label">{category.name}</div>
                   <div class="tool-grid">
                     {#each items as tool}
@@ -1515,6 +1820,9 @@
                           data-testid={`tool-${tool.id}`}
                           class="tool-card-main"
                           type="button"
+                          aria-label={tool.available
+                            ? tool.name
+                            : `${tool.name}，不可用，查看诊断`}
                           onclick={() => selectTool(tool)}
                         >
                           <div class="tool-card-title">
@@ -1542,21 +1850,24 @@
             {/each}
           </section>
 
-          <section class="card" data-testid="tool-runner">
+          <section class="card tool-runner-card" data-testid="tool-runner">
             {#if selectedTool}
-              <div class="card-head">
+              <div class="card-head runner-head">
                 <div>
                   <div class="tool-title-row">
                     <h2>{selectedTool.name}</h2>
-                    {#if toolUsage(selectedTool)}
+                    {#if toolUsage(selectedTool) || toolDiagnostic?.help.command}
                       <button
                         type="button"
                         class="help-tip"
                         aria-label={`${selectedTool.name} 用法说明`}
+                        aria-expanded={helpOpen}
+                        aria-controls="tool-help-drawer"
+                        onclick={() => (helpOpen = !helpOpen)}
                       >
-                        <span class="help-icon">?</span>
+                        <CircleHelp class="help-icon" size={17} />
                         <span class="help-panel help-panel-wide"
-                          >{toolUsage(selectedTool)}</span
+                          >{toolUsage(selectedTool) || "查看版本帮助"}</span
                         >
                       </button>
                     {/if}
@@ -1568,38 +1879,34 @@
                 </span>
               </div>
 
-              <div class="meta">
-                <span class="pill muted" data-testid="tool-tier">
-                  {tierLabel(selectedTool.tier)}
-                </span>
-                <span class="pill muted" data-testid="tool-risk">
-                  {selectedTool.risk_level.toUpperCase()}
-                </span>
-                {#if selectedTool.capabilities.length > 0}
-                  <span class="pill muted" data-testid="tool-capabilities">
-                    {selectedTool.capabilities.join(" · ")}
+              <div class="runner-facts">
+                <div class="meta">
+                  <span class="pill muted" data-testid="tool-tier">
+                    {tierLabel(selectedTool.tier)}
                   </span>
+                  <span class="pill muted" data-testid="tool-risk">
+                    {riskLevelLabel(selectedTool.risk_level)}
+                  </span>
+                  {#if selectedTool.capabilities.length > 0}
+                    <span class="pill muted" data-testid="tool-capabilities">
+                      {selectedTool.capabilities
+                        .map(capabilityLabel)
+                        .join(" · ")}
+                    </span>
+                  {/if}
+                </div>
+                {#if installationSummary(selectedTool)}
+                  <p class="sub" data-testid="tool-installation">
+                    安装：{installationSummary(selectedTool)}
+                  </p>
+                {/if}
+                {#if selectedTool.io.schema_version > 0}
+                  <p class="sub" data-testid="tool-io-contract">
+                    输入：{ioKindList(selectedTool.io.inputs)}<br />
+                    输出：{ioKindList(selectedTool.io.outputs)}
+                  </p>
                 {/if}
               </div>
-              {#if installationSummary(selectedTool)}
-                <p
-                  class="sub"
-                  data-testid="tool-installation"
-                  style="margin: 10px 0 14px"
-                >
-                  安装：{installationSummary(selectedTool)}
-                </p>
-              {/if}
-              {#if selectedTool.io.schema_version > 0}
-                <p
-                  class="sub"
-                  data-testid="tool-io-contract"
-                  style="margin: 10px 0 14px"
-                >
-                  输入：{ioKindList(selectedTool.io.inputs)}<br />
-                  输出：{ioKindList(selectedTool.io.outputs)}
-                </p>
-              {/if}
 
               <section class="diagnostic-panel" data-testid="tool-diagnostic">
                 <div class="diagnostic-head">
@@ -1607,6 +1914,9 @@
                     <div class="section-label">运行环境诊断</div>
                     <p class="sub">
                       检查二进制、路径、权限、版本、运行时与默认字典。
+                      {#if diagnosticUpdatedAt}
+                        最近检测：{diagnosticUpdatedAt}
+                      {/if}
                     </p>
                   </div>
                   <div class="diagnostic-actions">
@@ -1681,7 +1991,99 @@
                 {/if}
               </section>
 
-              <div oninput={scheduleRunPreview} onchange={scheduleRunPreview}>
+              {#if helpOpen}
+                <section
+                  id="tool-help-drawer"
+                  class="help-drawer"
+                  data-testid="tool-help-drawer"
+                  aria-labelledby="tool-help-heading"
+                >
+                  <div class="diagnostic-head">
+                    <div>
+                      <div class="section-label" id="tool-help-heading">
+                        版本帮助
+                      </div>
+                      <p class="sub">
+                        {toolDiagnostic?.help.command ||
+                          "当前工具未声明帮助命令"}
+                        {#if toolDiagnostic?.help.detected_version}
+                          · {toolDiagnostic.help.detected_version}
+                        {/if}
+                      </p>
+                    </div>
+                    <button
+                      class="btn btn-secondary icon-label-button"
+                      type="button"
+                      disabled={diagnosticBusy}
+                      onclick={() =>
+                        void loadToolDiagnostic(selectedTool.id, true)}
+                    >
+                      <CircleHelp size={15} />
+                      刷新帮助
+                    </button>
+                  </div>
+                  <label class="search-control" for="tool-help-query">
+                    <Search size={16} aria-hidden="true" />
+                    <input
+                      id="tool-help-query"
+                      bind:value={helpQuery}
+                      placeholder="搜索参数名、选项或说明"
+                      spellcheck="false"
+                    />
+                  </label>
+                  {#if toolDiagnostic?.help.available}
+                    <div class="help-meta">
+                      {toolDiagnostic.help.cached
+                        ? "已读取缓存"
+                        : "已刷新本地快照"}
+                      {#if helpQuery.trim()}
+                        · {helpSearchResult.matchCount} 处匹配
+                      {/if}
+                    </div>
+                    <pre class="help-content">{helpSearchResult.content ||
+                        "没有匹配内容"}</pre>
+                  {:else}
+                    <p class="empty">
+                      {toolDiagnostic?.help.detail || "帮助内容暂不可用"}
+                    </p>
+                  {/if}
+                </section>
+              {/if}
+
+              {#if selectedTool.fields.length > 0}
+                <div class="parameter-toolbar">
+                  <label class="search-control" for="parameter-query">
+                    <Search size={16} aria-hidden="true" />
+                    <input
+                      id="parameter-query"
+                      bind:value={parameterQuery}
+                      placeholder="搜索参数名、flag、含义或示例"
+                      spellcheck="false"
+                    />
+                  </label>
+                  <button
+                    class="btn btn-secondary icon-label-button"
+                    class:active={showHiddenFields}
+                    type="button"
+                    aria-pressed={showHiddenFields}
+                    onclick={() => (showHiddenFields = !showHiddenFields)}
+                  >
+                    {#if showHiddenFields}
+                      <EyeOff size={15} />
+                      收起隐藏项
+                    {:else}
+                      <Eye size={15} />
+                      查看隐藏项
+                    {/if}
+                  </button>
+                </div>
+              {/if}
+
+              <div
+                class="runner-form"
+                oninput={scheduleRunPreview}
+                onchange={scheduleRunPreview}
+              >
                 {#if selectedTool.presets.length > 0 || selectedToolPersonalPresets.length > 0}
                   <div class="field">
                     <label for="tool-preset">任务预设</label>
@@ -1716,6 +2118,8 @@
                       data-testid="toggle-advanced-fields"
                       class="btn btn-secondary"
                       type="button"
+                      aria-expanded={advancedFieldsExpanded}
+                      aria-controls="tool-parameter-fields"
                       onclick={() =>
                         (advancedFieldsExpanded = !advancedFieldsExpanded)}
                     >
@@ -1814,103 +2218,253 @@
                     此工具无需在 FlagDeck 内填写参数，点击启动即可打开独立窗口。
                   </p>
                 {:else}
-                  {#each progressiveForm?.visibleFields ?? selectedTool.fields as field}
-                    {@const groupName = advancedGroupName(field.id)}
-                    {#if groupName}
-                      <div class="section-label">{groupName}</div>
-                    {/if}
-                    <div class="field">
-                      <label for={`field-${field.id}`}>{field.label}</label>
-                      {#if field.field_type === "wordlist"}
-                        <select
-                          id={`field-${field.id}`}
-                          bind:value={formValues[field.id]}
-                          onchange={() =>
-                            selectedToolId &&
-                            rememberFormForTool(selectedToolId)}
-                        >
-                          {#if wordlists.length === 0}
-                            <option value="">未找到可用字典</option>
-                          {:else}
-                            {#each wordlists as wl}
-                              <option value={wl.id}>{wordlistLabel(wl)}</option>
+                  <div class="parameter-fields-grid" id="tool-parameter-fields">
+                    {#each visibleToolFields as field}
+                      {@const groupName = advancedGroupName(field.id)}
+                      {#if groupName}
+                        <div class="section-label parameter-group-label">
+                          {groupName}
+                        </div>
+                      {/if}
+                      <div
+                        class="field parameter-field"
+                        class:wide-field={fieldUsesFullRow(field)}
+                        class:hidden-field={selectedFieldLayout?.hidden.includes(
+                          field.id,
+                        )}
+                      >
+                        <div class="parameter-field-head">
+                          <label for={`field-${field.id}`}>{field.label}</label>
+                          <div class="parameter-field-actions">
+                            <button
+                              class="icon-button"
+                              class:active={selectedFieldLayout?.pinned.includes(
+                                field.id,
+                              )}
+                              type="button"
+                              title={selectedFieldLayout?.pinned.includes(
+                                field.id,
+                              )
+                                ? "取消置顶"
+                                : "置顶参数"}
+                              aria-label={selectedFieldLayout?.pinned.includes(
+                                field.id,
+                              )
+                                ? `取消置顶 ${field.label}`
+                                : `置顶 ${field.label}`}
+                              onclick={() => toggleFieldPin(field.id)}
+                            >
+                              {#if selectedFieldLayout?.pinned.includes(field.id)}
+                                <PinOff size={14} />
+                              {:else}
+                                <Pin size={14} />
+                              {/if}
+                            </button>
+                            <button
+                              class="icon-button"
+                              type="button"
+                              title="上移参数"
+                              aria-label={`上移 ${field.label}`}
+                              onclick={() => moveField(field.id, -1)}
+                            >
+                              <ArrowUp size={14} />
+                            </button>
+                            <button
+                              class="icon-button"
+                              type="button"
+                              title="下移参数"
+                              aria-label={`下移 ${field.label}`}
+                              onclick={() => moveField(field.id, 1)}
+                            >
+                              <ArrowDown size={14} />
+                            </button>
+                            <button
+                              class="icon-button"
+                              type="button"
+                              title={selectedFieldLayout?.hidden.includes(
+                                field.id,
+                              )
+                                ? "恢复参数"
+                                : "隐藏参数"}
+                              aria-label={selectedFieldLayout?.hidden.includes(
+                                field.id,
+                              )
+                                ? `恢复 ${field.label}`
+                                : `隐藏 ${field.label}`}
+                              onclick={() => toggleFieldHidden(field.id)}
+                            >
+                              {#if selectedFieldLayout?.hidden.includes(field.id)}
+                                <Eye size={14} />
+                              {:else}
+                                <EyeOff size={14} />
+                              {/if}
+                            </button>
+                          </div>
+                        </div>
+                        {#if field.flag || field.examples.length > 0}
+                          <div class="field-reference">
+                            {#if field.flag}<code>{field.flag}</code>{/if}
+                            {#if field.examples.length > 0}
+                              <span>例：{field.examples.join(" · ")}</span>
+                            {/if}
+                          </div>
+                        {/if}
+                        {#if field.field_type === "wordlist"}
+                          <select
+                            id={`field-${field.id}`}
+                            bind:value={formValues[field.id]}
+                            onchange={() =>
+                              selectedToolId &&
+                              rememberFormForTool(selectedToolId)}
+                          >
+                            {#if wordlists.length === 0}
+                              <option value="">未找到可用字典</option>
+                            {:else}
+                              {#each wordlists as wl}
+                                <option value={wl.id}
+                                  >{wordlistLabel(wl)}</option
+                                >
+                              {/each}
+                            {/if}
+                          </select>
+                        {:else if field.field_type === "select"}
+                          <select
+                            id={`field-${field.id}`}
+                            bind:value={formValues[field.id]}
+                            onchange={() =>
+                              selectedToolId &&
+                              rememberFormForTool(selectedToolId)}
+                          >
+                            {#each field.options.length > 0 ? field.options : [field.default_value || ""] as opt}
+                              <option value={opt}
+                                >{optionLabel(field.id, opt)}</option
+                              >
                             {/each}
-                          {/if}
-                        </select>
-                      {:else if field.field_type === "select"}
-                        <select
-                          id={`field-${field.id}`}
-                          bind:value={formValues[field.id]}
-                          onchange={() =>
-                            selectedToolId &&
-                            rememberFormForTool(selectedToolId)}
-                        >
-                          {#each field.options.length > 0 ? field.options : [field.default_value || ""] as opt}
-                            <option value={opt}>{opt}</option>
-                          {/each}
-                        </select>
-                      {:else if field.field_type === "number"}
-                        <input
-                          id={`field-${field.id}`}
-                          type="number"
-                          bind:value={formValues[field.id]}
-                          oninput={() =>
-                            selectedToolId &&
-                            rememberFormForTool(selectedToolId)}
-                        />
-                      {:else if field.field_type === "textarea"}
-                        <textarea
-                          id={`field-${field.id}`}
-                          bind:value={formValues[field.id]}
-                          rows="3"
-                          oninput={() =>
-                            selectedToolId &&
-                            rememberFormForTool(selectedToolId)}></textarea>
-                      {:else}
-                        <input
-                          id={`field-${field.id}`}
-                          type={field.sensitive ? "password" : "text"}
-                          bind:value={formValues[field.id]}
-                          oninput={() => {
-                            if (
-                              field.from === "target_url" ||
-                              field.id === "url" ||
-                              field.id === "host" ||
-                              field.id === "target"
-                            ) {
-                              const value = formValues[field.id] ?? "";
-                              if (value.startsWith("http")) {
-                                targetUrl = value;
-                                persistPrefs();
-                              } else if (value && field.id === "host") {
-                                try {
-                                  const base = targetUrl.startsWith("http")
-                                    ? targetUrl
-                                    : `http://${targetUrl || "127.0.0.1"}/`;
-                                  const u = new URL(base);
-                                  u.hostname = value;
-                                  targetUrl = u.toString();
-                                  persistPrefs();
-                                } catch {
-                                  /* ignore */
+                          </select>
+                        {:else if field.field_type === "multiselect"}
+                          {@const selectedMulti = splitMultiValue(
+                            formValues[field.id] ?? "",
+                          )}
+                          {@const recommendedValues = recommendedOptionValues(
+                            field,
+                            formValues,
+                          )}
+                          <div
+                            class="multiselect-grid"
+                            data-testid={`multiselect-${field.id}`}
+                          >
+                            {#each field.options as opt}
+                              {@const detail = field.option_details.find(
+                                (item) => item.value === opt,
+                              )}
+                              <label
+                                class="multiselect-option"
+                                class:selected={selectedMulti.includes(opt)}
+                                class:recommended={recommendedValues.includes(
+                                  opt,
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedMulti.includes(opt)}
+                                  onchange={(event) =>
+                                    updateMultiValue(
+                                      field.id,
+                                      opt,
+                                      event.currentTarget.checked,
+                                    )}
+                                />
+                                <span>
+                                  <strong>{detail?.label || opt}</strong>
+                                  {#if recommendedValues.includes(opt)}
+                                    <em>推荐</em>
+                                  {/if}
+                                  {#if detail?.summary}
+                                    <small>{detail.summary}</small>
+                                  {/if}
+                                </span>
+                              </label>
+                            {/each}
+                          </div>
+                        {:else if field.field_type === "number"}
+                          <input
+                            id={`field-${field.id}`}
+                            type="number"
+                            bind:value={formValues[field.id]}
+                            oninput={() =>
+                              selectedToolId &&
+                              rememberFormForTool(selectedToolId, true)}
+                          />
+                        {:else if field.field_type === "textarea"}
+                          <textarea
+                            id={`field-${field.id}`}
+                            bind:value={formValues[field.id]}
+                            rows="3"
+                            oninput={() =>
+                              selectedToolId &&
+                              rememberFormForTool(selectedToolId, true)}
+                          ></textarea>
+                        {:else}
+                          <input
+                            id={`field-${field.id}`}
+                            type={field.sensitive ? "password" : "text"}
+                            bind:value={formValues[field.id]}
+                            oninput={() => {
+                              if (
+                                field.from === "target_url" ||
+                                field.id === "url" ||
+                                field.id === "host" ||
+                                field.id === "target"
+                              ) {
+                                const value = formValues[field.id] ?? "";
+                                if (value.startsWith("http")) {
+                                  targetUrl = value;
+                                  schedulePrefsPersist();
+                                } else if (value && field.id === "host") {
+                                  try {
+                                    const base = targetUrl.startsWith("http")
+                                      ? targetUrl
+                                      : `http://${targetUrl || "127.0.0.1"}/`;
+                                    const u = new URL(base);
+                                    u.hostname = value;
+                                    targetUrl = u.toString();
+                                    schedulePrefsPersist();
+                                  } catch {
+                                    /* ignore */
+                                  }
                                 }
                               }
-                            }
-                            if (selectedToolId)
-                              rememberFormForTool(selectedToolId);
-                          }}
-                        />
-                      {/if}
-                      {#if field.hint}
-                        <small class="field-hint">{field.hint}</small>
-                      {/if}
-                    </div>
-                  {/each}
+                              if (selectedToolId)
+                                rememberFormForTool(selectedToolId, true);
+                            }}
+                          />
+                        {/if}
+                        {#if field.hint}
+                          <small class="field-hint">{field.hint}</small>
+                        {/if}
+                      </div>
+                    {/each}
+                    {#if visibleToolFields.length === 0}
+                      <p class="empty wide-field">没有匹配参数。</p>
+                    {/if}
+                  </div>
                 {/if}
               </div>
 
+              {#if relationNotices.length > 0}
+                <div class="relation-list" data-testid="parameter-relations">
+                  {#each relationNotices as item}
+                    <p class:error={item.severity === "error"}>
+                      {item.severity === "error"
+                        ? "需修正"
+                        : "请确认"}：{item.message}
+                    </p>
+                  {/each}
+                </div>
+              {/if}
+
               {#if runPreview}
-                <div class="card" data-testid="run-preview">
+                <div class="card command-ribbon" data-testid="run-preview">
                   <div class="section-label">运行预览</div>
                   <code
                     data-testid="preview-command"
@@ -1919,7 +2473,7 @@
                   >
                   <div class="meta" style="margin-top: 10px">
                     <span class="pill muted" data-testid="preview-scope">
-                      Scope：{runPreview.scope}
+                      范围：{runPreview.scope}
                     </span>
                     <span class="pill muted" data-testid="preview-rate">
                       速率：{runPreview.rate_per_second == null
@@ -1930,7 +2484,7 @@
                       预计请求：{runPreview.estimated_request_count ?? "未知"}
                     </span>
                     <span class="pill muted" data-testid="preview-risk">
-                      风险：{runPreview.risk_level.toUpperCase()}
+                      风险：{riskLevelLabel(runPreview.risk_level)}
                     </span>
                   </div>
                   <p
@@ -1939,9 +2493,13 @@
                     style="margin: 10px 0 0"
                   >
                     {runPreview.risk_level === "l3"
-                      ? `运行前需输入 RUN CATALOG ${selectedTool.id}`
+                      ? "点击运行后记录 L3 审计"
                       : "运行前需确认 L2 操作"}
                   </p>
+                </div>
+              {:else if runPreviewError}
+                <div class="relation-list" data-testid="run-preview-error">
+                  <p class="error">预览失败：{runPreviewError}</p>
                 </div>
               {/if}
 
@@ -1958,7 +2516,10 @@
                   data-testid="run-selected-tool"
                   class="btn btn-primary"
                   type="button"
-                  disabled={busy || !selectedTool.available}
+                  disabled={busy}
+                  aria-describedby={!selectedTool.available
+                    ? "run-blocked-reason"
+                    : undefined}
                   onclick={() => void runSelectedTool()}
                 >
                   {selectedTool.mode === "external_launch" ? "启动" : "运行"}
@@ -1976,423 +2537,493 @@
                   </button>
                 {/if}
               </div>
+              {#if !selectedTool.available}
+                <p
+                  class="sub"
+                  id="run-blocked-reason"
+                  data-testid="run-blocked-reason"
+                >
+                  当前无法运行：{selectedTool.detail || "请查看运行环境诊断"}
+                </p>
+              {/if}
             {:else}
               <div class="empty">选择左侧工具以配置参数。</div>
             {/if}
 
-            <div class="section-label">输出</div>
-            <div class="job-tabs-row">
-              <div class="job-tabs">
-                {#if filteredJobs.length === 0}
-                  <span class="pill muted">暂无任务</span>
-                {:else}
-                  {#each filteredJobs.slice(0, 16) as item}
-                    <div
-                      class="job-tab"
-                      class:selected={selectedLogJobId === item.job.job_id}
-                    >
-                      <button
-                        type="button"
-                        class="job-tab-main"
-                        title={item.command_preview}
-                        onclick={() => void selectJobLog(item)}
-                      >
-                        {jobTabLabel(item)}
-                      </button>
-                      <button
-                        type="button"
-                        class="job-tab-close"
-                        title="删除此任务"
-                        disabled={busy || jobIsActive(item)}
-                        onclick={(event) => {
-                          event.stopPropagation();
-                          void deleteJobById(item.job.job_id);
-                        }}>×</button
-                      >
-                    </div>
-                  {/each}
-                {/if}
-              </div>
-              <div class="actions" style="margin: 0">
-                {#if jobToolOptions.length > 0}
-                  <select
-                    class="inline-select"
-                    bind:value={jobFilterToolId}
-                    onchange={() => persistPrefs()}
-                  >
-                    <option value="">全部工具</option>
-                    {#each jobToolOptions as toolId}
-                      <option value={toolId}>{toolId}</option>
-                    {/each}
-                  </select>
-                {/if}
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  disabled={busy || jobs.length === 0 || jobs.some(jobIsActive)}
-                  onclick={() => void clearAllJobs()}
-                >
-                  清空全部
-                </button>
-              </div>
-            </div>
-
-            <div class="output-tabs">
-              <button
-                type="button"
-                class="chip"
-                class:active={outputTab === "log"}
-                onclick={() => (outputTab = "log")}>日志</button
-              >
-              <button
-                type="button"
-                class="chip"
-                class:active={outputTab === "result"}
-                onclick={() => {
-                  outputTab = "result";
-                  void loadJobResult();
-                }}
-              >
-                结果{structuredResult
-                  ? ` · ${structuredResult.rows.length}`
-                  : ""}
-              </button>
-              <button
-                type="button"
-                class="chip"
-                class:active={outputTab === "evidence"}
-                data-testid="output-tab-evidence"
-                onclick={() => {
-                  outputTab = "evidence";
-                  void loadJobEvidence();
-                }}
-              >
-                证据{jobArtifacts.length ? ` · ${jobArtifacts.length}` : ""}
-              </button>
-            </div>
-
-            {#if outputTab === "log"}
-              <div class="actions" style="margin: 10px 0">
-                <span class="pill muted">{jobStatusLabel(selectedJob())}</span>
-                <span class="pill muted" data-testid="job-log-range"
-                  >{jobLogRange}</span
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  disabled={!selectedLogJobId || jobLogLoading}
-                  onclick={() => {
-                    selectedLogStream = "stdout";
-                    void loadJobLog({ mode: "reset" });
-                  }}>stdout</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  disabled={!selectedLogJobId || jobLogLoading}
-                  onclick={() => {
-                    selectedLogStream = "stderr";
-                    void loadJobLog({ mode: "reset" });
-                  }}>stderr</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  data-testid="job-log-head"
-                  disabled={!selectedLogJobId || jobLogLoading}
-                  onclick={() => void loadJobLog({ mode: "page", offset: 0 })}
-                  >从头</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  data-testid="job-log-prev"
-                  disabled={!selectedLogJobId ||
-                    jobLogLoading ||
-                    !jobLogWindow ||
-                    jobLogWindow.windowStart <= 0}
-                  onclick={() =>
-                    void loadJobLog({
-                      mode: "page",
-                      offset: Math.max(
-                        0,
-                        (jobLogWindow?.windowStart ?? 0) - 65536,
-                      ),
-                    })}>上一段</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  data-testid="job-log-next"
-                  disabled={!selectedLogJobId ||
-                    jobLogLoading ||
-                    !jobLogWindow ||
-                    jobLogWindow.eof}
-                  onclick={() =>
-                    void loadJobLog({
-                      mode: "page",
-                      offset: jobLogWindow?.nextOffset ?? 0,
-                    })}>下一段</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  disabled={!selectedLogJobId || jobLogLoading}
-                  onclick={() => void loadJobLog({ mode: "reset" })}
-                  >刷新</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  disabled={!jobLogContent}
-                  onclick={() => void copyJobLog()}>复制窗口</button
-                >
-                <label class="check-inline">
-                  <input
-                    type="checkbox"
-                    bind:checked={autoScrollLog}
-                    onchange={() => persistPrefs()}
-                  />
-                  自动滚底
-                </label>
-                {#if selectedLogJobId && selectedJob() && !jobIsActive(selectedJob()!)}
-                  <button
-                    class="btn btn-danger"
-                    type="button"
-                    disabled={busy}
-                    onclick={() => void deleteJobById(selectedLogJobId)}
-                  >
-                    删除此任务
-                  </button>
-                {/if}
-              </div>
-              <p class="sub" data-testid="job-log-bound-hint">
-                界面仅保留有界窗口（当前 stream：{selectedLogStream}）。完整日志与原始输出请在「证据」导出。
-              </p>
-              <pre class="log-pane" bind:this={logPaneEl}>{jobLogContent ||
-                  "运行后日志会显示在这里。用上方标签切换不同任务的输出。"}</pre>
-            {:else if outputTab === "evidence"}
-              <div class="actions" style="margin: 10px 0">
-                <span class="pill muted">任务证据 Artifact</span>
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  data-testid="refresh-job-evidence"
-                  disabled={!selectedLogJobId || busy}
-                  onclick={() => void loadJobEvidence()}>刷新</button
-                >
-              </div>
-              {#if !selectedLogJobId}
-                <div class="empty">
-                  选择任务后查看 stdout、stderr 与原始输出证据。
-                </div>
-              {:else if jobArtifacts.length === 0}
-                <div class="empty" data-testid="job-evidence-empty">
-                  当前任务尚无已提交
-                  Artifact。失败或解析错误时日志仍可分页查看。
-                </div>
-              {:else}
-                <div class="job-evidence-list" data-testid="job-evidence-list">
-                  {#each jobArtifacts as artifact}
-                    <div
-                      class="job-evidence-item"
-                      data-testid={`job-evidence-${artifact.logical_name}`}
-                    >
-                      <div>
-                        <strong>{artifact.logical_name}</strong>
-                        <small>
-                          {artifact.size ?? "?"} 字节 · {artifact.sensitivity} ·
-                          {artifact.export_policy}
-                        </small>
-                        <small class="mono"
-                          >{artifact.sha256 ?? "哈希待提交"}</small
-                        >
-                      </div>
-                      <div class="actions" style="margin: 0">
-                        <button
-                          class="btn btn-secondary"
-                          type="button"
-                          disabled={busy}
-                          onclick={() => void previewJobEvidence(artifact)}
-                          >有界预览</button
-                        >
-                        <button
-                          class="btn btn-primary"
-                          type="button"
-                          data-testid={`export-job-evidence-${artifact.logical_name}`}
-                          disabled={busy ||
-                            artifact.export_policy === "exclude_credential" ||
-                            artifact.export_policy === "exclude_runtime"}
-                          onclick={() => void exportJobEvidence(artifact)}
-                          >导出</button
-                        >
-                      </div>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-              {#if jobEvidenceNotice}
-                <pre
-                  class="log-pane"
-                  data-testid="job-evidence-notice">{jobEvidenceNotice}</pre>
-              {/if}
-              {#if lastJobExport}
-                <p class="sub" data-testid="job-export-result">
-                  导出文件 {lastJobExport.export_name} · {lastJobExport.size} 字节
-                  · SHA-256 {lastJobExport.sha256}
-                </p>
-              {/if}
-            {:else}
-              <div class="actions" style="margin: 10px 0">
-                <span class="pill muted" data-testid="structured-result-status">
-                  {#if !structuredResult}
-                    无结构化结果
-                  {:else if structuredResult.status === "parse_failed"}
-                    解析失败 · 原始证据仍可访问
-                  {:else if structuredResult.status === "pending"}
-                    结果导入中
-                  {:else if structuredResult.status === "empty"}
-                    无结果行
+            <section class="runner-output">
+              <div class="section-label">输出</div>
+              <div class="job-tabs-row">
+                <div class="job-tabs" role="list" aria-label="任务输出">
+                  {#if filteredJobs.length === 0}
+                    <span class="pill muted">暂无任务</span>
                   {:else}
-                    {structuredResult.kind} · {structuredResult.parser_id ??
-                      "adapter"} · {resultRows.length}/{structuredResult.rows
-                      .length}
+                    {#each filteredJobs.slice(0, 16) as item}
+                      <div
+                        class="job-tab"
+                        class:selected={selectedLogJobId === item.job.job_id}
+                        role="listitem"
+                      >
+                        <button
+                          type="button"
+                          class="job-tab-main"
+                          title={item.command_preview}
+                          aria-pressed={selectedLogJobId === item.job.job_id}
+                          onclick={() => void selectJobLog(item)}
+                        >
+                          {jobTabLabel(item)}
+                        </button>
+                        <button
+                          type="button"
+                          class="job-tab-close"
+                          title={`删除 ${jobTabLabel(item)}`}
+                          disabled={busy || jobIsActive(item)}
+                          onclick={(event) => {
+                            event.stopPropagation();
+                            void deleteJobById(item.job.job_id);
+                          }}
+                          aria-label={`删除 ${jobTabLabel(item)}`}
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    {/each}
                   {/if}
-                </span>
-                <input
-                  class="inline-search"
-                  data-testid="result-filter"
-                  placeholder="过滤结果…"
-                  bind:value={resultFilter}
-                />
-                <select
-                  class="inline-select"
-                  data-testid="result-sort-key"
-                  bind:value={resultSortKey}
-                >
-                  {#each resultColumns as col}
-                    <option value={col.key}>{col.label}</option>
-                  {/each}
-                </select>
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  data-testid="result-sort-dir"
-                  onclick={() =>
-                    (resultSortDir = resultSortDir === "asc" ? "desc" : "asc")}
-                  >{resultSortDir === "asc" ? "升序" : "降序"}</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  disabled={!structuredResult}
-                  onclick={() => void loadJobResult()}>刷新</button
-                >
-                <button
-                  class="btn btn-secondary"
-                  type="button"
-                  data-testid="copy-result-tsv"
-                  disabled={resultRows.length === 0}
-                  onclick={() => void copyResultTsv()}>复制 TSV</button
-                >
-              </div>
-              {#if structuredResult?.parser_error}
-                <div class="empty" data-testid="structured-parse-error">
-                  解析诊断：{structuredResult.parser_error}。请打开「证据」查看原始
-                  Artifact。
                 </div>
-              {/if}
-              {#if !structuredResult || structuredResult.status === "empty"}
-                <div class="empty">
-                  当前任务没有可展示的结构化结果。原始日志与 Artifact
-                  仍可在其它标签访问。
-                </div>
-              {:else if structuredResult.status === "parse_failed"}
-                <div class="empty">
-                  解析失败，结构化结果不可用。原始证据保留。
+                <div class="actions" style="margin: 0">
+                  {#if jobToolOptions.length > 0}
+                    <select
+                      class="inline-select"
+                      aria-label="按工具筛选任务输出"
+                      bind:value={jobFilterToolId}
+                      onchange={() => persistPrefs()}
+                    >
+                      <option value="">全部工具</option>
+                      {#each jobToolOptions as toolId}
+                        <option value={toolId}>{toolId}</option>
+                      {/each}
+                    </select>
+                  {/if}
                   <button
                     class="btn btn-secondary"
                     type="button"
-                    onclick={() => {
-                      outputTab = "evidence";
-                      void loadJobEvidence();
-                    }}>打开证据</button
+                    disabled={busy ||
+                      jobs.length === 0 ||
+                      jobs.some(jobIsActive)}
+                    onclick={() => void clearAllJobs()}
                   >
+                    清空全部
+                  </button>
                 </div>
-              {:else if resultRows.length === 0}
-                <div class="empty">没有匹配过滤条件的行。</div>
-              {:else}
-                <div
-                  class="result-table-wrap"
-                  data-testid="structured-result-table"
+              </div>
+
+              <div class="output-tabs" role="tablist" aria-label="输出视图">
+                <button
+                  id="output-tab-log"
+                  type="button"
+                  class="chip"
+                  role="tab"
+                  aria-selected={outputTab === "log"}
+                  aria-controls="output-panel"
+                  class:active={outputTab === "log"}
+                  onclick={() => (outputTab = "log")}>日志</button
                 >
-                  <table class="result-table">
-                    <thead>
-                      <tr>
-                        {#each resultColumns as col}
-                          <th>{col.label}</th>
-                        {/each}
-                        <th>定位</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {#each resultRows as row}
-                        <tr data-testid={`result-row-${row.result_id}`}>
-                          {#each resultColumns as col}
-                            <td title={row.cells[col.key] ?? ""}
-                              >{row.cells[col.key] ?? ""}</td
+                <button
+                  id="output-tab-result"
+                  type="button"
+                  class="chip"
+                  role="tab"
+                  aria-selected={outputTab === "result"}
+                  aria-controls="output-panel"
+                  class:active={outputTab === "result"}
+                  onclick={() => {
+                    outputTab = "result";
+                    void loadJobResult();
+                  }}
+                >
+                  结果{structuredResult
+                    ? ` · ${structuredResult.rows.length}`
+                    : ""}
+                </button>
+                <button
+                  id="output-tab-evidence"
+                  type="button"
+                  class="chip"
+                  role="tab"
+                  aria-selected={outputTab === "evidence"}
+                  aria-controls="output-panel"
+                  class:active={outputTab === "evidence"}
+                  data-testid="output-tab-evidence"
+                  onclick={() => {
+                    outputTab = "evidence";
+                    void loadJobEvidence();
+                  }}
+                >
+                  证据{jobArtifacts.length ? ` · ${jobArtifacts.length}` : ""}
+                </button>
+              </div>
+
+              <div
+                class="output-panel"
+                id="output-panel"
+                role="tabpanel"
+                aria-labelledby={`output-tab-${outputTab}`}
+              >
+                {#if outputTab === "log"}
+                  <div class="actions" style="margin: 10px 0">
+                    <span class="pill muted"
+                      >{jobStatusLabel(selectedJob())}</span
+                    >
+                    <span class="pill muted" data-testid="job-log-range"
+                      >{jobLogRange}</span
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      disabled={!selectedLogJobId || jobLogLoading}
+                      aria-pressed={selectedLogStream === "stdout"}
+                      aria-label="查看标准输出 stdout"
+                      title="stdout"
+                      onclick={() => {
+                        selectedLogStream = "stdout";
+                        void loadJobLog({ mode: "reset" });
+                      }}>标准输出</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      disabled={!selectedLogJobId || jobLogLoading}
+                      aria-pressed={selectedLogStream === "stderr"}
+                      aria-label="查看错误输出 stderr"
+                      title="stderr"
+                      onclick={() => {
+                        selectedLogStream = "stderr";
+                        void loadJobLog({ mode: "reset" });
+                      }}>错误输出</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="job-log-head"
+                      disabled={!selectedLogJobId || jobLogLoading}
+                      onclick={() =>
+                        void loadJobLog({ mode: "page", offset: 0 })}
+                      >从头</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="job-log-prev"
+                      disabled={!selectedLogJobId ||
+                        jobLogLoading ||
+                        !jobLogWindow ||
+                        jobLogWindow.windowStart <= 0}
+                      onclick={() =>
+                        void loadJobLog({
+                          mode: "page",
+                          offset: Math.max(
+                            0,
+                            (jobLogWindow?.windowStart ?? 0) - 65536,
+                          ),
+                        })}>上一段</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="job-log-next"
+                      disabled={!selectedLogJobId ||
+                        jobLogLoading ||
+                        !jobLogWindow ||
+                        jobLogWindow.eof}
+                      onclick={() =>
+                        void loadJobLog({
+                          mode: "page",
+                          offset: jobLogWindow?.nextOffset ?? 0,
+                        })}>下一段</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      disabled={!selectedLogJobId || jobLogLoading}
+                      onclick={() => void loadJobLog({ mode: "reset" })}
+                      >刷新</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      disabled={!jobLogContent}
+                      onclick={() => void copyJobLog()}>复制窗口</button
+                    >
+                    <label class="check-inline">
+                      <input
+                        type="checkbox"
+                        bind:checked={autoScrollLog}
+                        onchange={() => persistPrefs()}
+                      />
+                      自动滚底
+                    </label>
+                    {#if selectedLogJobId && selectedJob() && !jobIsActive(selectedJob()!)}
+                      <button
+                        class="btn btn-danger"
+                        type="button"
+                        disabled={busy}
+                        onclick={() => void deleteJobById(selectedLogJobId)}
+                      >
+                        删除此任务
+                      </button>
+                    {/if}
+                  </div>
+                  <p class="sub" data-testid="job-log-bound-hint">
+                    当前显示{logStreamLabel(
+                      selectedLogStream,
+                    )}的有界窗口。完整日志与原始输出可在「证据」中导出。
+                  </p>
+                  <pre
+                    class="log-pane"
+                    bind:this={logPaneEl}
+                    role="log"
+                    aria-live="polite"
+                    aria-label={logStreamLabel(
+                      selectedLogStream,
+                    )}>{jobLogContent ||
+                      "运行后日志会显示在这里。用上方标签切换不同任务的输出。"}</pre>
+                {:else if outputTab === "evidence"}
+                  <div class="actions" style="margin: 10px 0">
+                    <span class="pill muted">任务证据</span>
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="refresh-job-evidence"
+                      disabled={!selectedLogJobId || busy}
+                      onclick={() => void loadJobEvidence(true)}>刷新</button
+                    >
+                  </div>
+                  {#if !selectedLogJobId}
+                    <div class="empty">
+                      选择任务后查看标准输出、错误输出与原始证据。
+                    </div>
+                  {:else if jobArtifacts.length === 0}
+                    <div class="empty" data-testid="job-evidence-empty">
+                      暂无已提交的证据文件。失败或解析错误时仍可分页查看日志。
+                    </div>
+                  {:else}
+                    <div
+                      class="job-evidence-list"
+                      data-testid="job-evidence-list"
+                    >
+                      {#each jobArtifacts as artifact}
+                        <div
+                          class="job-evidence-item"
+                          data-testid={`job-evidence-${artifact.logical_name}`}
+                        >
+                          <div>
+                            <strong>{artifact.logical_name}</strong>
+                            <small>
+                              {artifact.size ?? "?"} 字节 · {sensitivityLabel(
+                                artifact.sensitivity,
+                              )} · {exportPolicyLabel(artifact.export_policy)}
+                            </small>
+                            <small class="mono"
+                              >{artifact.sha256 ?? "哈希待提交"}</small
                             >
-                          {/each}
-                          <td>
+                          </div>
+                          <div class="actions" style="margin: 0">
                             <button
                               class="btn btn-secondary"
                               type="button"
-                              data-testid={`result-source-${row.result_id}`}
-                              disabled={!row.source_artifact_id}
-                              onclick={() =>
-                                jumpToSourceArtifact(row.source_artifact_id)}
-                              >原始证据</button
+                              disabled={busy}
+                              onclick={() => void previewJobEvidence(artifact)}
+                              >有界预览</button
                             >
                             <button
                               class="btn btn-primary"
                               type="button"
-                              data-testid={`send-to-${row.result_id}`}
-                              onclick={() => openSendTo(row)}>发送到…</button
+                              data-testid={`export-job-evidence-${artifact.logical_name}`}
+                              disabled={busy ||
+                                artifact.export_policy ===
+                                  "exclude_credential" ||
+                                artifact.export_policy === "exclude_runtime"}
+                              onclick={() => void exportJobEvidence(artifact)}
+                              >导出</button
                             >
-                          </td>
-                        </tr>
+                          </div>
+                        </div>
                       {/each}
-                    </tbody>
-                  </table>
-                </div>
-              {/if}
-              {#if sendToSource}
-                <div class="send-to-panel" data-testid="send-to-panel">
-                  <h3>发送到兼容工具</h3>
-                  <p class="sub">
-                    来源 {sendToSource.sourceResultId} · URL
-                    {sendToTargetUrl(sendToSource)}
-                  </p>
-                  <div class="actions">
-                    {#each sendToTargets as target}
+                    </div>
+                  {/if}
+                  {#if jobEvidenceNotice}
+                    <pre
+                      class="log-pane"
+                      data-testid="job-evidence-notice">{jobEvidenceNotice}</pre>
+                  {/if}
+                  {#if lastJobExport}
+                    <p class="sub" data-testid="job-export-result">
+                      导出文件 {lastJobExport.export_name} · {lastJobExport.size}
+                      字节 · SHA-256 {lastJobExport.sha256}
+                    </p>
+                  {/if}
+                {:else}
+                  <div class="actions" style="margin: 10px 0">
+                    <span
+                      class="pill muted"
+                      data-testid="structured-result-status"
+                    >
+                      {#if !structuredResult}
+                        无结构化结果
+                      {:else if structuredResult.status === "parse_failed"}
+                        解析失败 · 原始证据仍可访问
+                      {:else if structuredResult.status === "pending"}
+                        结果导入中
+                      {:else if structuredResult.status === "empty"}
+                        无结果行
+                      {:else}
+                        {structuredResultKindLabel(structuredResult.kind)} · 解析器
+                        {structuredResult.parser_id ?? "内置"} · {resultRows.length}/{structuredResult
+                          .rows.length} 行
+                      {/if}
+                    </span>
+                    <input
+                      class="inline-search"
+                      data-testid="result-filter"
+                      aria-label="过滤结构化结果"
+                      placeholder="过滤结果…"
+                      bind:value={resultFilter}
+                    />
+                    <select
+                      class="inline-select"
+                      data-testid="result-sort-key"
+                      aria-label="结果排序字段"
+                      bind:value={resultSortKey}
+                    >
+                      {#each resultColumns as col}
+                        <option value={col.key}>{col.label}</option>
+                      {/each}
+                    </select>
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="result-sort-dir"
+                      onclick={() =>
+                        (resultSortDir =
+                          resultSortDir === "asc" ? "desc" : "asc")}
+                      >{resultSortDir === "asc" ? "升序" : "降序"}</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      disabled={!structuredResult}
+                      onclick={() => void loadJobResult(true)}>刷新</button
+                    >
+                    <button
+                      class="btn btn-secondary"
+                      type="button"
+                      data-testid="copy-result-tsv"
+                      disabled={resultRows.length === 0}
+                      onclick={() => void copyResultTsv()}
+                      >复制表格（TSV）</button
+                    >
+                  </div>
+                  {#if structuredResult?.parser_error}
+                    <div class="empty" data-testid="structured-parse-error">
+                      解析诊断：{structuredResult.parser_error}。请打开「证据」查看原始文件。
+                    </div>
+                  {/if}
+                  {#if !structuredResult || structuredResult.status === "empty"}
+                    <div class="empty">
+                      当前任务没有可展示的结构化结果。原始日志与证据文件仍可在其它标签访问。
+                    </div>
+                  {:else if structuredResult.status === "parse_failed"}
+                    <div class="empty">
+                      解析失败，结构化结果不可用。原始证据保留。
                       <button
                         class="btn btn-secondary"
                         type="button"
-                        data-testid={`send-to-target-${target.tool.id}`}
-                        onclick={() => applySendTo(target)}
-                        >{target.tool.name}</button
+                        onclick={() => {
+                          outputTab = "evidence";
+                          void loadJobEvidence();
+                        }}>打开证据</button
                       >
-                    {/each}
-                    <button
-                      class="btn btn-danger"
-                      type="button"
-                      data-testid="send-to-cancel"
-                      onclick={() => cancelSendTo()}>取消</button
+                    </div>
+                  {:else if resultRows.length === 0}
+                    <div class="empty">没有匹配过滤条件的行。</div>
+                  {:else}
+                    <div
+                      class="result-table-wrap"
+                      data-testid="structured-result-table"
                     >
-                  </div>
-                </div>
-              {/if}
-            {/if}
+                      <table class="result-table">
+                        <caption class="visually-hidden">结构化结果</caption>
+                        <thead>
+                          <tr>
+                            {#each resultColumns as col}
+                              <th>{col.label}</th>
+                            {/each}
+                            <th>定位</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each resultRows as row}
+                            <tr data-testid={`result-row-${row.result_id}`}>
+                              {#each resultColumns as col}
+                                <td title={row.cells[col.key] ?? ""}
+                                  >{row.cells[col.key] ?? ""}</td
+                                >
+                              {/each}
+                              <td>
+                                <button
+                                  class="btn btn-secondary"
+                                  type="button"
+                                  data-testid={`result-source-${row.result_id}`}
+                                  disabled={!row.source_artifact_id}
+                                  onclick={() =>
+                                    jumpToSourceArtifact(
+                                      row.source_artifact_id,
+                                    )}>原始证据</button
+                                >
+                                {#if row.cells.url}
+                                  <button
+                                    class="btn btn-primary"
+                                    type="button"
+                                    data-testid={`send-to-${row.result_id}`}
+                                    onclick={() => openSendTo(row)}
+                                    >发送到…</button
+                                  >
+                                {/if}
+                              </td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                    </div>
+                  {/if}
+                  {#if sendToSource}
+                    <div class="send-to-panel" data-testid="send-to-panel">
+                      <h3>发送到兼容工具</h3>
+                      <p class="sub">
+                        来源 {sendToSource.sourceResultId} · URL
+                        {sendToTargetUrl(sendToSource)}
+                      </p>
+                      <div class="actions">
+                        {#each sendToTargets as target}
+                          <button
+                            class="btn btn-secondary"
+                            type="button"
+                            data-testid={`send-to-target-${target.tool.id}`}
+                            onclick={() => applySendTo(target)}
+                            >{target.tool.name}</button
+                          >
+                        {/each}
+                        <button
+                          class="btn btn-danger"
+                          type="button"
+                          data-testid="send-to-cancel"
+                          onclick={() => cancelSendTo()}>取消</button
+                        >
+                      </div>
+                    </div>
+                  {/if}
+                {/if}
+              </div>
+            </section>
           </section>
         </div>
       {:else if activeNav === "jobs"}
@@ -2419,6 +3050,7 @@
                 {#if jobToolOptions.length > 0}
                   <select
                     class="inline-select"
+                    aria-label="按工具筛选任务"
                     bind:value={jobFilterToolId}
                     onchange={() => persistPrefs()}
                   >
@@ -2463,10 +3095,13 @@
                     <button
                       class="job-item"
                       type="button"
+                      aria-pressed={selectedLogJobId === item.job.job_id}
                       onclick={() => void selectJobLog(item)}
                     >
                       <strong
-                        >{item.tool_id} · {item.job.execution_status}</strong
+                        >{item.tool_id} · {executionStatusLabel(
+                          item.job.execution_status,
+                        )}</strong
                       >
                       <small>{item.command_preview}</small>
                       {#if item.io.schema_version > 0}
@@ -2482,6 +3117,7 @@
                         class="btn btn-danger job-delete"
                         type="button"
                         disabled={busy}
+                        aria-label={`停止 ${jobTabLabel(item)}`}
                         onclick={() => {
                           selectedLogJobId = item.job.job_id;
                           void cancelSelectedJob();
@@ -2492,6 +3128,7 @@
                         class="btn btn-danger job-delete"
                         type="button"
                         disabled={busy}
+                        aria-label={`删除 ${jobTabLabel(item)}`}
                         onclick={() => void deleteJobById(item.job.job_id)}
                         >删除</button
                       >
@@ -2516,19 +3153,25 @@
                 class="btn btn-secondary"
                 type="button"
                 disabled={!selectedLogJobId || jobLogLoading}
+                aria-pressed={selectedLogStream === "stdout"}
+                aria-label="查看标准输出 stdout"
+                title="stdout"
                 onclick={() => {
                   selectedLogStream = "stdout";
                   void loadJobLog({ mode: "reset" });
-                }}>stdout</button
+                }}>标准输出</button
               >
               <button
                 class="btn btn-secondary"
                 type="button"
                 disabled={!selectedLogJobId || jobLogLoading}
+                aria-pressed={selectedLogStream === "stderr"}
+                aria-label="查看错误输出 stderr"
+                title="stderr"
                 onclick={() => {
                   selectedLogStream = "stderr";
                   void loadJobLog({ mode: "reset" });
-                }}>stderr</button
+                }}>错误输出</button
               >
               <button
                 class="btn btn-secondary"
@@ -2575,8 +3218,13 @@
                 }}>打开证据</button
               >
             </div>
-            <p class="sub">界面仅保留有界日志窗口。完整文件请导出 Artifact。</p>
-            <pre class="log-pane" bind:this={logPaneEl}>{jobLogContent ||
+            <p class="sub">界面保留有界日志窗口。完整文件可从证据列表导出。</p>
+            <pre
+              class="log-pane"
+              bind:this={logPaneEl}
+              role="log"
+              aria-live="polite"
+              aria-label={logStreamLabel(selectedLogStream)}>{jobLogContent ||
                 "选择任务后显示日志。"}</pre>
             {#if jobArtifacts.length > 0}
               <div class="job-evidence-list" style="margin-top: 12px">
@@ -2584,9 +3232,11 @@
                   <div class="job-evidence-item">
                     <div>
                       <strong>{artifact.logical_name}</strong>
-                      <small
-                        >{artifact.size ?? "?"} · {artifact.export_policy}</small
-                      >
+                      <small>
+                        {artifact.size ?? "?"} 字节 · {exportPolicyLabel(
+                          artifact.export_policy,
+                        )}
+                      </small>
                     </div>
                     <button
                       class="btn btn-primary"

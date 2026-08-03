@@ -12,7 +12,11 @@ function field(id: string): CatalogFormFieldDto {
     default_value: "",
     from: "",
     options: [],
+    flag: "",
     hint: "",
+    examples: [],
+    option_details: [],
+    recommend_from: [],
     sensitive: false,
   };
 }
@@ -45,6 +49,7 @@ const ffuf: CatalogToolDto = {
       fields: ["threads", "rate", "recursion"],
     },
   ],
+  relations: [],
   risk_level: "l2",
   installation: {
     distribution: "hybrid",

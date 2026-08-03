@@ -24,8 +24,31 @@ pub struct CatalogFormFieldDto {
     pub default_value: String,
     pub from: String,
     pub options: Vec<String>,
+    pub flag: String,
     pub hint: String,
+    pub examples: Vec<String>,
+    pub option_details: Vec<CatalogFormOptionDto>,
+    pub recommend_from: Vec<String>,
     pub sensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CatalogFormOptionDto {
+    pub value: String,
+    pub label: String,
+    pub summary: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CatalogFormRelationDto {
+    pub kind: String,
+    pub field: String,
+    pub equals: String,
+    pub other: String,
+    pub other_equals: String,
+    pub severity: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -87,11 +110,26 @@ pub struct CatalogToolDiagnosticDto {
     pub binary_path: String,
     pub detected_version: String,
     pub checks: Vec<CatalogDiagnosticCheckDto>,
+    pub help: CatalogHelpSnapshotDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CatalogHelpSnapshotDto {
+    pub available: bool,
+    pub cached: bool,
+    pub command: String,
+    pub detected_version: String,
+    pub binary_sha256: String,
+    pub captured_at_epoch_secs: Option<u64>,
+    pub content: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct DiagnoseCatalogToolRequest {
     pub tool_id: String,
+    #[serde(default)]
+    pub refresh_help: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -105,6 +143,7 @@ pub struct CatalogToolDto {
     pub aliases: Vec<String>,
     pub presets: Vec<CatalogPresetDto>,
     pub field_groups: Vec<CatalogFieldGroupDto>,
+    pub relations: Vec<CatalogFormRelationDto>,
     pub risk_level: String,
     pub installation: CatalogInstallationDto,
     pub io: ToolIoContract,
@@ -134,6 +173,7 @@ pub struct WordlistDto {
 pub struct CatalogSnapshot {
     pub tools_root: String,
     pub wordlists_root: String,
+    pub user_catalog_root: String,
     pub categories: Vec<CatalogCategoryDto>,
     pub tools: Vec<CatalogToolDto>,
     pub wordlists: Vec<WordlistDto>,

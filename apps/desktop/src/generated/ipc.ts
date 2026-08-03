@@ -172,7 +172,13 @@ export type CatalogCategoryDto = { id: string, name: string, summary: string, or
 
 export type CatalogFieldGroupDto = { id: string, name: string, fields: Array<string>, };
 
-export type CatalogFormFieldDto = { id: string, field_type: string, label: string, required: boolean, default_value: string, from: string, options: Array<string>, hint: string, sensitive: boolean, };
+export type CatalogFormFieldDto = { id: string, field_type: string, label: string, required: boolean, default_value: string, from: string, options: Array<string>, flag: string, hint: string, examples: Array<string>, option_details: Array<CatalogFormOptionDto>, recommend_from: Array<string>, sensitive: boolean, };
+
+export type CatalogFormOptionDto = { value: string, label: string, summary: string, tags: Array<string>, };
+
+export type CatalogFormRelationDto = { kind: string, field: string, equals: string, other: string, other_equals: string, severity: string, message: string, };
+
+export type CatalogHelpSnapshotDto = { available: boolean, cached: boolean, command: string, detected_version: string, binary_sha256: string, captured_at_epoch_secs: bigint | null, content: string, detail: string, };
 
 export type CatalogInstallationDto = { distribution: string, license: string, homepage: string, version: string, health_strategy: string, runtime: string, version_args: Array<string>, install_command: string, path_fix: string, wordlist_source: string, wordlist_install_command: string, };
 
@@ -180,19 +186,19 @@ export type CatalogDiagnosticStatus = "usable" | "missing" | "version_abnormal" 
 
 export type CatalogDiagnosticCheckDto = { id: string, label: string, status: CatalogDiagnosticStatus, detail: string, source: string, fix: string, copy_value: string, };
 
-export type CatalogToolDiagnosticDto = { tool_id: string, status: CatalogDiagnosticStatus, binary_path: string, detected_version: string, checks: Array<CatalogDiagnosticCheckDto>, };
+export type CatalogToolDiagnosticDto = { tool_id: string, status: CatalogDiagnosticStatus, binary_path: string, detected_version: string, checks: Array<CatalogDiagnosticCheckDto>, help: CatalogHelpSnapshotDto, };
 
-export type DiagnoseCatalogToolRequest = { tool_id: string, };
+export type DiagnoseCatalogToolRequest = { tool_id: string, refresh_help: boolean, };
 
 export type CatalogPresetDto = { id: string, name: string, core_fields: Array<string>, defaults: { [key in string]: string }, };
 
 export type CatalogRunPreview = { command_preview: string, scope: string, rate_per_second: number | null, estimated_request_count: number | null, risk_level: RiskLevel, };
 
-export type CatalogToolDto = { id: string, name: string, category: string, category_name: string, tier: string, capabilities: Array<string>, aliases: Array<string>, presets: Array<CatalogPresetDto>, field_groups: Array<CatalogFieldGroupDto>, risk_level: string, installation: CatalogInstallationDto, io: ToolIoContract, summary: string, usage: string, mode: string, featured: boolean, available: boolean, binary_path: string, detail: string, icon: string, accent: string, fields: Array<CatalogFormFieldDto>, needs_target: boolean, };
+export type CatalogToolDto = { id: string, name: string, category: string, category_name: string, tier: string, capabilities: Array<string>, aliases: Array<string>, presets: Array<CatalogPresetDto>, field_groups: Array<CatalogFieldGroupDto>, relations: Array<CatalogFormRelationDto>, risk_level: string, installation: CatalogInstallationDto, io: ToolIoContract, summary: string, usage: string, mode: string, featured: boolean, available: boolean, binary_path: string, detail: string, icon: string, accent: string, fields: Array<CatalogFormFieldDto>, needs_target: boolean, };
 
 export type WordlistDto = { id: string, name: string, path: string, available: boolean, tags: Array<string>, };
 
-export type CatalogSnapshot = { tools_root: string, wordlists_root: string, categories: Array<CatalogCategoryDto>, tools: Array<CatalogToolDto>, wordlists: Array<WordlistDto>, };
+export type CatalogSnapshot = { tools_root: string, wordlists_root: string, user_catalog_root: string, categories: Array<CatalogCategoryDto>, tools: Array<CatalogToolDto>, wordlists: Array<WordlistDto>, };
 
 export type RunCatalogToolRequest = { project_id: ProjectId, tool_id: string, target_url: string, form: { [key in string]: string }, confirm_sensitive_argv: boolean, confirm_l2: boolean, l3_confirmation: string | null, 
 /**

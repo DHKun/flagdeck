@@ -48,6 +48,8 @@ use tauri::{AppHandle, Emitter, Manager, State, Url, WebviewUrl, WebviewWindow};
 
 const SECURITY_PROBE_ENV: &str = "FLAGDECK_SECURITY_PROBE";
 const WORKSPACES_ROOT_ENV: &str = "FLAGDECK_WORKSPACES_ROOT";
+#[cfg(target_os = "linux")]
+const NVIDIA_EXPLICIT_SYNC_ENV: &str = "__NV_DISABLE_EXPLICIT_SYNC";
 
 fn runtime_error() -> CommandError {
     CommandError {
@@ -913,7 +915,7 @@ fn configure_linux_webview(window: &WebviewWindow) -> tauri::Result<()> {
 
         let inner = webview.inner();
         if let Some(context) = inner.context() {
-            context.set_cache_model(CacheModel::DocumentViewer);
+            context.set_cache_model(CacheModel::WebBrowser);
         }
         if let Some(settings) = inner.settings() {
             settings.set_enable_dns_prefetching(false);
@@ -926,7 +928,7 @@ fn configure_linux_webview(window: &WebviewWindow) -> tauri::Result<()> {
             settings.set_enable_media_stream(false);
             settings.set_enable_mediasource(false);
             settings.set_enable_offline_web_application_cache(false);
-            settings.set_enable_page_cache(false);
+            settings.set_enable_page_cache(true);
             settings.set_enable_webaudio(false);
             settings.set_enable_webgl(false);
         }
@@ -1009,17 +1011,14 @@ fn configure_private_process() -> Result<(), &'static str> {
 
 #[cfg(target_os = "linux")]
 fn configure_linux_process() -> Result<(), &'static str> {
-    for (name, value) in [
-        ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
-        ("MALLOC_ARENA_MAX", "1"),
-        ("JSC_useJIT", "false"),
-        ("JSC_useDFGJIT", "false"),
-        ("JSC_useFTLJIT", "false"),
-    ] {
-        webkit2gtk::glib::setenv(name, value, false)
-            .map_err(|_| "failed to configure the Linux WebKit process")?;
+    if env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::path::Path::new("/proc/driver/nvidia/version").is_file()
+    {
+        webkit2gtk::glib::setenv(NVIDIA_EXPLICIT_SYNC_ENV, "1", false)
+            .map_err(|_| "failed to configure NVIDIA Wayland compatibility")?;
     }
-    Ok(())
+    webkit2gtk::glib::setenv("MALLOC_ARENA_MAX", "1", false)
+        .map_err(|_| "failed to configure the Linux WebKit process")
 }
 
 #[cfg(not(target_os = "linux"))]

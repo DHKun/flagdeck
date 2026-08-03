@@ -13,6 +13,7 @@ Payload / 攻击链 / 编解码均在客户端窗口内操作。
 【注意】
 • 需要图形桌面会话（DISPLAY / XAUTHORITY）
 • 包装脚本默认 APPIMAGE_EXTRACT_AND_RUN=1（不依赖 FUSE）
+• FlagDeck 固定使用 X11 软件渲染参数，避开 Wayland/Vulkan 启动冲突
 • 仅在授权靶场 / CTF 环境使用
 """
 mode = "external_launch"
@@ -35,7 +36,11 @@ accent = "indigo"
 fields = []
 
 [argv]
-template = []
+template = [
+  "--ozone-platform=x11",
+  "--disable-gpu",
+  "--disable-gpu-compositing",
+]
 
 [parser]
 kind = "none"

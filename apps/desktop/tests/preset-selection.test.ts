@@ -23,6 +23,7 @@ function tool(presetIds: string[]): CatalogToolDto {
       defaults: {},
     })),
     field_groups: [],
+    relations: [],
     risk_level: "L1",
     installation: {} as CatalogToolDto["installation"],
     io: {} as CatalogToolDto["io"],

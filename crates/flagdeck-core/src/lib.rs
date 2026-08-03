@@ -20,9 +20,10 @@ use runner::JobRunner;
 
 pub use catalog_api::{
     CatalogCategoryDto, CatalogDiagnosticCheckDto, CatalogDiagnosticStatus, CatalogFieldGroupDto,
-    CatalogFormFieldDto, CatalogInstallationDto, CatalogPresetDto, CatalogRunPreview,
-    CatalogSnapshot, CatalogToolDiagnosticDto, CatalogToolDto, DiagnoseCatalogToolRequest,
-    EnsureTargetRequest, PreviewCatalogToolRequest, RunCatalogToolRequest, WordlistDto,
+    CatalogFormFieldDto, CatalogFormOptionDto, CatalogFormRelationDto, CatalogHelpSnapshotDto,
+    CatalogInstallationDto, CatalogPresetDto, CatalogRunPreview, CatalogSnapshot,
+    CatalogToolDiagnosticDto, CatalogToolDto, DiagnoseCatalogToolRequest, EnsureTargetRequest,
+    PreviewCatalogToolRequest, RunCatalogToolRequest, WordlistDto,
 };
 pub use external::{ExternalLauncherHealthDto, ExternalLauncherId, LaunchExternalRequest};
 pub use http::*;
@@ -1580,6 +1581,8 @@ impl CoreService {
             let raw_artifact = artifacts.iter().find(|artifact| {
                 let name = artifact.logical_name.as_str();
                 name.contains("output")
+                    || (parser_id.as_deref().is_some_and(|id| id.contains("sqlmap"))
+                        && name.ends_with("stdout.log"))
                     || Path::new(name).extension().is_some_and(|ext| {
                         ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("txt")
                     })
@@ -4507,6 +4510,9 @@ pub fn typescript_declarations() -> String {
         declaration!(CatalogCategoryDto),
         declaration!(CatalogFieldGroupDto),
         declaration!(CatalogFormFieldDto),
+        declaration!(CatalogFormOptionDto),
+        declaration!(CatalogFormRelationDto),
+        declaration!(CatalogHelpSnapshotDto),
         declaration!(CatalogInstallationDto),
         declaration!(CatalogDiagnosticStatus),
         declaration!(CatalogDiagnosticCheckDto),
@@ -7091,7 +7097,7 @@ template = ["--", "{url}", "{secret}"]
             })
             .unwrap();
         let denied = RunCatalogToolRequest {
-            project_id: project.project_id,
+            project_id: project.project_id.clone(),
             tool_id: "ffuf".to_owned(),
             target_url: "http://127.0.0.1:9/".to_owned(),
             form: BTreeMap::from([
@@ -7112,11 +7118,37 @@ template = ["--", "{url}", "{secret}"]
                 flagdeck_domain::RiskLevel::L3
             ))
         ));
-        core.start_catalog_tool(RunCatalogToolRequest {
-            l3_confirmation: Some("RUN CATALOG ffuf".to_owned()),
-            ..denied
-        })
-        .expect("the exact L3 phrase should allow the catalog run");
+        let started = core
+            .start_catalog_tool(RunCatalogToolRequest {
+                l3_confirmation: Some("RUN CATALOG ffuf".to_owned()),
+                ..denied
+            })
+            .expect("the exact L3 phrase should allow the catalog run");
+        let mut terminal = None;
+        for _ in 0..100 {
+            let page = core
+                .list_jobs(&JobPageRequest {
+                    project_id: project.project_id.clone(),
+                    cursor: None,
+                    limit: 10,
+                })
+                .unwrap();
+            let stored = page
+                .items
+                .into_iter()
+                .find(|item| item.job.job_id == started.job.job_id)
+                .expect("accepted L3 run must be persisted as a job");
+            if !matches!(
+                stored.job.execution_status,
+                ExecutionStatus::Queued | ExecutionStatus::Starting | ExecutionStatus::Running
+            ) {
+                terminal = Some(stored);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let terminal = terminal.expect("accepted L3 run must reach a terminal state");
+        assert_eq!(terminal.job.execution_status, ExecutionStatus::Succeeded);
 
         let audit = core.audit_events_for_test(10);
         assert!(audit.iter().any(|event| {

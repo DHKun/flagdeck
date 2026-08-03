@@ -119,6 +119,92 @@ template = ["--help"]
     .unwrap();
 }
 
+#[tokio::test]
+async fn external_managed_catalog_run_uses_private_job_logs_outside_tool_cwd() {
+    let temporary = tempdir().unwrap();
+    let catalog_root = temporary.path().join("catalog");
+    let tools_dir = catalog_root.join("tools");
+    let tool_cwd = temporary.path().join("tool-cwd");
+    fs::create_dir_all(&tools_dir).unwrap();
+    fs::create_dir(&tool_cwd).unwrap();
+    fs::write(
+        tools_dir.join("local-web.toml"),
+        format!(
+            r#"
+id = "local-web"
+name = "local-web"
+category = "gui"
+mode = "external_launch"
+detach = false
+cwd = "{}"
+
+[binary]
+path = "/usr/bin/true"
+resolve = ["path"]
+
+[argv]
+template = ["--help"]
+"#,
+            tool_cwd.display()
+        ),
+    )
+    .unwrap();
+    let core = Arc::new(CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    ));
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "external-managed-private-logs".to_owned(),
+        })
+        .unwrap();
+    let started = core
+        .start_catalog_tool(RunCatalogToolRequest {
+            project_id: project.project_id.clone(),
+            tool_id: "local-web".to_owned(),
+            target_url: String::new(),
+            form: BTreeMap::new(),
+            confirm_sensitive_argv: false,
+            confirm_l2: false,
+            l3_confirmation: Some("RUN CATALOG local-web".to_owned()),
+            source_job_id: None,
+            source_result_id: None,
+            source_artifact_id: None,
+        })
+        .expect("external managed tool should create a job");
+
+    let mut terminal = None;
+    for _ in 0..100 {
+        let page = core
+            .list_jobs(&JobPageRequest {
+                project_id: project.project_id.clone(),
+                cursor: None,
+                limit: 10,
+            })
+            .unwrap();
+        let stored = page
+            .items
+            .into_iter()
+            .find(|item| item.job.job_id == started.job.job_id)
+            .expect("created job must be visible in history");
+        if !matches!(
+            stored.job.execution_status,
+            ExecutionStatus::Queued | ExecutionStatus::Starting | ExecutionStatus::Running
+        ) {
+            terminal = Some(stored);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let terminal = terminal.expect("fake external tool must finish within two seconds");
+    assert_eq!(terminal.job.execution_status, ExecutionStatus::Succeeded);
+    assert!(terminal.command_preview.contains("/usr/bin/true"));
+}
+
 #[test]
 fn catalog_diagnostic_distinguishes_all_actionable_health_states() {
     let temporary = tempdir().unwrap();
@@ -128,6 +214,7 @@ fn catalog_diagnostic_distinguishes_all_actionable_health_states() {
     let diagnose = |core: &CoreService| {
         core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "ffuf".to_owned(),
+            refresh_help: false,
         })
         .unwrap()
     };
@@ -235,6 +322,7 @@ template = ["--help"]
     let diagnostic = core
         .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "legacy".to_owned(),
+            refresh_help: false,
         })
         .unwrap();
 
@@ -1637,6 +1725,7 @@ fn gobuster_and_arjun_preview_and_diagnostic_are_available() {
     let gobuster_diag = core
         .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "gobuster".to_owned(),
+            refresh_help: false,
         })
         .expect("gobuster diagnostic");
     assert_eq!(gobuster_diag.tool_id, "gobuster");
@@ -1652,6 +1741,7 @@ fn gobuster_and_arjun_preview_and_diagnostic_are_available() {
     let arjun_diag = core
         .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "arjun".to_owned(),
+            refresh_help: false,
         })
         .expect("arjun diagnostic");
     assert_eq!(arjun_diag.tool_id, "arjun");
@@ -1796,6 +1886,7 @@ fn curl_and_wafw00f_preview_redacts_sensitive_and_diagnoses() {
     let curl_diag = core
         .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "curl".to_owned(),
+            refresh_help: false,
         })
         .expect("curl diagnostic");
     assert_eq!(curl_diag.tool_id, "curl");
@@ -1804,6 +1895,7 @@ fn curl_and_wafw00f_preview_redacts_sensitive_and_diagnoses() {
     let waf_diag = core
         .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "wafw00f".to_owned(),
+            refresh_help: false,
         })
         .expect("wafw00f diagnostic");
     assert_eq!(waf_diag.tool_id, "wafw00f");
@@ -1907,7 +1999,8 @@ fn dddd_and_fscan_preview_and_diagnostic() {
 
     assert_eq!(
         core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
-            tool_id: "dddd".to_owned()
+            tool_id: "dddd".to_owned(),
+            refresh_help: false,
         })
         .unwrap()
         .tool_id,
@@ -1915,7 +2008,8 @@ fn dddd_and_fscan_preview_and_diagnostic() {
     );
     assert_eq!(
         core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
-            tool_id: "fscan".to_owned()
+            tool_id: "fscan".to_owned(),
+            refresh_help: false,
         })
         .unwrap()
         .tool_id,
@@ -2021,7 +2115,8 @@ fn sqlmap_preview_is_l3_and_githacker_preview_works() {
 
     assert_eq!(
         core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
-            tool_id: "sqlmap".to_owned()
+            tool_id: "sqlmap".to_owned(),
+            refresh_help: false,
         })
         .unwrap()
         .tool_id,
@@ -2029,7 +2124,8 @@ fn sqlmap_preview_is_l3_and_githacker_preview_works() {
     );
     assert_eq!(
         core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
-            tool_id: "githacker".to_owned()
+            tool_id: "githacker".to_owned(),
+            refresh_help: false,
         })
         .unwrap()
         .tool_id,
@@ -2144,6 +2240,7 @@ fn php_filter_chain_preview_is_l1_and_diagnostic_is_available() {
     let diagnostic = core
         .diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "php-filter-chain".to_owned(),
+            refresh_help: false,
         })
         .expect("php-filter-chain diagnostic");
     assert_eq!(diagnostic.tool_id, "php-filter-chain");

@@ -1,6 +1,6 @@
 //! Declarative tool catalog: load TOML manifests and prepare managed commands.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::Read;
@@ -118,12 +118,35 @@ pub struct FormField {
     /// For type=select: dropdown choices.
     #[serde(default)]
     pub options: Vec<String>,
+    /// CLI flag shown beside the field label, for example `--tamper`.
+    #[serde(default)]
+    pub flag: String,
     /// Short helper under the field.
     #[serde(default)]
     pub hint: String,
+    /// Concrete values that help the user fill the field without opening external docs.
+    #[serde(default)]
+    pub examples: Vec<String>,
+    /// Rich metadata for select and multiselect values.
+    #[serde(default)]
+    pub option_details: Vec<FormOptionDetail>,
+    /// Field ids whose values are matched against option tags for local recommendations.
+    #[serde(default)]
+    pub recommend_from: Vec<String>,
     /// Values that must stay out of preferences, logs, and persisted command previews.
     #[serde(default)]
     pub sensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FormOptionDetail {
+    pub value: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -147,6 +170,45 @@ pub struct CatalogFieldGroup {
     pub id: String,
     pub name: String,
     pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CatalogFormRelation {
+    /// `requires` or `conflicts`.
+    pub kind: String,
+    pub field: String,
+    #[serde(default)]
+    pub equals: String,
+    pub other: String,
+    #[serde(default)]
+    pub other_equals: String,
+    /// `error` blocks execution; `warning` requires a UI acknowledgement.
+    #[serde(default = "default_relation_severity")]
+    pub severity: String,
+    pub message: String,
+}
+
+fn default_relation_severity() -> String {
+    "error".to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CatalogHelpSpec {
+    /// Explicit side-effect-reviewed argv used to obtain version-matched help.
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_help_timeout")]
+    pub timeout_millis: u64,
+    #[serde(default = "default_help_max_bytes")]
+    pub max_bytes: usize,
+}
+
+fn default_help_timeout() -> u64 {
+    5_000
+}
+
+fn default_help_max_bytes() -> usize {
+    256 * 1024
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -269,6 +331,8 @@ pub struct CatalogToolManifest {
     pub presets: Vec<CatalogPreset>,
     #[serde(default)]
     pub field_groups: Vec<CatalogFieldGroup>,
+    #[serde(default)]
+    pub relations: Vec<CatalogFormRelation>,
     #[serde(default = "default_catalog_risk_level")]
     pub risk_level: String,
     #[serde(default)]
@@ -307,6 +371,8 @@ pub struct CatalogToolManifest {
     #[serde(default)]
     pub parser: ParserSpec,
     #[serde(default)]
+    pub help: CatalogHelpSpec,
+    #[serde(default)]
     pub ui: UiSpec,
     #[serde(default)]
     pub limits: LimitsSpec,
@@ -323,6 +389,7 @@ pub struct CatalogToolView {
     pub aliases: Vec<String>,
     pub presets: Vec<CatalogPreset>,
     pub field_groups: Vec<CatalogFieldGroup>,
+    pub relations: Vec<CatalogFormRelation>,
     pub risk_level: String,
     pub installation: CatalogInstallation,
     pub io: ToolIoContract,
@@ -336,6 +403,7 @@ pub struct CatalogToolView {
     pub icon: String,
     pub accent: String,
     pub fields: Vec<FormField>,
+    pub help: CatalogHelpSpec,
     pub needs_target: bool,
 }
 
@@ -353,6 +421,8 @@ pub struct CatalogPaths {
     pub tools_root: PathBuf,
     pub wordlists_root: PathBuf,
     pub catalog_root: PathBuf,
+    pub user_catalog_root: PathBuf,
+    pub cache_root: PathBuf,
 }
 
 impl CatalogPaths {
@@ -364,12 +434,42 @@ impl CatalogPaths {
             .map_or_else(|| tools_root.join("Wordlists"), PathBuf::from);
         let catalog_root =
             env::var_os("FLAGDECK_CATALOG_ROOT").map_or_else(default_catalog_root, PathBuf::from);
+        let user_catalog_root = env::var_os("FLAGDECK_USER_CATALOG_ROOT")
+            .map_or_else(default_user_catalog_root, PathBuf::from);
+        let cache_root =
+            env::var_os("FLAGDECK_CACHE_ROOT").map_or_else(default_cache_root, PathBuf::from);
         Self {
             tools_root,
             wordlists_root,
             catalog_root,
+            user_catalog_root,
+            cache_root,
         }
     }
+}
+
+fn default_user_catalog_root() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME").map_or_else(
+        || {
+            env::var_os("HOME").map_or_else(
+                || PathBuf::from("config/flagdeck/catalog"),
+                |home| PathBuf::from(home).join(".config/flagdeck/catalog"),
+            )
+        },
+        |root| PathBuf::from(root).join("flagdeck/catalog"),
+    )
+}
+
+fn default_cache_root() -> PathBuf {
+    env::var_os("XDG_CACHE_HOME").map_or_else(
+        || {
+            env::var_os("HOME").map_or_else(
+                || PathBuf::from(".cache/flagdeck"),
+                |home| PathBuf::from(home).join(".cache/flagdeck"),
+            )
+        },
+        |root| PathBuf::from(root).join("flagdeck"),
+    )
 }
 
 fn default_catalog_root() -> PathBuf {
@@ -409,7 +509,7 @@ impl ToolCatalog {
     pub fn load(paths: CatalogPaths) -> Result<Self, CatalogError> {
         let categories = load_categories(&paths.catalog_root)?;
         let wordlists = load_wordlists(&paths.catalog_root)?;
-        let tools = load_tools(&paths.catalog_root)?;
+        let tools = load_tools(&paths.catalog_root, &paths.user_catalog_root)?;
         Ok(Self {
             paths,
             categories,
@@ -485,6 +585,7 @@ impl ToolCatalog {
                     aliases: tool.aliases.clone(),
                     presets: tool.presets.clone(),
                     field_groups: tool.field_groups.clone(),
+                    relations: tool.relations.clone(),
                     risk_level: catalog_risk_level_name(effective_catalog_risk_level(tool))
                         .to_owned(),
                     installation: tool.installation.clone(),
@@ -502,6 +603,7 @@ impl ToolCatalog {
                     icon: tool.ui.icon.clone(),
                     accent: tool.ui.accent.clone(),
                     fields: tool.form.fields.clone(),
+                    help: tool.help.clone(),
                     needs_target: tool_needs_target(tool),
                 }
             })
@@ -628,15 +730,56 @@ fn load_wordlists(root: &Path) -> Result<Vec<WordlistShortcut>, CatalogError> {
     Ok(file.wordlist)
 }
 
-fn load_tools(root: &Path) -> Result<Vec<CatalogToolManifest>, CatalogError> {
-    let tools_dir = root.join("tools");
-    if !tools_dir.is_dir() {
-        return Err(CatalogError::Invalid(format!(
-            "missing tools directory at {}",
-            tools_dir.display()
-        )));
+fn load_tools(root: &Path, user_root: &Path) -> Result<Vec<CatalogToolManifest>, CatalogError> {
+    let mut definitions = BTreeMap::<String, (PathBuf, toml::Value)>::new();
+    for (path, value) in load_tool_values(&root.join("tools"), true)? {
+        let id = tool_value_id(&path, &value)?;
+        if definitions
+            .insert(id.clone(), (path.clone(), value))
+            .is_some()
+        {
+            return Err(CatalogError::Invalid(format!(
+                "{} duplicates tool id {id}",
+                path.display()
+            )));
+        }
     }
-    let mut tools = Vec::new();
+    for (path, overlay) in load_tool_values(&user_root.join("tools"), false)? {
+        let id = tool_value_id(&path, &overlay)?;
+        if let Some((source, base)) = definitions.get_mut(&id) {
+            merge_toml_value(base, overlay);
+            *source = path;
+        } else {
+            definitions.insert(id, (path, overlay));
+        }
+    }
+
+    let mut tools = Vec::with_capacity(definitions.len());
+    for (_, (path, value)) in definitions {
+        let tool: CatalogToolManifest = value
+            .try_into()
+            .map_err(|error| CatalogError::Invalid(format!("{}: {error}", path.display())))?;
+        validate_tool_manifest(&path, &tool)?;
+        tools.push(tool);
+    }
+    tools.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(tools)
+}
+
+fn load_tool_values(
+    tools_dir: &Path,
+    required: bool,
+) -> Result<Vec<(PathBuf, toml::Value)>, CatalogError> {
+    if !tools_dir.is_dir() {
+        if required {
+            return Err(CatalogError::Invalid(format!(
+                "missing tools directory at {}",
+                tools_dir.display()
+            )));
+        }
+        return Ok(Vec::new());
+    }
+    let mut values = Vec::new();
     for entry in fs::read_dir(tools_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -644,57 +787,192 @@ fn load_tools(root: &Path) -> Result<Vec<CatalogToolManifest>, CatalogError> {
             continue;
         }
         let text = fs::read_to_string(&path)?;
-        let tool: CatalogToolManifest = toml::from_str(&text)
+        let value = toml::from_str(&text)
             .map_err(|error| CatalogError::Invalid(format!("{}: {error}", path.display())))?;
-        if tool.id.is_empty() || tool.name.is_empty() {
-            return Err(CatalogError::Invalid(format!(
-                "{} missing required fields",
-                path.display()
-            )));
-        }
-        if !matches!(tool.io.schema_version, 0 | 1) {
-            return Err(CatalogError::Invalid(format!(
-                "{} unsupported I/O schema version {}",
-                path.display(),
-                tool.io.schema_version
-            )));
-        }
-        if tool.io.schema_version == 0
-            && (!tool.io.inputs.is_empty() || !tool.io.outputs.is_empty())
-        {
-            return Err(CatalogError::Invalid(format!(
-                "{} typed I/O requires schema version 1",
-                path.display()
-            )));
-        }
-        if tool.io.schema_version == 1
-            && tool.io.inputs.iter().any(|input| {
-                input.id.is_empty()
-                    || input.field.is_empty()
-                    || !tool.form.fields.iter().any(|field| field.id == input.field)
-            })
-        {
-            return Err(CatalogError::Invalid(format!(
-                "{} typed I/O input references an unknown field",
-                path.display()
-            )));
-        }
-        // external_launch may have empty argv (binary is the full entrypoint).
-        // embedded_cli needs at least one of template / optional / suffix so prepare can build argv.
-        if tool.mode == ToolMode::EmbeddedCli
-            && tool.argv.template.is_empty()
-            && tool.argv.optional.is_empty()
-            && tool.argv.suffix.is_empty()
-        {
-            return Err(CatalogError::Invalid(format!(
-                "{} embedded_cli requires argv.template, optional, or suffix",
-                path.display()
-            )));
-        }
-        tools.push(tool);
+        values.push((path, value));
     }
-    tools.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(tools)
+    values.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(values)
+}
+
+fn tool_value_id(path: &Path, value: &toml::Value) -> Result<String, CatalogError> {
+    value
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .filter(|id| is_safe_identifier(id))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            CatalogError::Invalid(format!(
+                "{} has an invalid or missing tool id",
+                path.display()
+            ))
+        })
+}
+
+fn is_safe_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn merge_toml_value(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
+            for (key, value) in overlay {
+                if let Some(existing) = base.get_mut(&key) {
+                    merge_toml_value(existing, value);
+                } else {
+                    base.insert(key, value);
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
+
+fn validate_tool_manifest(path: &Path, tool: &CatalogToolManifest) -> Result<(), CatalogError> {
+    if tool.id.is_empty() || tool.name.is_empty() {
+        return Err(CatalogError::Invalid(format!(
+            "{} missing required fields",
+            path.display()
+        )));
+    }
+    let field_ids = tool
+        .form
+        .fields
+        .iter()
+        .map(|field| field.id.as_str())
+        .collect::<BTreeSet<_>>();
+    if field_ids.len() != tool.form.fields.len()
+        || field_ids.iter().any(|field| !is_safe_identifier(field))
+    {
+        return Err(CatalogError::Invalid(format!(
+            "{} has duplicate or invalid form field ids",
+            path.display()
+        )));
+    }
+    for field in &tool.form.fields {
+        if !matches!(
+            field.field_type.as_str(),
+            "url"
+                | "host"
+                | "wordlist"
+                | "text"
+                | "textarea"
+                | "number"
+                | "select"
+                | "multiselect"
+                | "args"
+        ) {
+            return Err(CatalogError::Invalid(format!(
+                "{} field {} uses unsupported type {}",
+                path.display(),
+                field.id,
+                field.field_type
+            )));
+        }
+        if matches!(field.field_type.as_str(), "select" | "multiselect") && field.options.is_empty()
+        {
+            return Err(CatalogError::Invalid(format!(
+                "{} field {} requires options",
+                path.display(),
+                field.id
+            )));
+        }
+        if field
+            .option_details
+            .iter()
+            .any(|option| !field.options.contains(&option.value))
+            || field
+                .recommend_from
+                .iter()
+                .any(|source| !field_ids.contains(source.as_str()))
+        {
+            return Err(CatalogError::Invalid(format!(
+                "{} field {} has invalid option metadata",
+                path.display(),
+                field.id
+            )));
+        }
+    }
+    for relation in &tool.relations {
+        if !matches!(relation.kind.as_str(), "requires" | "conflicts")
+            || !matches!(relation.severity.as_str(), "error" | "warning")
+            || !field_ids.contains(relation.field.as_str())
+            || !field_ids.contains(relation.other.as_str())
+            || relation.message.trim().is_empty()
+            || relation.message.len() > 512
+        {
+            return Err(CatalogError::Invalid(format!(
+                "{} has an invalid form relation",
+                path.display()
+            )));
+        }
+    }
+    if tool.help.timeout_millis > 15_000
+        || tool.help.max_bytes > 1024 * 1024
+        || (!tool.help.args.is_empty()
+            && (tool.help.timeout_millis == 0
+                || tool.help.max_bytes == 0
+                || tool.help.args.len() > 64))
+        || tool
+            .help
+            .args
+            .iter()
+            .any(|arg| arg.contains('\0') || arg.len() > 1024)
+    {
+        return Err(CatalogError::Invalid(format!(
+            "{} has an unsafe help command",
+            path.display()
+        )));
+    }
+    validate_existing_tool_contract(path, tool)
+}
+
+fn validate_existing_tool_contract(
+    path: &Path,
+    tool: &CatalogToolManifest,
+) -> Result<(), CatalogError> {
+    if !matches!(tool.io.schema_version, 0 | 1) {
+        return Err(CatalogError::Invalid(format!(
+            "{} unsupported I/O schema version {}",
+            path.display(),
+            tool.io.schema_version
+        )));
+    }
+    if tool.io.schema_version == 0 && (!tool.io.inputs.is_empty() || !tool.io.outputs.is_empty()) {
+        return Err(CatalogError::Invalid(format!(
+            "{} typed I/O requires schema version 1",
+            path.display()
+        )));
+    }
+    if tool.io.schema_version == 1
+        && tool.io.inputs.iter().any(|input| {
+            input.id.is_empty()
+                || input.field.is_empty()
+                || !tool.form.fields.iter().any(|field| field.id == input.field)
+        })
+    {
+        return Err(CatalogError::Invalid(format!(
+            "{} typed I/O input references an unknown field",
+            path.display()
+        )));
+    }
+    // external_launch may have empty argv (binary is the full entrypoint).
+    // embedded_cli needs at least one of template / optional / suffix so prepare can build argv.
+    if tool.mode == ToolMode::EmbeddedCli
+        && tool.argv.template.is_empty()
+        && tool.argv.optional.is_empty()
+        && tool.argv.suffix.is_empty()
+    {
+        return Err(CatalogError::Invalid(format!(
+            "{} embedded_cli requires argv.template, optional, or suffix",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 pub fn resolve_binary(
@@ -1059,12 +1337,10 @@ fn prepare_catalog_command_with_sources_impl(
 
     // Expand argv template. Templates must list ARGS ONLY (not the program).
     // We still strip a leading {binary} for backward compatibility.
-    let mut argv = tool
-        .argv
-        .template
-        .iter()
-        .map(|part| expand_template(part, &values))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut argv = Vec::new();
+    for part in &tool.argv.template {
+        argv.extend(expand_argv_part(tool, part, &values)?);
+    }
     for group in &tool.argv.optional {
         let raw = values.get(&group.field).map_or("", String::as_str);
         let include = if group.equals.is_empty() {
@@ -1076,11 +1352,11 @@ fn prepare_catalog_command_with_sources_impl(
             continue;
         }
         for part in &group.args {
-            argv.push(expand_template(part, &values)?);
+            argv.extend(expand_argv_part(tool, part, &values)?);
         }
     }
     for part in &tool.argv.suffix {
-        argv.push(expand_template(part, &values)?);
+        argv.extend(expand_argv_part(tool, part, &values)?);
     }
     if argv
         .first()
@@ -1248,6 +1524,16 @@ fn validate_form_values(
             "select" if !field.options.iter().any(|option| option == value) => {
                 return Err(CatalogError::InvalidInput);
             }
+            "multiselect" => {
+                let selected = parse_multiselect(value)?;
+                if selected.is_empty()
+                    || selected
+                        .iter()
+                        .any(|item| !field.options.iter().any(|option| option == item))
+                {
+                    return Err(CatalogError::InvalidInput);
+                }
+            }
             "number" => {
                 let number = value
                     .parse::<f64>()
@@ -1263,11 +1549,81 @@ fn validate_form_values(
                 }
             }
             "host" => validate_single_target(value)?,
-            "select" | "text" | "wordlist" => {}
+            "args" => {
+                parse_argv_fragment(value)?;
+            }
+            "select" | "text" | "textarea" | "wordlist" => {}
             _ => return Err(CatalogError::InvalidInput),
         }
     }
+    for relation in &tool.relations {
+        if relation.severity == "error" && relation_is_violated(tool, relation, form_values) {
+            return Err(CatalogError::InvalidInput);
+        }
+    }
     Ok(())
+}
+
+fn relation_is_violated(
+    tool: &CatalogToolManifest,
+    relation: &CatalogFormRelation,
+    form_values: &BTreeMap<String, String>,
+) -> bool {
+    let left = effective_form_value(tool, form_values, &relation.field);
+    let right = effective_form_value(tool, form_values, &relation.other);
+    let left_active = value_matches_relation(left, &relation.equals);
+    let right_active = value_matches_relation(right, &relation.other_equals);
+    match relation.kind.as_str() {
+        "requires" => left_active && !right_active,
+        "conflicts" => left_active && right_active,
+        _ => false,
+    }
+}
+
+fn effective_form_value<'a>(
+    tool: &'a CatalogToolManifest,
+    form_values: &'a BTreeMap<String, String>,
+    field_id: &str,
+) -> &'a str {
+    form_values.get(field_id).map_or_else(
+        || {
+            tool.form
+                .fields
+                .iter()
+                .find(|field| field.id == field_id)
+                .map_or("", |field| field.default.as_str())
+        },
+        String::as_str,
+    )
+}
+
+fn value_matches_relation(value: &str, expected: &str) -> bool {
+    if !expected.is_empty() {
+        return value == expected || value.split(',').map(str::trim).any(|part| part == expected);
+    }
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "no" | "none" | "false" | "0" | "unknown"
+    )
+}
+
+fn parse_multiselect(value: &str) -> Result<Vec<&str>, CatalogError> {
+    let mut seen = BTreeSet::new();
+    let mut selected = Vec::new();
+    for item in value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        if item.len() > 256 || !seen.insert(item) {
+            return Err(CatalogError::InvalidInput);
+        }
+        selected.push(item);
+    }
+    if selected.len() > 64 {
+        return Err(CatalogError::InvalidInput);
+    }
+    Ok(selected)
 }
 
 fn validate_single_target(value: &str) -> Result<(), CatalogError> {
@@ -1483,6 +1839,65 @@ fn enriched_path() -> String {
         .join(":")
 }
 
+fn expand_argv_part(
+    tool: &CatalogToolManifest,
+    template: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<Vec<String>, CatalogError> {
+    if let Some(field_id) = template
+        .strip_prefix('{')
+        .and_then(|value| value.strip_suffix('}'))
+        && tool
+            .form
+            .fields
+            .iter()
+            .any(|field| field.id == field_id && field.field_type == "args")
+    {
+        let value = values.get(field_id).ok_or(CatalogError::InvalidInput)?;
+        return parse_argv_fragment(value);
+    }
+    Ok(vec![expand_template(template, values)?])
+}
+
+fn parse_argv_fragment(value: &str) -> Result<Vec<String>, CatalogError> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut chars = value.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(character) = chars.next() {
+        match (quote, character) {
+            (Some(active), value) if value == active => quote = None,
+            (_, '\\') => {
+                let escaped = chars.next().ok_or(CatalogError::InvalidInput)?;
+                current.push(escaped);
+            }
+            (None, '\'' | '"') => quote = Some(character),
+            (None, value) if value.is_whitespace() => {
+                if !current.is_empty() {
+                    if current.len() > 4096 {
+                        return Err(CatalogError::InvalidInput);
+                    }
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            (_, value) => current.push(value),
+        }
+    }
+    if quote.is_some() {
+        return Err(CatalogError::InvalidInput);
+    }
+    if !current.is_empty() {
+        if current.len() > 4096 {
+            return Err(CatalogError::InvalidInput);
+        }
+        args.push(current);
+    }
+    if args.len() > 128 || args.iter().any(|arg| arg.contains('\0')) {
+        return Err(CatalogError::InvalidInput);
+    }
+    Ok(args)
+}
+
 fn expand_template(
     template: &str,
     values: &BTreeMap<String, String>,
@@ -1525,6 +1940,15 @@ mod tests {
         assert!(!curl.io.outputs.is_empty());
         assert_eq!(curl.tier, "tier_1");
         assert!(curl.presets.len() >= 3);
+        let payloader = catalog.tool("payloader").expect("payloader manifest");
+        assert_eq!(
+            payloader.argv.template,
+            [
+                "--ozone-platform=x11",
+                "--disable-gpu",
+                "--disable-gpu-compositing",
+            ]
+        );
     }
 
     #[test]
@@ -1581,6 +2005,8 @@ template = ["--version"]
             tools_root: temporary.path().join("tools-root"),
             wordlists_root: temporary.path().join("wordlists"),
             catalog_root: temporary.path().to_path_buf(),
+            user_catalog_root: temporary.path().join("user-catalog"),
+            cache_root: temporary.path().join("cache"),
         };
 
         assert!(matches!(
@@ -1773,10 +2199,139 @@ template = ["{url}"]
             tools_root: root.path().to_path_buf(),
             wordlists_root: wordlists,
             catalog_root,
+            user_catalog_root: root.path().join("user-catalog"),
+            cache_root: root.path().join("cache"),
         })
         .unwrap();
         let path = catalog.resolve_wordlist_path("demo").unwrap();
         assert!(path.ends_with("demo.txt"));
+    }
+
+    #[test]
+    fn user_catalog_overlay_replaces_only_declared_values() {
+        let root = tempdir().unwrap();
+        let base = root.path().join("base");
+        let user = root.path().join("user");
+        fs::create_dir_all(base.join("tools")).unwrap();
+        fs::create_dir_all(user.join("tools")).unwrap();
+        fs::write(
+            base.join("tools/demo.toml"),
+            r#"
+id = "demo"
+name = "Demo"
+category = "test"
+summary = "base"
+[binary]
+path = "/usr/bin/echo"
+resolve = ["path"]
+[argv]
+template = ["ok"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            user.join("tools/demo.toml"),
+            r#"
+id = "demo"
+summary = "personal"
+aliases = ["我的演示"]
+"#,
+        )
+        .unwrap();
+        let catalog = ToolCatalog::load(CatalogPaths {
+            tools_root: root.path().join("tools"),
+            wordlists_root: root.path().join("wordlists"),
+            catalog_root: base,
+            user_catalog_root: user,
+            cache_root: root.path().join("cache"),
+        })
+        .unwrap();
+        let tool = catalog.tool("demo").unwrap();
+        assert_eq!(tool.name, "Demo");
+        assert_eq!(tool.summary, "personal");
+        assert_eq!(tool.aliases, ["我的演示"]);
+        assert_eq!(tool.binary.path, "/usr/bin/echo");
+    }
+
+    #[test]
+    fn validates_multiselect_relations_and_additional_args() {
+        let tool: CatalogToolManifest = toml::from_str(
+            r#"
+id = "guided"
+name = "Guided"
+category = "test"
+
+[[form.fields]]
+id = "mode"
+type = "select"
+label = "Mode"
+default = "safe"
+options = ["safe", "random"]
+
+[[form.fields]]
+id = "agent"
+type = "text"
+label = "Agent"
+
+[[form.fields]]
+id = "tamper"
+type = "multiselect"
+label = "Tamper"
+options = ["between", "space2comment"]
+
+[[form.fields]]
+id = "extra"
+type = "args"
+label = "Extra"
+
+[[relations]]
+kind = "conflicts"
+field = "mode"
+equals = "random"
+other = "agent"
+severity = "error"
+message = "Choose one agent source"
+
+[binary]
+path = "/usr/bin/echo"
+resolve = ["path"]
+
+[argv]
+template = ["{tamper}", "{extra}"]
+"#,
+        )
+        .unwrap();
+        let mut values = BTreeMap::from([
+            ("mode".to_owned(), "safe".to_owned()),
+            ("tamper".to_owned(), "between,space2comment".to_owned()),
+            (
+                "extra".to_owned(),
+                "--answer 'two words' --batch".to_owned(),
+            ),
+        ]);
+        validate_form_values(&tool, &values).unwrap();
+        assert_eq!(
+            parse_argv_fragment(values.get("extra").unwrap()).unwrap(),
+            ["--answer", "two words", "--batch"]
+        );
+        values.insert("mode".to_owned(), "random".to_owned());
+        values.insert("agent".to_owned(), "FlagDeck".to_owned());
+        assert!(matches!(
+            validate_form_values(&tool, &values),
+            Err(CatalogError::InvalidInput)
+        ));
+        values.insert("tamper".to_owned(), "unknown".to_owned());
+        assert!(matches!(
+            validate_form_values(&tool, &values),
+            Err(CatalogError::InvalidInput)
+        ));
+
+        let mut invalid_help = tool.clone();
+        invalid_help.help.args = vec!["--help".to_owned()];
+        assert!(matches!(
+            validate_tool_manifest(Path::new("guided.toml"), &invalid_help),
+            Err(CatalogError::Invalid(_))
+        ));
     }
 }
 

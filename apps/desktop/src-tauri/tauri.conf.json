@@ -4,8 +4,8 @@
   "version": "1.0.1",
   "identifier": "dev.flagdeck.desktop",
   "build": {
-    "beforeBuildCommand": "pnpm build",
-    "beforeDevCommand": "pnpm vite --host 127.0.0.1 --port 14200",
+    "beforeBuildCommand": "corepack pnpm build",
+    "beforeDevCommand": "corepack pnpm vite --host 127.0.0.1 --port 14200",
     "devUrl": "http://127.0.0.1:14200",
     "frontendDist": "../dist"
   },

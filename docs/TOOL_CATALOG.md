@@ -16,11 +16,15 @@ config/tool-catalog/
 
 环境变量（可选）：
 
-| 变量 | 默认 |
-|---|---|
-| `FLAGDECK_TOOLS_ROOT` | `/data/CTF/Tools` |
-| `FLAGDECK_WORDLISTS_ROOT` | `$FLAGDECK_TOOLS_ROOT/Wordlists` |
-| `FLAGDECK_CATALOG_ROOT` | 仓库内 `config/tool-catalog` |
+| 变量                         | 默认                                                                |
+| ---------------------------- | ------------------------------------------------------------------- |
+| `FLAGDECK_TOOLS_ROOT`        | `/data/CTF/Tools`                                                   |
+| `FLAGDECK_WORDLISTS_ROOT`    | `$FLAGDECK_TOOLS_ROOT/Wordlists`                                    |
+| `FLAGDECK_CATALOG_ROOT`      | 仓库内 `config/tool-catalog`                                        |
+| `FLAGDECK_USER_CATALOG_ROOT` | `$XDG_CONFIG_HOME/flagdeck/catalog` 或 `~/.config/flagdeck/catalog` |
+| `FLAGDECK_CACHE_ROOT`        | `$XDG_CACHE_HOME/flagdeck` 或 `~/.cache/flagdeck`                   |
+
+内置目录提供基础清单。用户目录的 `tools/<id>.toml` 按 TOML 表递归覆盖同 ID 工具；数组整体替换。用户清单适合保存个人别名、字段说明、选项和排序所需元数据。
 
 ## 最小工具清单
 
@@ -31,6 +35,8 @@ config/tool-catalog/
 - `cwd`：工作目录；相对路径基于工具根
 - `binary.path` / `binary.command` / `binary.resolve`
 - `form.fields`：动态表单。**没有字段 = 无需目标 URL**
+- `relations`：声明字段冲突或依赖；`severity = "error"` 会同时阻止预览与运行
+- `help`：显式声明安全帮助命令；FlagDeck 在隔离环境中限时执行并按二进制哈希、版本和参数缓存
 - `argv.template`：**只写参数，不要把程序路径写在第一项**（运行时会 `program + argv`）；Python 脚本应 `command=python3`，脚本路径放在 template 首项
 - `argv.optional`：字段非空（或 `equals` 匹配）时追加；**可选项必须与真实 CLI 开关一致**
 - `argv.suffix`：始终追加在末尾（适合 URL / 查询对象）
@@ -38,23 +44,60 @@ config/tool-catalog/
 
 ### 字段类型
 
-| type | 用途 |
-|---|---|
-| `url` | HTTP URL；也可填主机，会自动补 `http://` |
-| `host` | IP/域名/网段（fscan/dddd） |
-| `wordlist` | 字典快捷 id 或绝对路径 |
-| `text` / `number` / `select` | 普通参数 |
+| type                         | 用途                                                 |
+| ---------------------------- | ---------------------------------------------------- |
+| `url`                        | HTTP URL；也可填主机，会自动补 `http://`             |
+| `host`                       | IP/域名/网段（fscan/dddd）                           |
+| `wordlist`                   | 字典快捷 id 或绝对路径                               |
+| `text` / `number` / `select` | 普通参数                                             |
+| `multiselect`                | 有序多选；值以逗号连接后传给单个 CLI 参数            |
+| `textarea`                   | 多行文本参数                                         |
+| `args`                       | 附加参数；按引号与反斜杠规则直接解析为有界 argv 数组 |
+
+字段可补充以下说明数据：
+
+- `flag`：对应 CLI 开关
+- `examples`：短示例
+- `option_details`：选项标签、说明和推荐标签
+- `recommend_from`：推荐所依赖的字段 ID
+
+`args` 最多展开 128 个参数，每项最多 4096 字节。解析过程直接构造 argv。
+
+### 字段关系
+
+```toml
+[[relations]]
+kind = "conflicts"
+field = "user_agent"
+other = "random_agent"
+other_equals = "yes"
+severity = "error"
+message = "自定义 User-Agent 与随机 User-Agent 只能启用一项"
+```
+
+`kind` 支持 `conflicts` 和 `requires`。`equals` / `other_equals` 留空时按字段是否启用判断；空值、`no`、`none`、`false`、`0`、`unknown` 视为未启用。
+
+### 版本帮助
+
+```toml
+[help]
+args = ["-hh"]
+timeout_millis = 8000
+max_bytes = 524288
+```
+
+帮助命令由每个工具清单单独声明。执行环境使用私有 `HOME` / `XDG_CONFIG_HOME`、清空继承环境、关闭 stdin，并限制时间和输出大小。缓存键绑定工具 ID、二进制 SHA-256、检测版本和帮助参数；界面支持本地全文检索与显式刷新。
 
 ### 可用占位符
 
-| 占位符 | 含义 |
-|---|---|
+| 占位符                 | 含义                                                  |
+| ---------------------- | ----------------------------------------------------- |
 | `{url}` / `{url_base}` | URL 与去掉尾 `/` 的 base（ffuf 用 `{url_base}/FUZZ`） |
-| `{host}` | 主机名（从 URL 解析或表单） |
-| `{target}` | 原始目标字段 |
-| `{wordlist}` | 字典绝对路径 |
-| `{job_dir}` | 任务私有目录 |
-| `{tools_root}` | `/data/CTF/Tools` |
+| `{host}`               | 主机名（从 URL 解析或表单）                           |
+| `{target}`             | 原始目标字段                                          |
+| `{wordlist}`           | 字典绝对路径                                          |
+| `{job_dir}`            | 任务私有目录                                          |
+| `{tools_root}`         | `/data/CTF/Tools`                                     |
 
 ## AI 添加新工具 SOP
 
@@ -70,64 +113,64 @@ config/tool-catalog/
 
 ### Active / 扫描
 
-| ID | 模式 | 说明 |
-|---|---|---|
-| dddd | embedded | Active/dddd 资产发现 |
-| fscan | embedded | Active/fscan CLI |
-| fscan-web | external | fscan Web UI 二进制 |
-| curl | embedded | 系统 curl |
-| arjun | embedded | HTTP 参数发现（PATH） |
+| ID              | 模式     | 说明                         |
+| --------------- | -------- | ---------------------------- |
+| dddd            | embedded | Active/dddd 资产发现         |
+| fscan           | embedded | Active/fscan CLI             |
+| fscan-web       | external | fscan Web UI 二进制          |
+| curl            | embedded | 系统 curl                    |
+| arjun           | embedded | HTTP 参数发现（PATH）        |
 | ffuf / gobuster | embedded | 目录 fuzz（PATH 或 mise go） |
-| sqlmap | embedded | SQL 注入（PATH） |
-| wafw00f | embedded | WAF 识别（PATH） |
+| sqlmap          | embedded | SQL 注入（PATH）             |
+| wafw00f         | embedded | WAF 识别（PATH）             |
 
 ### DNS / 信息
 
-| ID | 模式 | 说明 |
-|---|---|---|
-| dig | embedded | DNS 查询 |
+| ID    | 模式     | 说明         |
+| ----- | -------- | ------------ |
+| dig   | embedded | DNS 查询     |
 | whois | embedded | 注册信息查询 |
 
 ### Crypto / 编码
 
-| ID | 模式 | 说明 |
-|---|---|---|
-| rsa-ctf-tool | embedded | Scripts RsaCtfTool |
-| yafu | embedded | Crypto Toolkit 整数分解 |
-| hashcat | embedded | 哈希爆破（PATH） |
-| openssl-dgst | embedded | 文件摘要 |
-| cyberchef | external | 离线 HTML 编解码 |
+| ID           | 模式     | 说明                    |
+| ------------ | -------- | ----------------------- |
+| rsa-ctf-tool | embedded | Scripts RsaCtfTool      |
+| yafu         | embedded | Crypto Toolkit 整数分解 |
+| hashcat      | embedded | 哈希爆破（PATH）        |
+| openssl-dgst | embedded | 文件摘要                |
+| cyberchef    | external | 离线 HTML 编解码        |
 
 ### Binary / 逆向
 
-| ID | 模式 | 说明 |
-|---|---|---|
-| strings | embedded | 可打印字符串 |
+| ID             | 模式     | 说明             |
+| -------------- | -------- | ---------------- |
+| strings        | embedded | 可打印字符串     |
 | pyinstxtractor | embedded | PyInstaller 解包 |
 
 ### Web 利用 / 载荷
 
-| ID | 模式 | 说明 |
-|---|---|---|
-| php-filter-chain | embedded | LFI filter 链生成 |
-| githacker | embedded | `.git` 泄露综合还原（GitHacker，Active/git-leak） |
-| revshell-gen | external managed | 反弹 shell 生成器本地 HTTP |
-| payloader | external | Payload 构造工作台（AppImage 客户端） |
-| uploadranger | external | 上传漏洞 GUI |
-| shiro / antsword / behinder / godzilla | external | GUI 客户端 |
-| godzilla-super | external | 哥斯拉二开 GSL5 GUI（MCP/团队/RASP 扩展） |
-| godzilla-super-mcp | external managed | GSL5 无头 MCP（默认 127.0.0.1:9123） |
+| ID                                     | 模式             | 说明                                              |
+| -------------------------------------- | ---------------- | ------------------------------------------------- |
+| php-filter-chain                       | embedded         | LFI filter 链生成                                 |
+| githacker                              | embedded         | `.git` 泄露综合还原（GitHacker，Active/git-leak） |
+| revshell-gen                           | external managed | 反弹 shell 生成器本地 HTTP                        |
+| payloader                              | external         | Payload 构造工作台（AppImage 客户端）             |
+| uploadranger                           | external         | 上传漏洞 GUI                                      |
+| shiro / antsword / behinder / godzilla | external         | GUI 客户端                                        |
+| godzilla-super                         | external         | 哥斯拉二开 GSL5 GUI（MCP/团队/RASP 扩展）         |
+| godzilla-super-mcp                     | external managed | GSL5 无头 MCP（默认 127.0.0.1:9123）              |
 
 ### 防守 / 分析
 
-| ID | 模式 | 说明 |
-|---|---|---|
-| whoamifuck | embedded | Linux 主机排查（需 root） |
-| behinder-decryptor | embedded | 冰蝎 pcap 解密 |
+| ID                 | 模式     | 说明                      |
+| ------------------ | -------- | ------------------------- |
+| whoamifuck         | embedded | Linux 主机排查（需 root） |
+| behinder-decryptor | embedded | 冰蝎 pcap 解密            |
 
 ### 结构化结果
 
-任务旁路文件（如 `ffuf-output.json`）可通过 `preview_job_file` 读取；工作台「结果」页对 ffuf / dddd / fscan / gobuster / arjun 做表格解析。其它工具默认看日志。
+任务旁路文件（如 `ffuf-output.json`）可通过 `preview_job_file` 读取；工作台「结果」页对 ffuf / dddd / fscan / gobuster / arjun / sqlmap 做表格解析。其它工具默认看日志。
 
 ## 未纳入说明
 

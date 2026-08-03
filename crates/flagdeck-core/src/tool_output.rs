@@ -36,6 +36,7 @@ pub(crate) fn parse_http_discovery(
         HttpDiscoveryAdapter::Wafw00fJson => parse_wafw00f_structured_rows(bytes),
         HttpDiscoveryAdapter::DdddJsonl => parse_dddd_structured_rows(bytes),
         HttpDiscoveryAdapter::FscanJson => parse_fscan_structured_rows(bytes),
+        HttpDiscoveryAdapter::SqlmapText => parse_sqlmap_structured_rows(bytes),
     };
     HttpDiscoveryParse { columns, rows }
 }
@@ -48,6 +49,7 @@ fn adapter_columns(adapter: HttpDiscoveryAdapter) -> Vec<StructuredResultColumnD
         HttpDiscoveryAdapter::DdddJsonl | HttpDiscoveryAdapter::FscanJson => {
             host_service_result_columns()
         }
+        HttpDiscoveryAdapter::SqlmapText => sqlmap_result_columns(),
         _ => http_discovery_columns(),
     }
 }
@@ -61,6 +63,7 @@ enum HttpDiscoveryAdapter {
     Wafw00fJson,
     DdddJsonl,
     FscanJson,
+    SqlmapText,
     GenericJson,
 }
 
@@ -78,6 +81,7 @@ pub(crate) fn structured_result_kind(
             | HttpDiscoveryAdapter::Wafw00fJson
             | HttpDiscoveryAdapter::DdddJsonl
             | HttpDiscoveryAdapter::FscanJson
+            | HttpDiscoveryAdapter::SqlmapText
     ) || io
         .outputs
         .iter()
@@ -126,6 +130,9 @@ fn select_http_discovery_adapter(
         if id == "flagdeck.fscan-json" || id.ends_with(".fscan-json") || id.contains("fscan") {
             return HttpDiscoveryAdapter::FscanJson;
         }
+        if id == "flagdeck.sqlmap-text" || id.ends_with(".sqlmap-text") || id.contains("sqlmap") {
+            return HttpDiscoveryAdapter::SqlmapText;
+        }
     }
     if logical_name.is_some_and(|name| name.contains("gobuster")) {
         return HttpDiscoveryAdapter::GobusterText;
@@ -147,6 +154,9 @@ fn select_http_discovery_adapter(
     }
     if logical_name.is_some_and(|name| name.contains("ffuf")) {
         return HttpDiscoveryAdapter::FfufJson;
+    }
+    if logical_name.is_some_and(|name| name.contains("sqlmap")) {
+        return HttpDiscoveryAdapter::SqlmapText;
     }
     HttpDiscoveryAdapter::GenericJson
 }
@@ -708,6 +718,105 @@ fn parse_arjun_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDt
     Ok(rows)
 }
 
+fn sqlmap_result_columns() -> Vec<StructuredResultColumnDto> {
+    vec![
+        StructuredResultColumnDto {
+            key: "parameter".to_owned(),
+            label: "参数".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "technique".to_owned(),
+            label: "技术".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "title".to_owned(),
+            label: "发现".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "payload".to_owned(),
+            label: "Payload".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "dbms".to_owned(),
+            label: "DBMS".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_job".to_owned(),
+            label: "来源任务".to_owned(),
+        },
+        StructuredResultColumnDto {
+            key: "source_artifact".to_owned(),
+            label: "来源证据".to_owned(),
+        },
+    ]
+}
+
+fn parse_sqlmap_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| CoreError::InvalidRequest)?;
+    let mut dbms = String::new();
+    let mut current_parameter = String::new();
+    let mut current_technique = String::new();
+    let mut current_title = String::new();
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("back-end DBMS:") {
+            value.trim().clone_into(&mut dbms);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("Parameter:") {
+            value.trim().clone_into(&mut current_parameter);
+            current_technique.clear();
+            current_title.clear();
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("Type:") {
+            value.trim().clone_into(&mut current_technique);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("Title:") {
+            value.trim().clone_into(&mut current_title);
+            continue;
+        }
+        let Some(payload) = trimmed.strip_prefix("Payload:") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if current_parameter.is_empty()
+            || current_technique.is_empty()
+            || current_title.is_empty()
+            || payload.is_empty()
+        {
+            continue;
+        }
+        let mut cells = BTreeMap::new();
+        cells.insert("parameter".to_owned(), current_parameter.clone());
+        cells.insert("technique".to_owned(), current_technique.clone());
+        cells.insert("title".to_owned(), current_title.clone());
+        cells.insert("payload".to_owned(), payload.to_owned());
+        cells.insert("dbms".to_owned(), dbms.clone());
+        cells.insert("source_job".to_owned(), String::new());
+        cells.insert("source_artifact".to_owned(), String::new());
+        rows.push(StructuredResultRowDto {
+            result_id: format!("row:{}", rows.len()),
+            cells,
+            source_job_id: JobId::new(),
+            source_artifact_id: None,
+        });
+        current_technique.clear();
+        current_title.clear();
+    }
+    if rows.is_empty() {
+        return Err(CoreError::InvalidRequest);
+    }
+    for row in &mut rows {
+        if row.cells.get("dbms").is_some_and(String::is_empty) {
+            row.cells.insert("dbms".to_owned(), dbms.clone());
+        }
+    }
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,5 +885,44 @@ mod tests {
         let parsed = parse_http_discovery(Some("flagdeck.gobuster-text"), "gobuster", None, b"");
         assert!(parsed.rows.is_err());
         assert!(!parsed.columns.is_empty());
+    }
+
+    #[test]
+    fn sqlmap_text_extracts_injection_findings() {
+        let bytes = br"
+Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE clause
+    Payload: id=1 AND 1=1
+back-end DBMS: MySQL
+";
+        let rows = parse_sqlmap_structured_rows(bytes).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].cells.get("parameter").map(String::as_str),
+            Some("id (GET)")
+        );
+        assert_eq!(rows[0].cells.get("dbms").map(String::as_str), Some("MySQL"));
+    }
+
+    #[test]
+    fn sqlmap_text_rejects_payload_without_finding_context() {
+        assert!(matches!(
+            parse_sqlmap_structured_rows(b"warning: request failed\nPayload: diagnostic text\n"),
+            Err(CoreError::InvalidRequest)
+        ));
+    }
+
+    #[test]
+    fn sqlmap_text_does_not_reuse_completed_finding_context() {
+        let bytes = br"
+Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE clause
+    Payload: id=1 AND 1=1
+    Payload: unrelated diagnostic text
+";
+        let rows = parse_sqlmap_structured_rows(bytes).unwrap();
+        assert_eq!(rows.len(), 1);
     }
 }
