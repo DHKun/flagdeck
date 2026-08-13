@@ -1,0 +1,141 @@
+id = "intelpwn"
+name = "IntelPwn"
+category = "binary"
+tier = "tier_1"
+capabilities = ["binary_analysis", "vulnerability_detection", "exploitability_assessment"]
+aliases = ["二进制漏洞分析", "Pwn 分析", "ELF 漏洞检测", "intelpwn"]
+risk_level = "l3"
+summary = "ELF 漏洞分析与可利用性评估（guaidao2/intelpwn）"
+
+usage = """
+【FlagDeck 表单】
+• 必填：待分析 ELF 的绝对路径
+• 可选：匹配目标环境的 libc 文件绝对路径
+• 输出：JSON 结果保存在任务 stdout 证据中，并转换为结果表
+
+【安全边界】
+IntelPwn 的分析流程会执行目标文件并发送探测载荷，任务按 L3 确认运行。
+FlagDeck 固定调用 analyze --json --no-exploit，关闭 exploit 脚本生成。
+上游 fuzz 子命令当前存在 --no-exploit 反向触发生成逻辑，Catalog 暂不开放该子命令。
+目标与 libc 必须是当前用户或 root 持有的本地 ELF 普通文件，路径会规范化并拒绝符号链接与组/全局可写文件。
+任务要求 systemd 隔离，启用全网络拒绝、只读主机文件系统、私有临时目录和设备隔离；隔离能力缺失时拒绝启动。
+
+【上游状态】
+上游模块版本为 1.0.0。README 声明 GPLv3，仓库当前缺少 LICENSE 文件。
+安装脚本遗漏 pyelftools；FlagDeck 安装命令显式补齐该依赖。
+仅处理 CTF、靶场和已获授权的样本。
+"""
+mode = "embedded_cli"
+featured = true
+platforms = ["linux"]
+sandbox_profile = "local-untrusted-binary-systemd"
+network_isolation = "deny-all-systemd"
+
+[[field_groups]]
+id = "target"
+name = "分析目标"
+fields = ["elf_path", "libc"]
+
+[io]
+schema_version = 1
+
+[[io.inputs]]
+id = "binary"
+kind = "raw_artifact"
+field = "elf_path"
+
+[[io.inputs]]
+id = "libc"
+kind = "raw_artifact"
+field = "libc"
+
+[[io.outputs]]
+id = "analysis"
+kind = "raw_artifact"
+
+[installation]
+distribution = "source"
+license = "GPL-3.0 (README declaration; upstream LICENSE file absent)"
+homepage = "https://github.com/guaidao2/intelpwn"
+version = "IntelPwn 1.0.0"
+health_strategy = "safe-runtime-version-command"
+runtime = "IntelPwn 1.0.0; Python >=3.10; pwntools >=4.9; capstone >=5.0; pyelftools; binutils; gdb; file"
+version_args = [
+  "-c",
+  """
+import pathlib, shutil, sys
+root = pathlib.Path(sys.executable).resolve().parents[2]
+missing = []
+if not (root / "intelpwn.py").is_file():
+    missing.append("intelpwn.py")
+for module in ("pwn", "capstone", "elftools"):
+    try:
+        __import__(module)
+    except Exception:
+        missing.append("python:" + module)
+for command in ("gdb", "objdump", "readelf", "strings", "file", "checksec"):
+    if shutil.which(command) is None:
+        missing.append("command:" + command)
+if missing:
+    print("missing: " + ", ".join(missing))
+    raise SystemExit(1)
+print("IntelPwn 1.0.0")
+""",
+]
+install_command = "sudo dnf install -y git python3 python3-pip gdb binutils file && mkdir -p \"{tools_root}/Binary/Reverse/sec-import\" && git clone https://github.com/guaidao2/intelpwn \"{tools_root}/Binary/Reverse/sec-import/intelpwn\" && git -C \"{tools_root}/Binary/Reverse/sec-import/intelpwn\" checkout 06191381a758fd87e98a5b80b3249ad98b898ca0 && python3 -m venv \"{tools_root}/Binary/Reverse/sec-import/intelpwn/.venv\" && \"{tools_root}/Binary/Reverse/sec-import/intelpwn/.venv/bin/pip\" install 'pwntools>=4.9.0' 'capstone>=5.0' pyelftools"
+path_fix = "sudo dnf install -y python3 python3-pip gdb binutils file && python3 -m venv \"{tools_root}/Binary/Reverse/sec-import/intelpwn/.venv\" && \"{tools_root}/Binary/Reverse/sec-import/intelpwn/.venv/bin/pip\" install 'pwntools>=4.9.0' 'capstone>=5.0' pyelftools"
+wordlist_source = ""
+wordlist_install_command = ""
+
+[binary]
+command = ""
+path = "Binary/Reverse/sec-import/intelpwn/.venv/bin/python"
+resolve = ["tools_root"]
+
+[ui]
+icon = "bug"
+accent = "red"
+
+[[form.fields]]
+id = "elf_path"
+type = "local_elf_file"
+label = "ELF 文件路径"
+required = true
+executable = true
+flag = "binary"
+examples = ["/data/CTF/Challenges/pwn/chall"]
+hint = "本机 ELF 文件绝对路径；分析过程会执行该文件"
+
+[[form.fields]]
+id = "libc"
+type = "local_elf_file"
+label = "libc 路径（可选）"
+default = ""
+required = false
+flag = "--libc"
+examples = ["/data/CTF/Challenges/pwn/libc.so.6"]
+hint = "与目标运行环境匹配的 libc；JSON 模式只用于增强分析"
+
+[argv]
+template = [
+  "{tools_root}/Binary/Reverse/sec-import/intelpwn/intelpwn.py",
+  "analyze",
+  "{elf_path}",
+  "--json",
+  "--no-exploit",
+]
+
+[[argv.optional]]
+field = "libc"
+args = ["--libc", "{libc}"]
+
+[parser]
+kind = "intelpwn-json"
+id = "flagdeck.intelpwn-json"
+version = "1.0.0"
+
+[limits]
+timeout_millis = 600000
+memory_max_bytes = 1073741824
+tasks_max = 128
+cpu_quota_percent = 100

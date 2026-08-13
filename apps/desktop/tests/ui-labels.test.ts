@@ -12,6 +12,7 @@ import {
 describe("ui labels", () => {
   it("renders execution and risk states in Chinese", () => {
     expect(executionStatusLabel("running")).toBe("运行中");
+    expect(executionStatusLabel("succeeded")).toBe("已完成");
     expect(executionStatusLabel("timed_out")).toBe("超时");
     expect(riskLevelLabel("l3")).toBe("L3 · 高风险");
   });

@@ -4,10 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../src/App.svelte";
-import type {
-  CatalogSnapshot,
-  CatalogToolDiagnosticDto,
-} from "../src/generated/ipc";
+import type { CatalogSnapshot } from "../src/generated/ipc";
 
 const ipcMocks = vi.hoisted(() => ({
   status: vi.fn(),
@@ -125,26 +122,6 @@ const catalog = {
   ],
 } satisfies CatalogSnapshot;
 
-function diagnostic(toolId: string): CatalogToolDiagnosticDto {
-  return {
-    tool_id: toolId,
-    status: toolId === "fixture" ? "usable" : "missing",
-    binary_path: toolId === "fixture" ? "/usr/bin/fixture" : "",
-    detected_version: "1.0",
-    checks: [],
-    help: {
-      available: toolId === "fixture",
-      cached: false,
-      command: toolId === "fixture" ? "/usr/bin/fixture --help" : "",
-      detected_version: "1.0",
-      binary_sha256: "a".repeat(64),
-      captured_at_epoch_secs: null,
-      content: "Fixture usage",
-      detail: "",
-    },
-  };
-}
-
 async function settle(): Promise<void> {
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -174,9 +151,6 @@ describe("App accessibility and tool runner contracts", () => {
       presets: [],
       default_by_tool: {},
     });
-    ipcMocks.diagnoseCatalogTool.mockImplementation(({ tool_id }) =>
-      Promise.resolve(diagnostic(tool_id)),
-    );
     ipcMocks.previewCatalogTool.mockResolvedValue({
       command_preview: "/usr/bin/fixture --url https://example.test",
       scope: "https://example.test",
@@ -210,15 +184,16 @@ describe("App accessibility and tool runner contracts", () => {
       "[data-testid='nav-tools']",
     );
     expect(nav).not.toBeNull();
-    expect(tools?.getAttribute("aria-current")).toBe("page");
+    expect(home?.getAttribute("aria-current")).toBe("page");
+    expect(tools?.hasAttribute("aria-current")).toBe(false);
     expect(
       document.querySelector("[data-testid='notice']")?.getAttribute("role"),
     ).toBe("status");
 
-    home?.click();
+    tools?.click();
     await tick();
-    expect(home?.getAttribute("aria-current")).toBe("page");
-    expect(tools?.hasAttribute("aria-current")).toBe(false);
+    expect(tools?.getAttribute("aria-current")).toBe("page");
+    expect(home?.hasAttribute("aria-current")).toBe(false);
   });
 
   it("exposes runner controls and output views with stable semantics", async () => {
@@ -298,7 +273,7 @@ describe("App accessibility and tool runner contracts", () => {
     const missing = document.querySelector<HTMLButtonElement>(
       "[data-testid='tool-missing']",
     );
-    expect(missing?.getAttribute("aria-label")).toContain("不可用，查看诊断");
+    expect(missing?.getAttribute("aria-label")).toContain("不可用");
     missing?.click();
     await settle();
     expect(
@@ -347,34 +322,16 @@ describe("App accessibility and tool runner contracts", () => {
     });
   });
 
-  it("reruns the live environment diagnostic and refreshes catalog state", async () => {
+  it("does not call environment diagnostics when selecting a tool", async () => {
     instance = mount(App, { target: document.querySelector("#app")! });
     await settle();
     document
       .querySelector<HTMLButtonElement>("[data-testid='nav-tools']")
       ?.click();
     await settle();
-    const initialCalls = ipcMocks.diagnoseCatalogTool.mock.calls.length;
-    window.dispatchEvent(new Event("focus"));
-    await settle();
-    expect(ipcMocks.diagnoseCatalogTool).toHaveBeenCalledTimes(initialCalls);
-
-    document
-      .querySelector<HTMLButtonElement>(
-        "[data-testid='recheck-tool-diagnostic']",
-      )
-      ?.click();
-    await settle();
-
-    expect(ipcMocks.diagnoseCatalogTool.mock.calls.length).toBeGreaterThan(
-      initialCalls,
-    );
-    expect(ipcMocks.diagnoseCatalogTool).toHaveBeenLastCalledWith({
-      tool_id: "fixture",
-      refresh_help: true,
-    });
+    expect(ipcMocks.diagnoseCatalogTool).not.toHaveBeenCalled();
     expect(
-      document.querySelector("[data-testid='tool-diagnostic']")?.textContent,
-    ).toContain("最近检测");
+      document.querySelector("[data-testid='tool-diagnostic']"),
+    ).toBeNull();
   });
 });

@@ -1581,7 +1581,9 @@ impl CoreService {
             let raw_artifact = artifacts.iter().find(|artifact| {
                 let name = artifact.logical_name.as_str();
                 name.contains("output")
-                    || (parser_id.as_deref().is_some_and(|id| id.contains("sqlmap"))
+                    || (parser_id
+                        .as_deref()
+                        .is_some_and(|id| id.contains("sqlmap") || id.contains("intelpwn"))
                         && name.ends_with("stdout.log"))
                     || Path::new(name).extension().is_some_and(|ext| {
                         ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("txt")
@@ -2558,7 +2560,7 @@ impl CoreService {
         let stdout = commit_existing_file(
             &queued.store,
             &queued.stdout_path,
-            &format!("external-{}-stdout.log", job_id.0),
+            &format!("{}-stdout.log", queued.command.tool_id),
             "text/plain; charset=utf-8",
             Sensitivity::SensitiveEvidence,
             &job_id,
@@ -2566,7 +2568,7 @@ impl CoreService {
         let stderr = commit_existing_file(
             &queued.store,
             &queued.stderr_path,
-            &format!("external-{}-stderr.log", job_id.0),
+            &format!("{}-stderr.log", queued.command.tool_id),
             "text/plain; charset=utf-8",
             Sensitivity::SensitiveEvidence,
             &job_id,
@@ -3588,7 +3590,7 @@ fn spawn_catalog_process(
     let validated = flagdeck_exec::validate_command(command)?;
     let stdout = open_job_log_file(stdout_path)?;
     let stderr = open_job_log_file(stderr_path)?;
-    let mut process = Command::new(&validated.canonical_program);
+    let mut process = Command::new(&validated.invocation_program);
     process
         .args(&validated.argv)
         .current_dir(&validated.cwd)
@@ -3683,65 +3685,92 @@ async fn run_detached_gui(queued: &mut PreparedExternalRun) -> Result<(), CoreEr
         &format!("[flagdeck] gui process spawned pid={pid}\n"),
     )?;
 
-    // Give the UI a moment to crash with a visible error if DISPLAY/Xauth is wrong.
-    tokio::time::sleep(Duration::from_millis(1800)).await;
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            let code = status.code();
-            append_job_log(
-                &queued.stdout_path,
-                &format!("[flagdeck] gui exited early code={code:?} status={status}\n"),
-            )?;
-            queued.job.exit_code = code;
-            queued.job.exit_reason = Some(format!("gui_exited_early:{status}"));
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued.job.cleanup_verified = true;
-            if status.success() {
-                queued
-                    .job
-                    .transition(ExecutionStatus::Succeeded)
-                    .map_err(|_| CoreError::InvalidRequest)?;
-            } else {
-                queued
-                    .job
-                    .transition(ExecutionStatus::Failed)
-                    .map_err(|_| CoreError::InvalidRequest)?;
-            }
-        }
-        Ok(None) => {
-            append_job_log(
-                &queued.stdout_path,
-                &format!(
-                    "[flagdeck] gui still running after probe; detaching pid={pid}\n\
-                     [flagdeck] 独立窗口应已打开。此任务标记为成功，进程不再由 FlagDeck 等待。\n"
-                ),
-            )?;
-            // Reap zombies without blocking the Tokio runtime / tests.
+    let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(1800);
+    loop {
+        if queued.control.cancel_requested.load(Ordering::SeqCst) {
+            let _ = child.kill();
             std::thread::Builder::new()
                 .name(format!("flagdeck-gui-reaper-{pid}"))
                 .spawn(move || {
                     let _ = child.wait();
                 })
                 .ok();
-            queued.job.exit_reason = Some(format!("gui_detached_pid_{pid}"));
+            queued.job.exit_reason = Some("cancelled_detached".to_owned());
             queued.job.stopped_at = Some(Timestamp::now());
             queued.job.cleanup_verified = true;
-            queued
-                .job
-                .transition(ExecutionStatus::Succeeded)
-                .map_err(|_| CoreError::InvalidRequest)?;
+            if !matches!(queued.job.execution_status, ExecutionStatus::Cancelled) {
+                queued
+                    .job
+                    .transition(ExecutionStatus::Cancelled)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+            }
+            queued.store.save_job(&queued.job)?;
+            return Ok(());
         }
-        Err(error) => {
-            append_job_log(
-                &queued.stderr_path,
-                &format!("[flagdeck] gui wait error: {error}\n"),
-            )?;
-            queued.job.exit_reason = Some(format!("gui_wait_error:{error}"));
-            queued.job.stopped_at = Some(Timestamp::now());
-            queued
-                .job
-                .transition(ExecutionStatus::Failed)
-                .map_err(|_| CoreError::InvalidRequest)?;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.code();
+                append_job_log(
+                    &queued.stdout_path,
+                    &format!("[flagdeck] gui exited early code={code:?} status={status}\n"),
+                )?;
+                queued.job.exit_code = code;
+                queued.job.exit_reason = Some(format!("gui_exited_early:{status}"));
+                queued.job.stopped_at = Some(Timestamp::now());
+                queued.job.cleanup_verified = true;
+                if status.success() {
+                    queued
+                        .job
+                        .transition(ExecutionStatus::Succeeded)
+                        .map_err(|_| CoreError::InvalidRequest)?;
+                } else {
+                    queued
+                        .job
+                        .transition(ExecutionStatus::Failed)
+                        .map_err(|_| CoreError::InvalidRequest)?;
+                }
+                break;
+            }
+            Ok(None) if tokio::time::Instant::now() < probe_deadline => {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+            }
+            Ok(None) => {
+                append_job_log(
+                    &queued.stdout_path,
+                    &format!(
+                        "[flagdeck] gui still running after probe; detaching pid={pid}\n\
+                     [flagdeck] 独立窗口应已打开。此任务标记为成功，进程不再由 FlagDeck 等待。\n"
+                    ),
+                )?;
+                // Reap zombies without blocking the Tokio runtime / tests.
+                std::thread::Builder::new()
+                    .name(format!("flagdeck-gui-reaper-{pid}"))
+                    .spawn(move || {
+                        let _ = child.wait();
+                    })
+                    .ok();
+                queued.job.exit_reason = Some(format!("gui_detached_pid_{pid}"));
+                queued.job.stopped_at = Some(Timestamp::now());
+                queued.job.cleanup_verified = true;
+                queued
+                    .job
+                    .transition(ExecutionStatus::Succeeded)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+                break;
+            }
+            Err(error) => {
+                append_job_log(
+                    &queued.stderr_path,
+                    &format!("[flagdeck] gui wait error: {error}\n"),
+                )?;
+                queued.job.exit_reason = Some(format!("gui_wait_error:{error}"));
+                queued.job.stopped_at = Some(Timestamp::now());
+                queued
+                    .job
+                    .transition(ExecutionStatus::Failed)
+                    .map_err(|_| CoreError::InvalidRequest)?;
+                break;
+            }
         }
     }
     queued.store.save_job(&queued.job)?;

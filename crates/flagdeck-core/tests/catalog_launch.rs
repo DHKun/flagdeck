@@ -214,7 +214,7 @@ fn catalog_diagnostic_distinguishes_all_actionable_health_states() {
     let diagnose = |core: &CoreService| {
         core.diagnose_catalog_tool(&DiagnoseCatalogToolRequest {
             tool_id: "ffuf".to_owned(),
-            refresh_help: false,
+            refresh_help: true,
         })
         .unwrap()
     };
@@ -2134,7 +2134,7 @@ fn sqlmap_preview_is_l3_and_githacker_preview_works() {
 }
 
 #[test]
-fn workspace_catalog_exposes_php_filter_chain_as_tenth_tier1_tool() {
+fn workspace_catalog_exposes_intelpwn_as_an_eleventh_tier1_tool() {
     let temporary = tempdir().unwrap();
     let catalog_root =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
@@ -2164,6 +2164,7 @@ fn workspace_catalog_exposes_php_filter_chain_as_tenth_tier1_tool() {
             "fscan",
             "githacker",
             "gobuster",
+            "intelpwn",
             "php-filter-chain",
             "sqlmap",
             "wafw00f",
@@ -2193,6 +2194,70 @@ fn workspace_catalog_exposes_php_filter_chain_as_tenth_tier1_tool() {
     );
     assert!(!tool.installation.homepage.is_empty());
     assert!(!tool.installation.install_command.is_empty());
+
+    let intelpwn = snapshot
+        .tools
+        .iter()
+        .find(|tool| tool.id == "intelpwn")
+        .expect("intelpwn present");
+    assert_eq!(intelpwn.risk_level, "l3");
+    assert_eq!(intelpwn.io.schema_version, 1);
+    assert!(intelpwn.usage.contains("analyze --json --no-exploit"));
+}
+
+#[test]
+fn intelpwn_preview_matches_the_safe_upstream_cli_contract() {
+    let temporary = tempdir().unwrap();
+    let catalog_root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/tool-catalog");
+    let core = CoreService::with_bundled_resources(
+        temporary.path().join("workspaces"),
+        None,
+        None,
+        None,
+        None,
+        Some(catalog_root),
+    );
+    let project = core
+        .create_project(&CreateProjectRequest {
+            name: "intelpwn-preview".to_owned(),
+        })
+        .unwrap();
+    let preview = core
+        .preview_catalog_tool(PreviewCatalogToolRequest {
+            project_id: project.project_id.clone(),
+            tool_id: "intelpwn".to_owned(),
+            target_url: String::new(),
+            form: BTreeMap::from([
+                ("elf_path".to_owned(), "/usr/bin/true".to_owned()),
+                ("libc".to_owned(), String::new()),
+            ]),
+        })
+        .unwrap();
+    assert_eq!(preview.risk_level, RiskLevel::L3);
+    assert!(preview.command_preview.contains("/.venv/bin/python"));
+    assert!(
+        preview
+            .command_preview
+            .contains("intelpwn.py\" \"analyze\" \"/usr/bin/true\" \"--json\" \"--no-exploit\""),
+        "{}",
+        preview.command_preview
+    );
+
+    for invalid in ["relative", "/definitely/missing/flagdeck-intelpwn"] {
+        assert!(matches!(
+            core.preview_catalog_tool(PreviewCatalogToolRequest {
+                project_id: project.project_id.clone(),
+                tool_id: "intelpwn".to_owned(),
+                target_url: String::new(),
+                form: BTreeMap::from([
+                    ("elf_path".to_owned(), invalid.to_owned()),
+                    ("libc".to_owned(), String::new()),
+                ]),
+            }),
+            Err(CoreError::InvalidRequest)
+        ));
+    }
 }
 
 #[test]

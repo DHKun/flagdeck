@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 flagdeck-domain = { path = "../flagdeck-domain" }
+nix = { workspace = true, features = ["user"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

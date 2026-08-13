@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import type { JobLogWindow } from "../src/lib/jobHistory";
 import {
+  jobFailureSummary,
+  jobsForTool,
+  latestJobForTool,
   nextLogOffset,
   shouldFallbackToStderr,
   shouldReplaceJobCursor,
@@ -48,6 +51,32 @@ describe("shouldFallbackToStderr", () => {
     expect(shouldFallbackToStderr("reset", "stdout", "", false)).toBe(false);
     expect(shouldFallbackToStderr("append", "stdout", "", true)).toBe(false);
     expect(shouldFallbackToStderr("reset", "stderr", "", true)).toBe(false);
+  });
+});
+
+describe("jobsForTool", () => {
+  it("keeps only the selected tool's jobs", () => {
+    const jobs = [
+      { tool_id: "antsword", job: { created_at: "2" } },
+      { tool_id: "arjun", job: { created_at: "1" } },
+    ];
+    expect(jobsForTool(jobs, "arjun")).toEqual([jobs[1]]);
+    expect(latestJobForTool(jobs, "arjun")?.tool_id).toBe("arjun");
+    expect(latestJobForTool(jobs, "ffuf")).toBeUndefined();
+  });
+});
+
+describe("jobFailureSummary", () => {
+  it("extracts a connection failure from sqlmap-style stdout", () => {
+    expect(
+      jobFailureSummary(
+        "[12:20:54] [CRITICAL] unable to connect to the target URL ('Connection refused')",
+      ),
+    ).toMatch(/unable to connect/i);
+  });
+
+  it("returns empty when the log has no failure marker", () => {
+    expect(jobFailureSummary("=== FlagDeck launch ===\n[*] starting")).toBe("");
   });
 });
 

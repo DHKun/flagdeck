@@ -254,20 +254,51 @@ button {
   font-size: 14px;
 }
 
+.page-header-compact {
+  margin-bottom: -4px;
+}
+
+.page-header-compact h1 {
+  font-size: 22px;
+}
+
+.page-header-compact p {
+  margin-top: 2px;
+  font-size: 13px;
+}
+
 .notice {
   display: none;
 }
 
 .notice.show {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 40;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
   padding: 12px 14px;
   border-radius: var(--radius-sm);
   background: var(--surface);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
   font-size: 13px;
+}
+
+.notice-dismiss {
+  flex-shrink: 0;
+  margin: -4px -6px -4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  padding: 4px;
+}
+
+.notice-dismiss:hover {
+  color: var(--text);
 }
 
 .notice.success {
@@ -527,8 +558,8 @@ button {
 
 .tool-catalog-panel {
   position: sticky;
-  top: 82px;
-  max-height: calc(100vh - 100px);
+  top: 64px;
+  max-height: calc(100vh - 80px);
   gap: 4px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -633,7 +664,33 @@ button {
 
 .tool-runner-card {
   min-width: 0;
+}
+
+.runner-launch {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.runner-launch-preview code {
+  display: block;
+  max-height: 3.2em;
   overflow: hidden;
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.runner-launch-preview .meta {
+  margin-top: 6px;
+}
+
+.runner-launch-preview .sub {
+  margin: 6px 0 0;
 }
 
 .runner-head {
@@ -646,10 +703,9 @@ button {
 
 .runner-facts {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 6px 18px;
-  padding: 0 0 15px;
-  border-bottom: 1px solid var(--border);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 0 0 12px;
 }
 
 .runner-facts .meta {
@@ -666,11 +722,28 @@ button {
 }
 
 .diagnostic-panel {
-  margin: 14px 0 18px;
-  padding: 14px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.018);
+}
+
+.diagnostic-panel.collapsed {
+  margin-bottom: 12px;
+}
+
+.diagnostic-toggle {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+}
+
+.diagnostic-toggle .section-label {
+  margin: 0;
 }
 
 .diagnostic-head,
@@ -973,6 +1046,10 @@ button {
   font-size: 12px;
 }
 
+.job-item .job-failure {
+  color: var(--danger);
+}
+
 .empty {
   color: var(--text-tertiary);
   font-size: 13px;
@@ -1041,8 +1118,8 @@ button {
   display: grid;
   grid-template-columns: minmax(240px, 1.15fr) minmax(420px, 1fr);
   align-items: flex-end;
-  gap: 10px 14px;
-  padding: 14px;
+  gap: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);

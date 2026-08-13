@@ -63,6 +63,8 @@ pub enum ExecPolicyError {
     Io(#[from] std::io::Error),
     #[error("managed process launch failed")]
     Spawn,
+    #[error("required systemd isolation is unavailable")]
+    IsolationUnavailable,
     #[error("managed process identity is invalid")]
     ProcessIdentity,
     #[error("credential channel input failed validation")]
@@ -369,6 +371,7 @@ fn validate_private_runtime_directory(path: &Path) -> Result<PathBuf, ExecPolicy
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedCommand {
     pub canonical_program: PathBuf,
+    pub invocation_program: PathBuf,
     pub argv: Vec<String>,
     pub environment: Vec<(String, String)>,
     pub cwd: PathBuf,
@@ -479,7 +482,9 @@ pub fn validate_command(spec: &CommandSpec) -> Result<ValidatedCommand, ExecPoli
     ) {
         return Err(ExecPolicyError::CredentialLauncherRequired);
     }
-    let canonical_program = validate_program(Path::new(&spec.program), &spec.tool_sha256)?;
+    let invocation_program = PathBuf::from(&spec.program);
+    let canonical_program = validate_program(&invocation_program, &spec.tool_sha256)?;
+    validate_invocation_path(&invocation_program)?;
     let program_sha256 = spec.tool_sha256.clone();
     if spec
         .argv_exec
@@ -500,6 +505,7 @@ pub fn validate_command(spec: &CommandSpec) -> Result<ValidatedCommand, ExecPoli
     }
     Ok(ValidatedCommand {
         canonical_program,
+        invocation_program,
         argv: spec.argv_exec.clone(),
         environment: spec
             .env_exec
@@ -509,6 +515,23 @@ pub fn validate_command(spec: &CommandSpec) -> Result<ValidatedCommand, ExecPoli
         cwd,
         program_sha256,
     })
+}
+
+fn validate_invocation_path(program: &Path) -> Result<(), ExecPolicyError> {
+    let metadata = fs::symlink_metadata(program)?;
+    let current_uid = Uid::current().as_raw();
+    if metadata.uid() != 0 && metadata.uid() != current_uid {
+        return Err(ExecPolicyError::ProgramOwner);
+    }
+    let parent = program.parent().ok_or(ExecPolicyError::ProgramPath)?;
+    let parent_metadata = fs::metadata(parent)?;
+    if !parent_metadata.is_dir()
+        || (parent_metadata.uid() != 0 && parent_metadata.uid() != current_uid)
+        || parent_metadata.mode() & 0o022 != 0
+    {
+        return Err(ExecPolicyError::ProgramWritable);
+    }
+    Ok(())
 }
 
 pub fn validate_program(program: &Path, expected_sha256: &str) -> Result<PathBuf, ExecPolicyError> {
@@ -552,6 +575,11 @@ pub async fn start_managed_with_backend(
     stderr_path: &Path,
     backend: SupervisorBackend,
 ) -> Result<ManagedExecution, ExecPolicyError> {
+    if spec.sandbox_profile == "local-untrusted-binary-systemd"
+        && backend != SupervisorBackend::SystemdUserService
+    {
+        return Err(ExecPolicyError::IsolationUnavailable);
+    }
     let validated = validate_command(spec)?;
     validate_output_path(&validated.cwd, stdout_path)?;
     validate_output_path(&validated.cwd, stderr_path)?;
@@ -611,27 +639,7 @@ async fn start_systemd(
     stderr_path: &Path,
 ) -> Result<ManagedExecution, ExecPolicyError> {
     let unit = systemd_unit_name(spec)?;
-    let limits = &spec.resource_limits;
-    let mut properties = vec![
-        "KillMode=control-group".to_owned(),
-        format!("LimitCORE={}", limits.core_dump_bytes),
-        "NoNewPrivileges=yes".to_owned(),
-        format!("MemoryMax={}", limits.memory_max_bytes),
-        format!("TasksMax={}", limits.tasks_max),
-        format!("CPUQuota={}%", limits.cpu_quota_percent),
-        format!("TimeoutStopSec={}ms", spec.stop_grace_millis),
-        "UMask=0077".to_owned(),
-        "RemainAfterExit=yes".to_owned(),
-        // Keep failed transient units available until exit evidence is captured.
-        "CollectMode=inactive".to_owned(),
-        format!("WorkingDirectory={}", validated.cwd.display()),
-        format!("StandardOutput=append:{}", stdout_path.display()),
-        format!("StandardError=append:{}", stderr_path.display()),
-    ];
-    if spec.network_isolation == "loopback-systemd-primary-pgid-input-gate" {
-        properties.push("IPAddressDeny=any".to_owned());
-        properties.push("IPAddressAllow=localhost".to_owned());
-    }
+    let properties = systemd_properties(spec, validated, stdout_path, stderr_path);
     let mut command = tokio::process::Command::new(SYSTEMD_RUN);
     command.args(["--user", "--quiet", "--service-type=exec"]);
     command.arg(format!("--unit={unit}"));
@@ -641,7 +649,7 @@ async fn start_systemd(
     command.arg("--").args([ENV, "-i"]);
     append_environment(&mut command, &validated.environment);
     command
-        .arg(&validated.canonical_program)
+        .arg(&validated.invocation_program)
         .args(&validated.argv)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -678,7 +686,7 @@ async fn start_systemd(
             systemd_unit: Some(unit),
             cgroup_path,
             invocation_id: Some(invocation_id),
-            target_program: validated.canonical_program.display().to_string(),
+            target_program: validated.invocation_program.display().to_string(),
             ownership_verified: true,
         },
         state: ManagedState::Systemd,
@@ -686,6 +694,88 @@ async fn start_systemd(
         timeout: Duration::from_millis(spec.timeout_millis),
         stop_grace: stop_grace(spec.stop_grace_millis),
     })
+}
+
+fn systemd_properties(
+    spec: &CommandSpec,
+    validated: &ValidatedCommand,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Vec<String> {
+    let limits = &spec.resource_limits;
+    let mut properties = vec![
+        "KillMode=control-group".to_owned(),
+        format!("LimitCORE={}", limits.core_dump_bytes),
+        "NoNewPrivileges=yes".to_owned(),
+        format!("MemoryMax={}", limits.memory_max_bytes),
+        format!("TasksMax={}", limits.tasks_max),
+        format!("CPUQuota={}%", limits.cpu_quota_percent),
+        format!("TimeoutStopSec={}ms", spec.stop_grace_millis),
+        "UMask=0077".to_owned(),
+        "RemainAfterExit=yes".to_owned(),
+        // Keep failed transient units available until exit evidence is captured.
+        "CollectMode=inactive".to_owned(),
+        format!("WorkingDirectory={}", validated.cwd.display()),
+        format!("StandardOutput=append:{}", stdout_path.display()),
+        format!("StandardError=append:{}", stderr_path.display()),
+    ];
+    if spec.network_isolation == "loopback-systemd-primary-pgid-input-gate" {
+        properties.push("IPAddressDeny=any".to_owned());
+        properties.push("IPAddressAllow=localhost".to_owned());
+    }
+    if spec.sandbox_profile == "local-untrusted-binary-systemd" {
+        properties.extend([
+            "IPAddressDeny=any".to_owned(),
+            "RestrictAddressFamilies=AF_UNIX".to_owned(),
+            "PrivateTmp=yes".to_owned(),
+            "PrivateDevices=yes".to_owned(),
+            "ProtectSystem=strict".to_owned(),
+            "ProtectHome=read-only".to_owned(),
+            "ProtectKernelTunables=yes".to_owned(),
+            "ProtectKernelModules=yes".to_owned(),
+            "ProtectControlGroups=yes".to_owned(),
+            "RestrictSUIDSGID=yes".to_owned(),
+            "LockPersonality=yes".to_owned(),
+            "ReadOnlyPaths=/".to_owned(),
+            format!("ReadWritePaths={}", systemd_path(&validated.cwd)),
+        ]);
+        let mut read_only_directories = BTreeSet::new();
+        for path in [
+            validated.canonical_program.as_path(),
+            validated.invocation_program.as_path(),
+        ]
+        .into_iter()
+        .chain(
+            validated
+                .argv
+                .iter()
+                .map(Path::new)
+                .filter(|path| path.is_absolute() && path.exists()),
+        ) {
+            if let Some(parent) = path.parent() {
+                read_only_directories.insert(parent.to_path_buf());
+            }
+        }
+        properties.extend(
+            read_only_directories
+                .into_iter()
+                .map(|path| format!("BindReadOnlyPaths={}", systemd_path(&path))),
+        );
+    }
+    properties
+}
+
+fn systemd_path(path: &Path) -> String {
+    path.as_os_str()
+        .as_bytes()
+        .iter()
+        .flat_map(|byte| match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'_' | b'-' | b'.' => {
+                vec![char::from(*byte)]
+            }
+            byte => format!("\\x{byte:02x}").chars().collect(),
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -703,7 +793,7 @@ async fn start_pgid(
         .env_clear();
     append_environment(&mut command, &validated.environment);
     command
-        .arg(&validated.canonical_program)
+        .arg(&validated.invocation_program)
         .args(&validated.argv)
         .current_dir(&validated.cwd)
         .stdin(Stdio::null())
@@ -737,7 +827,7 @@ async fn start_pgid(
             systemd_unit: None,
             cgroup_path: None,
             invocation_id: None,
-            target_program: validated.canonical_program.display().to_string(),
+            target_program: validated.invocation_program.display().to_string(),
             ownership_verified: true,
         },
         state,
@@ -756,7 +846,7 @@ async fn start_pgid(
 ) -> Result<ManagedExecution, ExecPolicyError> {
     let stdout = OpenOptions::new().append(true).open(stdout_path)?;
     let stderr = OpenOptions::new().append(true).open(stderr_path)?;
-    let mut command = tokio::process::Command::new(&validated.canonical_program);
+    let mut command = tokio::process::Command::new(&validated.invocation_program);
     command.as_std_mut().process_group(0);
     command
         .args(&validated.argv)
@@ -790,7 +880,7 @@ async fn start_pgid(
             systemd_unit: None,
             cgroup_path: None,
             invocation_id: None,
-            target_program: validated.canonical_program.display().to_string(),
+            target_program: validated.invocation_program.display().to_string(),
             ownership_verified: true,
         },
         state,
@@ -1699,6 +1789,7 @@ mod tests {
         let accepted =
             validate_command(&fixture_spec("/usr/bin/true", vec!["--help".to_owned()])).unwrap();
         assert_eq!(accepted.canonical_program, Path::new("/usr/bin/true"));
+        assert_eq!(accepted.invocation_program, Path::new("/usr/bin/true"));
         let mut wrong_hash = fixture_spec("/usr/bin/true", vec!["--help".to_owned()]);
         wrong_hash.tool_sha256 = "0".repeat(64);
         assert!(matches!(
@@ -1731,6 +1822,78 @@ mod tests {
             validate_command(&secret_environment),
             Err(ExecPolicyError::CredentialLauncherRequired)
         ));
+    }
+
+    #[test]
+    fn validated_symlink_keeps_its_invocation_path() {
+        let temporary = tempfile::tempdir().unwrap();
+        let python = temporary.path().join("python");
+        std::os::unix::fs::symlink("/usr/bin/true", &python).unwrap();
+        let spec = fixture_spec(python.to_str().unwrap(), Vec::new());
+        let validated = validate_command(&spec).unwrap();
+        assert_eq!(validated.invocation_program, python);
+        assert_eq!(validated.canonical_program, Path::new("/usr/bin/true"));
+    }
+
+    #[test]
+    fn local_binary_profile_builds_strict_systemd_properties() {
+        let temporary = tempfile::tempdir().unwrap();
+        let target = temporary.path().join("target");
+        fs::write(&target, b"\x7fELFfixture").unwrap();
+        let mut spec = fixture_spec("/usr/bin/true", vec![target.display().to_string()]);
+        spec.cwd = temporary.path().display().to_string();
+        spec.sandbox_profile = "local-untrusted-binary-systemd".to_owned();
+        spec.network_isolation = "deny-all-systemd".to_owned();
+        let validated = validate_command(&spec).unwrap();
+        let properties = systemd_properties(
+            &spec,
+            &validated,
+            &temporary.path().join("stdout.log"),
+            &temporary.path().join("stderr.log"),
+        );
+        for required in [
+            "IPAddressDeny=any",
+            "RestrictAddressFamilies=AF_UNIX",
+            "PrivateTmp=yes",
+            "PrivateDevices=yes",
+            "ProtectSystem=strict",
+            "ProtectHome=read-only",
+            "ReadOnlyPaths=/",
+        ] {
+            assert!(properties.iter().any(|property| property == required));
+        }
+        assert!(properties.iter().any(|property| {
+            property == &format!("ReadWritePaths={}", temporary.path().display())
+        }));
+        assert!(properties.iter().any(|property| {
+            property == &format!("BindReadOnlyPaths={}", temporary.path().display())
+        }));
+    }
+
+    #[test]
+    fn local_binary_profile_rejects_pgid_fallback() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut spec = fixture_spec("/usr/bin/true", Vec::new());
+        spec.cwd = temporary.path().display().to_string();
+        spec.sandbox_profile = "local-untrusted-binary-systemd".to_owned();
+        spec.network_isolation = "deny-all-systemd".to_owned();
+        let stdout = temporary.path().join("stdout.log");
+        let stderr = temporary.path().join("stderr.log");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(matches!(
+            runtime.block_on(start_managed_with_backend(
+                &spec,
+                &stdout,
+                &stderr,
+                SupervisorBackend::PgidFallback,
+            )),
+            Err(ExecPolicyError::IsolationUnavailable)
+        ));
+        assert!(!stdout.exists());
+        assert!(!stderr.exists());
     }
 
     #[test]

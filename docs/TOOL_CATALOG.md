@@ -143,10 +143,13 @@ max_bytes = 524288
 
 ### Binary / 逆向
 
-| ID             | 模式     | 说明             |
-| -------------- | -------- | ---------------- |
-| strings        | embedded | 可打印字符串     |
-| pyinstxtractor | embedded | PyInstaller 解包 |
+| ID             | 模式     | 说明                                  |
+| -------------- | -------- | ------------------------------------- |
+| strings        | embedded | 可打印字符串                          |
+| pyinstxtractor | embedded | PyInstaller 解包                      |
+| intelpwn       | embedded | ELF 漏洞分析与可利用性评估（L3）      |
+
+IntelPwn 固定运行 `analyze <ELF> --json --no-exploit [--libc <ELF>]`。目标路径使用 `local_elf_file` 校验并规范化；执行要求 `local-untrusted-binary-systemd` 隔离配置，全程禁用网络，主机文件系统保持只读。systemd 隔离不可用时任务拒绝启动。
 
 ### Web 利用 / 载荷
 
@@ -170,7 +173,7 @@ max_bytes = 524288
 
 ### 结构化结果
 
-任务旁路文件（如 `ffuf-output.json`）可通过 `preview_job_file` 读取；工作台「结果」页对 ffuf / dddd / fscan / gobuster / arjun / sqlmap 做表格解析。其它工具默认看日志。
+任务旁路文件（如 `ffuf-output.json`）可通过 `preview_job_file` 读取；工作台「结果」页对 ffuf / dddd / fscan / gobuster / arjun / sqlmap / intelpwn 做表格解析。其它工具默认看日志。
 
 ## 未纳入说明
 

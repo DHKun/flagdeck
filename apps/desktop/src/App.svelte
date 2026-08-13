@@ -23,11 +23,9 @@
   } from "./generated/contracts";
   import type {
     AppStatus,
-    CatalogDiagnosticStatus,
     CatalogFormFieldDto,
     CatalogRunPreview,
     CatalogSnapshot,
-    CatalogToolDiagnosticDto,
     CatalogToolDto,
     ExportJobArtifactResult,
     JobLogStream,
@@ -93,6 +91,9 @@
   } from "./lib/runPlanning";
   import { computeToolDefaults, pickInitialTool } from "./lib/toolSelection";
   import {
+    jobFailureSummary,
+    jobsForTool,
+    latestJobForTool,
     nextLogOffset,
     shouldFallbackToStderr,
     shouldReplaceJobCursor,
@@ -116,12 +117,7 @@
 
   type NavId = "home" | "tools" | "jobs" | "settings";
   type OutputTab = "log" | "result" | "evidence";
-  type DiagnosticCacheEntry = {
-    diagnostic: CatalogToolDiagnosticDto;
-    checkedAt: number;
-  };
 
-  const DIAGNOSTIC_TTL_MS = 30_000;
   const JOB_POLL_INTERVAL_MS = 1_000;
   const LOG_APPEND_BYTES = 32_768;
   const LOG_PAGE_BYTES = 65_536;
@@ -213,10 +209,6 @@
   let helpQuery = "";
   let helpOpen = false;
   let showHiddenFields = false;
-  let toolDiagnostic: CatalogToolDiagnosticDto | null = null;
-  let diagnosticBusy = false;
-  let diagnosticUpdatedAt = "";
-  const diagnosticCache = new Map<string, DiagnosticCacheEntry>();
   let runPreview: CatalogRunPreview | null = null;
   let runPreviewError = "";
   let runPreviewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -287,10 +279,7 @@
   $: relationWarnings = relationNotices.filter(
     (item) => item.severity === "warning",
   );
-  $: helpSearchResult = searchHelpText(
-    toolDiagnostic?.help.content ?? "",
-    helpQuery,
-  );
+  $: helpSearchResult = searchHelpText(toolUsage(selectedTool), helpQuery);
   $: selectedToolPersonalPresets = selectedTool
     ? personalPresetsForTool(personalPresetStore, selectedTool.id)
     : [];
@@ -323,6 +312,7 @@
   $: filteredJobs = jobFilterToolId
     ? jobs.filter((item) => item.tool_id === jobFilterToolId)
     : jobs;
+  $: toolJobs = jobsForTool(jobs, selectedToolId);
   $: jobToolOptions = [...new Set(jobs.map((item) => item.tool_id))].sort();
   $: jobLogContent = jobLogWindow?.content ?? "";
   $: jobLogRange = jobLogRangeLabel(jobLogWindow);
@@ -365,6 +355,29 @@
     );
   }
 
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showNotice(
+    text: string,
+    kind: "info" | "success" | "error" = "info",
+  ): void {
+    notice = text;
+    noticeKind = kind;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+    if (!text || kind === "error") return;
+    noticeTimer = setTimeout(() => {
+      if (notice === text) notice = "";
+      noticeTimer = undefined;
+    }, 2800);
+  }
+
+  function dismissNotice(): void {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+    notice = "";
+  }
+
   function reportError(error: unknown): void {
     notice = commandErrorMessage(error);
     noticeKind = "error";
@@ -388,8 +401,7 @@
     busy = true;
     try {
       await operation();
-      notice = success;
-      noticeKind = "success";
+      if (success) showNotice(success, "success");
     } catch (error) {
       reportError(error);
     } finally {
@@ -468,8 +480,7 @@
       await persistPersonalPresetStore(next);
       const created = next.presets.at(-1);
       if (created) applyToolPreset(selectedTool, created.id);
-      notice = "已保存个人预设";
-      noticeKind = "success";
+      showNotice("已保存个人预设", "success");
     } catch (error) {
       reportLocalError(error);
     } finally {
@@ -488,8 +499,7 @@
         formValues,
       );
       await persistPersonalPresetStore(next);
-      notice = "已更新个人预设";
-      noticeKind = "success";
+      showNotice("已更新个人预设", "success");
     } catch (error) {
       reportLocalError(error);
     } finally {
@@ -509,8 +519,7 @@
         name,
       );
       await persistPersonalPresetStore(next);
-      notice = "已重命名个人预设";
-      noticeKind = "success";
+      showNotice("已重命名个人预设", "success");
     } catch (error) {
       reportLocalError(error);
     } finally {
@@ -533,8 +542,7 @@
         selectedTool,
         resolveDefaultPresetId(personalPresetStore, selectedTool),
       );
-      notice = "已删除个人预设";
-      noticeKind = "success";
+      showNotice("已删除个人预设", "success");
     } catch (error) {
       reportLocalError(error);
     } finally {
@@ -552,8 +560,7 @@
         selectedPersonalPreset.id,
       );
       await persistPersonalPresetStore(next);
-      notice = "已设为当前工具的默认个人预设";
-      noticeKind = "success";
+      showNotice("已设为当前工具的默认个人预设", "success");
     } catch (error) {
       reportLocalError(error);
     } finally {
@@ -587,8 +594,7 @@
           resolveDefaultPresetId(personalPresetStore, selectedTool),
         );
       }
-      notice = "已导入个人预设";
-      noticeKind = "success";
+      showNotice("已导入个人预设", "success");
     } catch (error) {
       reportLocalError(error);
     } finally {
@@ -707,7 +713,7 @@
     else persistPrefs();
   }
 
-  function selectTool(tool: CatalogToolDto): void {
+  function selectTool(tool: CatalogToolDto, navigate = true): void {
     if (selectedToolId && selectedToolId !== tool.id) {
       rememberFormForTool(selectedToolId);
     }
@@ -720,62 +726,34 @@
       recentToolIds: rememberTool(prefs, tool.id),
     };
     persistPrefs();
-    if (activeNav === "home") activeNav = "tools";
-    toolDiagnostic = null;
-    diagnosticUpdatedAt = "";
+    if (navigate && activeNav === "home") activeNav = "tools";
     parameterQuery = "";
     helpQuery = "";
     helpOpen = false;
     showHiddenFields = false;
-    void loadToolDiagnostic(tool.id, false);
+    bindOutputToTool(tool.id);
   }
 
-  async function loadToolDiagnostic(
-    toolId: string,
-    announce: boolean,
-  ): Promise<void> {
-    const cached = diagnosticCache.get(toolId);
-    if (
-      !announce &&
-      cached &&
-      Date.now() - cached.checkedAt < DIAGNOSTIC_TTL_MS
-    ) {
-      if (selectedToolId === toolId) {
-        toolDiagnostic = cached.diagnostic;
-        diagnosticUpdatedAt = new Date(cached.checkedAt).toLocaleTimeString(
-          "zh-CN",
-          { hour12: false },
-        );
-      }
+  function clearSelectedOutput(): void {
+    selectedLogJobId = "";
+    selectedLogStream = "stdout";
+    jobLogWindow = null;
+    structuredResult = null;
+    jobArtifacts = [];
+    resultLoadedForJobId = "";
+    evidenceLoadedForJobId = "";
+    lastJobExport = null;
+    jobEvidenceNotice = "";
+  }
+
+  function bindOutputToTool(toolId: string): void {
+    const latest = latestJobForTool(jobs, toolId);
+    if (!latest) {
+      clearSelectedOutput();
       return;
     }
-    diagnosticBusy = true;
-    try {
-      const diagnostic = await ipc.diagnoseCatalogTool({
-        tool_id: toolId,
-        refresh_help: announce,
-      });
-      const checkedAt = Date.now();
-      diagnosticCache.set(toolId, { diagnostic, checkedAt });
-      if (selectedToolId !== toolId) return;
-      toolDiagnostic = diagnostic;
-      diagnosticUpdatedAt = new Date(checkedAt).toLocaleTimeString("zh-CN", {
-        hour12: false,
-      });
-      if (announce) {
-        const nextCatalog = await ipc.listCatalog();
-        if (selectedToolId !== toolId) return;
-        catalog = nextCatalog;
-        notice =
-          diagnostic.status === "usable"
-            ? "环境诊断已更新，工具可用"
-            : "环境诊断已更新，请按检查项修复";
-        noticeKind = diagnostic.status === "usable" ? "success" : "info";
-      }
-    } catch (error) {
-      if (selectedToolId === toolId) reportError(error);
-    } finally {
-      if (selectedToolId === toolId) diagnosticBusy = false;
+    if (selectedLogJobId !== latest.job.job_id) {
+      void selectJobLog(latest);
     }
   }
 
@@ -796,11 +774,9 @@
       selectTool(pick);
       activeNav = "tools";
       if (scenario.category) categoryFilter = scenario.category;
-      notice = `已打开场景：${scenario.title} → ${pick.name}`;
-      noticeKind = "info";
+      showNotice(`已打开场景：${scenario.title} → ${pick.name}`, "info");
     } else {
-      notice = `场景「${scenario.title}」暂无可用工具`;
-      noticeKind = "error";
+      showNotice(`场景「${scenario.title}」暂无可用工具`, "error");
     }
   }
 
@@ -834,7 +810,7 @@
 
     if (!selectedToolId) {
       const preferred = pickInitialTool(catalog.tools, prefs.selectedToolId);
-      if (preferred) selectTool(preferred);
+      if (preferred) selectTool(preferred, false);
     } else if (selectedTool) {
       if (Object.keys(formValues).length === 0) {
         applyToolDefaults(selectedTool);
@@ -857,9 +833,6 @@
           resolveDefaultPresetId(personalPresetStore, selectedTool),
         );
       }
-    }
-    if (selectedToolId && !diagnosticBusy) {
-      await loadToolDiagnostic(selectedToolId, false);
     }
   }
 
@@ -999,8 +972,7 @@
       });
       lastJobExport = result;
       jobEvidenceNotice = `已导出 ${result.export_name} · ${result.size} 字节 · ${result.sha256.slice(0, 12)}…`;
-      notice = jobEvidenceNotice;
-      noticeKind = "success";
+      showNotice(jobEvidenceNotice, "success");
     } catch (error) {
       reportError(error);
     } finally {
@@ -1052,11 +1024,9 @@
     if (!jobLogContent) return;
     try {
       await navigator.clipboard.writeText(jobLogContent);
-      notice = "日志已复制";
-      noticeKind = "success";
+      showNotice("日志已复制", "success");
     } catch {
-      notice = "复制失败（浏览器/桌面权限限制）";
-      noticeKind = "error";
+      showNotice("复制失败（浏览器/桌面权限限制）", "error");
     }
   }
 
@@ -1066,11 +1036,9 @@
       await navigator.clipboard.writeText(
         exportStructuredRowsTsv(resultColumns, resultRows),
       );
-      notice = `已复制 ${resultRows.length} 行结果`;
-      noticeKind = "success";
+      showNotice(`已复制 ${resultRows.length} 行结果`, "success");
     } catch {
-      notice = "复制失败";
-      noticeKind = "error";
+      showNotice("复制失败", "error");
     }
   }
 
@@ -1078,8 +1046,7 @@
     if (!artifactId) return;
     outputTab = "evidence";
     void loadJobEvidence();
-    notice = `已定位原始证据 ${artifactId}`;
-    noticeKind = "info";
+    showNotice(`已定位原始证据 ${artifactId}`, "info");
   }
 
   function openSendTo(row: {
@@ -1098,8 +1065,7 @@
     };
     const targets = listCompatibleSendToTargets(catalog.tools, source);
     if (targets.length === 0) {
-      notice = "没有接受 URL 输入的可用兼容工具";
-      noticeKind = "error";
+      showNotice("没有接受 URL 输入的可用兼容工具", "error");
       return;
     }
     sendToSource = source;
@@ -1135,14 +1101,37 @@
     activeNav = "tools";
     persistPrefs();
     scheduleRunPreview();
-    notice = `已发送到 ${tool.name}，仅填充 URL 字段；请确认 Scope 与风险后运行`;
-    noticeKind = "info";
+    showNotice(
+      `已发送到 ${tool.name}，仅填充 URL 字段；请确认 Scope 与风险后运行`,
+      "info",
+    );
   }
 
   function jobStatusLabel(item: JobView | null): string {
-    if (!item) return "未选择任务";
-    const reason = item.job.exit_reason ? ` · ${item.job.exit_reason}` : "";
-    return `${item.tool_id} · ${executionStatusLabel(item.job.execution_status)}${reason}`;
+    if (!item || (selectedToolId && item.tool_id !== selectedToolId)) {
+      return "未选择任务";
+    }
+    const failure =
+      item.job.job_id === selectedLogJobId
+        ? jobFailureSummary(jobLogContent)
+        : "";
+    const status = failure
+      ? "未达目标"
+      : executionStatusLabel(item.job.execution_status);
+    return failure
+      ? `${item.tool_id} · ${status} · ${failure}`
+      : `${item.tool_id} · ${status}`;
+  }
+
+  function jobListStatus(item: JobView): string {
+    if (
+      item.job.execution_status === "succeeded" &&
+      item.job.job_id === selectedLogJobId &&
+      jobFailureSummary(jobLogContent)
+    ) {
+      return "未达目标";
+    }
+    return executionStatusLabel(item.job.execution_status);
   }
 
   async function selectJobLog(item: JobView): Promise<void> {
@@ -1240,16 +1229,19 @@
   async function runSelectedTool(): Promise<void> {
     if (!status?.active_project || !selectedTool) return;
     if (!selectedTool.available) {
-      notice = selectedTool.detail
-        ? `${selectedTool.name} 当前不可用：${selectedTool.detail}`
-        : `${selectedTool.name} 当前不可用，请查看运行环境诊断`;
-      noticeKind = "error";
-      await loadToolDiagnostic(selectedTool.id, false);
+      showNotice(
+        selectedTool.detail
+          ? `${selectedTool.name} 当前不可用：${selectedTool.detail}`
+          : `${selectedTool.name} 当前不可用`,
+        "error",
+      );
       return;
     }
     if (relationErrors.length > 0) {
-      notice = relationErrors.map((item) => item.message).join("；");
-      noticeKind = "error";
+      showNotice(
+        relationErrors.map((item) => item.message).join("；"),
+        "error",
+      );
       return;
     }
     if (
@@ -1262,8 +1254,7 @@
     }
     const contextTarget = contextTargetForRun();
     if (selectedTool.needs_target && !contextTarget) {
-      notice = "请先填写目标（URL / 主机）";
-      noticeKind = "error";
+      showNotice("请先填写目标（URL / 主机）", "error");
       return;
     }
     const plan = buildRunPlan(selectedTool, formValues, runPreview?.risk_level);
@@ -1327,12 +1318,18 @@
   async function cancelSelectedJob(): Promise<void> {
     if (!status?.active_project || !selectedLogJobId) return;
     await guarded(async () => {
-      await ipc.cancelJob({
-        project_id: status!.active_project!.project_id,
-        job_id: selectedLogJobId,
-      });
+      try {
+        await ipc.cancelJob({
+          project_id: status!.active_project!.project_id,
+          job_id: selectedLogJobId,
+        });
+      } catch {
+        // Detached GUI jobs leave the runner after launch; treat as already finished.
+      }
       await refresh();
-      await loadJobLog({ mode: "reset" });
+      if (selectedLogJobId) {
+        await loadJobLog({ mode: "reset" });
+      }
     }, "已请求取消任务");
   }
 
@@ -1363,8 +1360,7 @@
   async function clearAllJobs(): Promise<void> {
     if (!status?.active_project) return;
     if (jobs.some(jobIsActive)) {
-      notice = "仍有任务在运行，请先取消或等待结束后再清空";
-      noticeKind = "error";
+      showNotice("仍有任务在运行，请先取消或等待结束后再清空", "error");
       return;
     }
     await guarded(async () => {
@@ -1380,7 +1376,7 @@
       lastJobExport = null;
       jobEvidenceNotice = "";
       await refresh();
-      notice = `已清空 ${result.deleted} 个任务`;
+      showNotice(`已清空 ${result.deleted} 个任务`, "success");
     }, "任务列表已清空");
   }
 
@@ -1393,7 +1389,7 @@
   }
 
   function jobTabLabel(item: JobView): string {
-    return `${item.tool_id} · ${executionStatusLabel(item.job.execution_status)}`;
+    return `${item.tool_id} · ${jobListStatus(item)}`;
   }
 
   function toolUsage(tool: CatalogToolDto | null | undefined): string {
@@ -1404,39 +1400,6 @@
   function tierLabel(tier: string): string {
     const match = /^tier_(\d+)$/.exec(tier);
     return match ? `Tier ${match[1]}` : tier;
-  }
-
-  function diagnosticStatusLabel(status: CatalogDiagnosticStatus): string {
-    return (
-      {
-        usable: "可用",
-        missing: "缺失",
-        version_abnormal: "版本异常",
-        path_abnormal: "路径异常",
-        permission_abnormal: "权限异常",
-      } satisfies Record<CatalogDiagnosticStatus, string>
-    )[status];
-  }
-
-  async function copyDiagnosticValue(value: string): Promise<void> {
-    if (!value) return;
-    try {
-      await navigator.clipboard.writeText(value);
-      notice = "修复内容已复制";
-      noticeKind = "success";
-    } catch {
-      window.prompt("复制修复内容", value);
-    }
-  }
-
-  function installationSummary(tool: CatalogToolDto): string {
-    return [
-      tool.installation.distribution,
-      tool.installation.license,
-      tool.installation.version,
-    ]
-      .filter(Boolean)
-      .join(" · ");
   }
 
   const ioKindLabels: Record<ToolIoKind, string> = {
@@ -1451,25 +1414,19 @@
   }
 
   onMount(() => {
-    const refreshDiagnosticOnFocus = () => {
-      if (selectedToolId && !diagnosticBusy) {
-        void loadToolDiagnostic(selectedToolId, false);
-      }
-    };
-    window.addEventListener("focus", refreshDiagnosticOnFocus);
     void guarded(async () => {
       await refresh();
       scheduleJobPoll();
-    }, "工作台已就绪");
+    }, "");
     return () => {
       if (pollTimer) clearTimeout(pollTimer);
       if (runPreviewTimer) clearTimeout(runPreviewTimer);
+      if (noticeTimer) clearTimeout(noticeTimer);
       if (prefsPersistTimer) {
         clearTimeout(prefsPersistTimer);
         prefsPersistTimer = undefined;
         persistPrefs();
       }
-      window.removeEventListener("focus", refreshDiagnosticOnFocus);
     };
   });
 </script>
@@ -1551,7 +1508,11 @@
         </div>
       {/if}
       <div class="top-meta">
-        <span>{availableTools.length} 可用工具</span>
+        <span
+          >{catalog
+            ? `${availableTools.length} 可用工具`
+            : "正在读取工具"}</span
+        >
         <span>{activeJobCount} 运行中</span>
       </div>
     </header>
@@ -1567,18 +1528,25 @@
         aria-live={noticeKind === "error" ? "assertive" : "polite"}
         aria-atomic="true"
       >
-        {notice}
+        <span>{notice}</span>
+        <button
+          type="button"
+          class="notice-dismiss"
+          aria-label="关闭通知"
+          onclick={dismissNotice}
+        >
+          <X size={14} />
+        </button>
       </div>
 
-      {#if !status?.active_project}
-        <section class="card">
-          <h2>正在准备本地工作区</h2>
-          <p class="sub">任务、日志与结果会自动保存在应用数据目录。</p>
-        </section>
-      {:else if activeNav === "home"}
+      {#if activeNav === "home"}
         <div class="page-header">
           <h1>工作台</h1>
-          <p>输入目标，选择工具，点运行。无需手写命令。</p>
+          <p>
+            {status?.active_project
+              ? "输入目标，选择工具，点运行。无需手写命令。"
+              : "正在打开本地工作区…"}
+          </p>
         </div>
 
         <div class="section-label">场景</div>
@@ -1616,7 +1584,9 @@
               <button
                 class="btn btn-primary"
                 type="button"
-                disabled={busy || !selectedTool?.available}
+                disabled={busy ||
+                  !status?.active_project ||
+                  !selectedTool?.available}
                 onclick={() => void runSelectedTool()}
               >
                 运行 {selectedTool?.name ?? "工具"}
@@ -1722,9 +1692,9 @@
           {/each}
         </div>
       {:else if activeNav === "tools"}
-        <div class="page-header">
+        <div class="page-header page-header-compact">
           <h1>工具库</h1>
-          <p>选择工具，填写参数，查看命令与输出。</p>
+          <p>选工具、填参数、运行。输出在下方。</p>
         </div>
 
         <div class="filter-row">
@@ -1822,7 +1792,7 @@
                           type="button"
                           aria-label={tool.available
                             ? tool.name
-                            : `${tool.name}，不可用，查看诊断`}
+                            : `${tool.name}，不可用`}
                           onclick={() => selectTool(tool)}
                         >
                           <div class="tool-card-title">
@@ -1830,16 +1800,9 @@
                           </div>
                           <small>{tool.summary}</small>
                           <div class="meta">
-                            <span class="pill muted"
-                              >{tool.mode === "external_launch"
-                                ? "一键启动"
-                                : "内嵌运行"}</span
-                            >
-                            <span
-                              class={tool.available ? "pill ok" : "pill warn"}
-                            >
-                              {tool.available ? "可用" : tool.detail}
-                            </span>
+                            {#if !tool.available}
+                              <span class="pill warn">{tool.detail || "未找到"}</span>
+                            {/if}
                           </div>
                         </button>
                       </div>
@@ -1856,7 +1819,7 @@
                 <div>
                   <div class="tool-title-row">
                     <h2>{selectedTool.name}</h2>
-                    {#if toolUsage(selectedTool) || toolDiagnostic?.help.command}
+                    {#if toolUsage(selectedTool)}
                       <button
                         type="button"
                         class="help-tip"
@@ -1895,101 +1858,7 @@
                     </span>
                   {/if}
                 </div>
-                {#if installationSummary(selectedTool)}
-                  <p class="sub" data-testid="tool-installation">
-                    安装：{installationSummary(selectedTool)}
-                  </p>
-                {/if}
-                {#if selectedTool.io.schema_version > 0}
-                  <p class="sub" data-testid="tool-io-contract">
-                    输入：{ioKindList(selectedTool.io.inputs)}<br />
-                    输出：{ioKindList(selectedTool.io.outputs)}
-                  </p>
-                {/if}
               </div>
-
-              <section class="diagnostic-panel" data-testid="tool-diagnostic">
-                <div class="diagnostic-head">
-                  <div>
-                    <div class="section-label">运行环境诊断</div>
-                    <p class="sub">
-                      检查二进制、路径、权限、版本、运行时与默认字典。
-                      {#if diagnosticUpdatedAt}
-                        最近检测：{diagnosticUpdatedAt}
-                      {/if}
-                    </p>
-                  </div>
-                  <div class="diagnostic-actions">
-                    {#if toolDiagnostic}
-                      <span
-                        class={toolDiagnostic.status === "usable"
-                          ? "pill ok"
-                          : "pill warn"}
-                        data-testid="tool-diagnostic-status"
-                      >
-                        {diagnosticStatusLabel(toolDiagnostic.status)}
-                      </span>
-                    {/if}
-                    <button
-                      class="btn btn-secondary"
-                      type="button"
-                      data-testid="recheck-tool-diagnostic"
-                      disabled={diagnosticBusy}
-                      onclick={() =>
-                        void loadToolDiagnostic(selectedTool.id, true)}
-                    >
-                      {diagnosticBusy ? "检测中…" : "重新检测"}
-                    </button>
-                  </div>
-                </div>
-
-                {#if toolDiagnostic}
-                  <div class="diagnostic-list">
-                    {#each toolDiagnostic.checks as check}
-                      <article
-                        class="diagnostic-item"
-                        data-testid={`diagnostic-${check.id}`}
-                      >
-                        <div class="diagnostic-item-head">
-                          <strong>{check.label}</strong>
-                          <span
-                            class={check.status === "usable"
-                              ? "pill ok"
-                              : "pill warn"}
-                          >
-                            {diagnosticStatusLabel(check.status)}
-                          </span>
-                        </div>
-                        <p class="sub">{check.detail}</p>
-                        {#if check.source}
-                          <div class="diagnostic-line">
-                            <span>来源</span>
-                            <code>{check.source}</code>
-                          </div>
-                        {/if}
-                        {#if check.fix}
-                          <p class="diagnostic-fix">{check.fix}</p>
-                        {/if}
-                        {#if check.copy_value}
-                          <div class="diagnostic-copy">
-                            <code>{check.copy_value}</code>
-                            <button
-                              class="btn btn-secondary"
-                              type="button"
-                              onclick={() =>
-                                void copyDiagnosticValue(check.copy_value)}
-                            >
-                              复制
-                            </button>
-                          </div>
-                        {/if}
-                      </article>
-                    {/each}
-                  </div>
-                {:else}
-                  <p class="sub">正在读取环境状态…</p>
-                {/if}
-              </section>
 
               {#if helpOpen}
                 <section
@@ -1998,30 +1867,7 @@
                   data-testid="tool-help-drawer"
                   aria-labelledby="tool-help-heading"
                 >
-                  <div class="diagnostic-head">
-                    <div>
-                      <div class="section-label" id="tool-help-heading">
-                        版本帮助
-                      </div>
-                      <p class="sub">
-                        {toolDiagnostic?.help.command ||
-                          "当前工具未声明帮助命令"}
-                        {#if toolDiagnostic?.help.detected_version}
-                          · {toolDiagnostic.help.detected_version}
-                        {/if}
-                      </p>
-                    </div>
-                    <button
-                      class="btn btn-secondary icon-label-button"
-                      type="button"
-                      disabled={diagnosticBusy}
-                      onclick={() =>
-                        void loadToolDiagnostic(selectedTool.id, true)}
-                    >
-                      <CircleHelp size={15} />
-                      刷新帮助
-                    </button>
-                  </div>
+                  <div class="section-label" id="tool-help-heading">用法</div>
                   <label class="search-control" for="tool-help-query">
                     <Search size={16} aria-hidden="true" />
                     <input
@@ -2031,22 +1877,13 @@
                       spellcheck="false"
                     />
                   </label>
-                  {#if toolDiagnostic?.help.available}
+                  {#if helpQuery.trim()}
                     <div class="help-meta">
-                      {toolDiagnostic.help.cached
-                        ? "已读取缓存"
-                        : "已刷新本地快照"}
-                      {#if helpQuery.trim()}
-                        · {helpSearchResult.matchCount} 处匹配
-                      {/if}
+                      {helpSearchResult.matchCount} 处匹配
                     </div>
-                    <pre class="help-content">{helpSearchResult.content ||
-                        "没有匹配内容"}</pre>
-                  {:else}
-                    <p class="empty">
-                      {toolDiagnostic?.help.detail || "帮助内容暂不可用"}
-                    </p>
                   {/if}
+                  <pre class="help-content">{helpSearchResult.content ||
+                      "没有匹配内容"}</pre>
                 </section>
               {/if}
 
@@ -2463,55 +2300,42 @@
                 </div>
               {/if}
 
-              {#if runPreview}
-                <div class="card command-ribbon" data-testid="run-preview">
-                  <div class="section-label">运行预览</div>
-                  <code
-                    data-testid="preview-command"
-                    style="word-break: break-all"
-                    >{runPreview.command_preview}</code
-                  >
-                  <div class="meta" style="margin-top: 10px">
-                    <span class="pill muted" data-testid="preview-scope">
-                      范围：{runPreview.scope}
-                    </span>
-                    <span class="pill muted" data-testid="preview-rate">
-                      速率：{runPreview.rate_per_second == null
-                        ? "不限"
-                        : `${runPreview.rate_per_second} req/s`}
-                    </span>
-                    <span class="pill muted" data-testid="preview-size">
-                      预计请求：{runPreview.estimated_request_count ?? "未知"}
-                    </span>
-                    <span class="pill muted" data-testid="preview-risk">
-                      风险：{riskLevelLabel(runPreview.risk_level)}
-                    </span>
-                  </div>
-                  <p
-                    class="sub"
-                    data-testid="preview-confirmation"
-                    style="margin: 10px 0 0"
-                  >
-                    {runPreview.risk_level === "l3"
-                      ? "点击运行后记录 L3 审计"
-                      : "运行前需确认 L2 操作"}
-                  </p>
-                </div>
-              {:else if runPreviewError}
+              {#if runPreviewError}
                 <div class="relation-list" data-testid="run-preview-error">
                   <p class="error">预览失败：{runPreviewError}</p>
                 </div>
               {/if}
 
-              {#if selectedTool.binary_path}
-                <p class="sub" style="margin-bottom: 12px; font-size: 12px">
-                  入口：<code style="word-break: break-all"
-                    >{selectedTool.binary_path}</code
-                  >
-                </p>
-              {/if}
-
-              <div class="actions">
+              <div class="runner-launch">
+                {#if runPreview}
+                  <div class="runner-launch-preview" data-testid="run-preview">
+                    <code data-testid="preview-command"
+                      >{runPreview.command_preview}</code
+                    >
+                    <div class="meta">
+                      <span class="pill muted" data-testid="preview-scope">
+                        范围：{runPreview.scope}
+                      </span>
+                      <span class="pill muted" data-testid="preview-risk">
+                        风险：{riskLevelLabel(runPreview.risk_level)}
+                      </span>
+                      <span class="pill muted" data-testid="preview-rate">
+                        速率：{runPreview.rate_per_second == null
+                          ? "不限"
+                          : `${runPreview.rate_per_second} req/s`}
+                      </span>
+                      <span class="pill muted" data-testid="preview-size">
+                        预计请求：{runPreview.estimated_request_count ?? "未知"}
+                      </span>
+                    </div>
+                    <p class="sub" data-testid="preview-confirmation">
+                      {runPreview.risk_level === "l3"
+                        ? "点击运行后记录 L3 审计"
+                        : "运行前需确认 L2 操作"}
+                    </p>
+                  </div>
+                {/if}
+                <div class="actions">
                 <button
                   data-testid="run-selected-tool"
                   class="btn btn-primary"
@@ -2543,9 +2367,10 @@
                   id="run-blocked-reason"
                   data-testid="run-blocked-reason"
                 >
-                  当前无法运行：{selectedTool.detail || "请查看运行环境诊断"}
+                  当前无法运行：{selectedTool.detail || "工具不可用"}
                 </p>
               {/if}
+              </div>
             {:else}
               <div class="empty">选择左侧工具以配置参数。</div>
             {/if}
@@ -2554,10 +2379,10 @@
               <div class="section-label">输出</div>
               <div class="job-tabs-row">
                 <div class="job-tabs" role="list" aria-label="任务输出">
-                  {#if filteredJobs.length === 0}
+                  {#if toolJobs.length === 0}
                     <span class="pill muted">暂无任务</span>
                   {:else}
-                    {#each filteredJobs.slice(0, 16) as item}
+                    {#each toolJobs.slice(0, 16) as item}
                       <div
                         class="job-tab"
                         class:selected={selectedLogJobId === item.job.job_id}
@@ -2590,25 +2415,12 @@
                   {/if}
                 </div>
                 <div class="actions" style="margin: 0">
-                  {#if jobToolOptions.length > 0}
-                    <select
-                      class="inline-select"
-                      aria-label="按工具筛选任务输出"
-                      bind:value={jobFilterToolId}
-                      onchange={() => persistPrefs()}
-                    >
-                      <option value="">全部工具</option>
-                      {#each jobToolOptions as toolId}
-                        <option value={toolId}>{toolId}</option>
-                      {/each}
-                    </select>
-                  {/if}
                   <button
                     class="btn btn-secondary"
                     type="button"
                     disabled={busy ||
-                      jobs.length === 0 ||
-                      jobs.some(jobIsActive)}
+                      toolJobs.length === 0 ||
+                      toolJobs.some(jobIsActive)}
                     onclick={() => void clearAllJobs()}
                   >
                     清空全部
@@ -3099,11 +2911,14 @@
                       onclick={() => void selectJobLog(item)}
                     >
                       <strong
-                        >{item.tool_id} · {executionStatusLabel(
-                          item.job.execution_status,
-                        )}</strong
+                        >{item.tool_id} · {jobListStatus(item)}</strong
                       >
                       <small>{item.command_preview}</small>
+                      {#if item.job.job_id === selectedLogJobId && jobFailureSummary(jobLogContent)}
+                        <small class="job-failure"
+                          >{jobFailureSummary(jobLogContent)}</small
+                        >
+                      {/if}
                       {#if item.io.schema_version > 0}
                         <small data-testid={`job-io-${item.job.job_id}`}>
                           输入：{ioKindList(item.io.inputs)}。输出：{ioKindList(
@@ -3254,7 +3069,7 @@
       {:else}
         <div class="page-header">
           <h1>设置</h1>
-          <p>工具与字典根目录。新增工具只需编辑 catalog TOML。</p>
+          <p>本机工具根、字典快捷方式，以及已登记的目标范围。</p>
         </div>
         <div class="split-2">
           <section class="card">
@@ -3275,7 +3090,9 @@
             <h2>目标范围</h2>
             <p class="sub">运行工具时会自动创建匹配的范围。</p>
             {#if scopes.length === 0}
-              <div class="empty">尚未保存目标。</div>
+              <div class="empty">
+                还没有登记过目标范围。在顶栏填写 URL 并运行一次后会出现在这里。
+              </div>
             {:else}
               <div class="job-list">
                 {#each scopes as scope}

@@ -11,12 +11,12 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flagdeck_cli_adapters::catalog::file_sha256;
-use flagdeck_cli_adapters::{CatalogPaths, CatalogToolManifest, ToolCatalog};
+use flagdeck_cli_adapters::{CatalogPaths, CatalogToolManifest, ToolCatalog, ToolMode};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -220,12 +220,12 @@ impl CatalogWorkbench {
         let install_fix = if tool.installation.install_command.trim().is_empty() {
             format!("安装 {} 并确认其二进制可由 PATH 解析", tool.id)
         } else {
-            tool.installation.install_command.clone()
+            expand_catalog_paths(&tool.installation.install_command, &catalog)
         };
         let path_repair_copy = if tool.installation.path_fix.trim().is_empty() {
             install_fix.clone()
         } else {
-            tool.installation.path_fix.clone()
+            expand_catalog_paths(&tool.installation.path_fix, &catalog)
         };
         let mut checks = Vec::with_capacity(6);
         let mut binary_path = String::new();
@@ -326,7 +326,9 @@ impl CatalogWorkbench {
             &permission_copy,
         ));
 
-        let version_status = if permission_status == CatalogDiagnosticStatus::Usable {
+        let version_status = if tool.mode == ToolMode::ExternalLaunch {
+            CatalogDiagnosticStatus::Usable
+        } else if permission_status == CatalogDiagnosticStatus::Usable {
             if tool.installation.version_args.is_empty() {
                 CatalogDiagnosticStatus::VersionAbnormal
             } else if let Ok(path) = &resolved {
@@ -364,7 +366,9 @@ impl CatalogWorkbench {
             "version",
             "版本",
             version_status,
-            if version_status == CatalogDiagnosticStatus::Usable {
+            if tool.mode == ToolMode::ExternalLaunch {
+                "独立窗口，不探测版本".to_owned()
+            } else if version_status == CatalogDiagnosticStatus::Usable {
                 format!("检测到 {detected_version}")
             } else {
                 format!("期望版本 {}", tool.installation.version)
@@ -427,7 +431,7 @@ impl CatalogWorkbench {
         let wordlist_repair_copy = if tool.installation.wordlist_install_command.trim().is_empty() {
             format!("安装工具 {} 声明的默认字典 {}", tool.id, default_wordlist)
         } else {
-            tool.installation.wordlist_install_command.clone()
+            expand_catalog_paths(&tool.installation.wordlist_install_command, &catalog)
         };
         let wordlist = catalog
             .wordlist_views()
@@ -491,13 +495,26 @@ impl CatalogWorkbench {
                 detail: "修复工具路径后读取完整帮助".to_owned(),
             },
             |binary| {
-                capture_help_snapshot(
-                    &catalog,
-                    tool,
-                    binary,
-                    &detected_version,
-                    request.refresh_help,
-                )
+                if tool.mode == ToolMode::ExternalLaunch {
+                    CatalogHelpSnapshotDto {
+                        available: false,
+                        cached: false,
+                        command: String::new(),
+                        detected_version: detected_version.clone(),
+                        binary_sha256: String::new(),
+                        captured_at_epoch_secs: None,
+                        content: String::new(),
+                        detail: "独立窗口不读取 CLI 帮助".to_owned(),
+                    }
+                } else {
+                    capture_help_snapshot(
+                        &catalog,
+                        tool,
+                        binary,
+                        &detected_version,
+                        request.refresh_help,
+                    )
+                }
             },
         );
         Ok(CatalogToolDiagnosticDto {
@@ -509,6 +526,18 @@ impl CatalogWorkbench {
             help,
         })
     }
+}
+
+fn expand_catalog_paths(value: &str, catalog: &ToolCatalog) -> String {
+    value
+        .replace(
+            "{tools_root}",
+            &catalog.paths.tools_root.display().to_string(),
+        )
+        .replace(
+            "{wordlists_root}",
+            &catalog.paths.wordlists_root.display().to_string(),
+        )
 }
 
 fn capture_help_snapshot(
@@ -555,9 +584,7 @@ fn capture_help_snapshot(
     let cache_key = format!("{:x}", hasher.finalize());
     let cache_dir = catalog.paths.cache_root.join("tool-help");
     let cache_path = cache_dir.join(format!("{}-{cache_key}.txt", tool.id));
-    if !refresh
-        && let Some((content, captured_at)) = read_help_cache(&cache_path, tool.help.max_bytes)
-    {
+    if let Some((content, captured_at)) = read_help_cache(&cache_path, tool.help.max_bytes) {
         return CatalogHelpSnapshotDto {
             available: true,
             cached: true,
@@ -567,6 +594,18 @@ fn capture_help_snapshot(
             captured_at_epoch_secs: captured_at,
             content,
             detail: "已读取版本匹配的帮助缓存".to_owned(),
+        };
+    }
+    if !refresh {
+        return CatalogHelpSnapshotDto {
+            available: false,
+            cached: false,
+            command,
+            detected_version: detected_version.to_owned(),
+            binary_sha256,
+            captured_at_epoch_secs: None,
+            content: String::new(),
+            detail: "首次打开不执行帮助命令，点重新检测再读取".to_owned(),
         };
     }
 
@@ -726,7 +765,15 @@ fn capture_bounded_command(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let mut path_entries = binary
+        .parent()
+        .into_iter()
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
     if let Some(path) = env::var_os("PATH") {
+        path_entries.extend(env::split_paths(&path));
+    }
+    if let Ok(path) = env::join_paths(path_entries) {
         command.env("PATH", path);
     }
     let mut child = command
@@ -740,8 +787,14 @@ fn capture_bounded_command(
         .stderr
         .take()
         .ok_or_else(|| "命令缺少 stderr".to_owned())?;
-    let stdout_reader = thread::spawn(move || read_stream_bounded(stdout, maximum));
-    let stderr_reader = thread::spawn(move || read_stream_bounded(stderr, maximum));
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = stdout_tx.send(read_stream_bounded(stdout, maximum));
+    });
+    thread::spawn(move || {
+        let _ = stderr_tx.send(read_stream_bounded(stderr, maximum));
+    });
     let deadline = Instant::now() + Duration::from_millis(timeout_millis);
     let status = loop {
         match child.try_wait() {
@@ -750,17 +803,16 @@ fn capture_bounded_command(
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_rx.recv_timeout(Duration::from_millis(200));
+                let _ = stderr_rx.recv_timeout(Duration::from_millis(200));
                 return Err("命令超时".to_owned());
             }
             Err(error) => return Err(format!("命令等待失败：{error}")),
         }
     };
-    let mut bytes = stdout_reader
-        .join()
-        .map_err(|_| "读取 stdout 失败".to_owned())?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "读取 stderr 失败".to_owned())?;
+    let drain = Duration::from_millis(400);
+    let mut bytes = stdout_rx.recv_timeout(drain).unwrap_or_default();
+    let stderr = stderr_rx.recv_timeout(drain).unwrap_or_default();
     if !bytes.is_empty() && !stderr.is_empty() && bytes.len() < maximum {
         bytes.push(b'\n');
     }
@@ -867,9 +919,11 @@ template = ["--help"]
             cache_root: temporary.path().join("cache"),
         });
 
+        let loaded = workbench.load().unwrap();
+        assert_eq!(loaded.tool("fixture").unwrap().name, "first");
         assert_eq!(
-            workbench.load().unwrap().tool("fixture").unwrap().name,
-            "first"
+            expand_catalog_paths("cd {tools_root}", &loaded),
+            format!("cd {}", temporary.path().join("tool-root").display())
         );
         write_manifest("second");
         assert_eq!(
@@ -947,5 +1001,25 @@ template = ["--help"]
             require_successful_help_capture((success, output)).unwrap_err(),
             "帮助命令执行失败：missing dependency"
         );
+    }
+
+    #[test]
+    fn diagnostic_path_resolves_checksec_next_to_venv_python() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime_home = temporary.path().join("runtime");
+        ensure_private_directory(&runtime_home).unwrap();
+        let bin = temporary.path().join(".venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python");
+        fs::write(&python, "#!/bin/sh\ncommand -v checksec\n").unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o700)).unwrap();
+        let checksec = bin.join("checksec");
+        fs::write(&checksec, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&checksec, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let (success, output) =
+            capture_bounded_command(&python, &[], &runtime_home, 1_000, 1_024).unwrap();
+        assert!(success);
+        assert_eq!(output.trim(), checksec.display().to_string());
     }
 }

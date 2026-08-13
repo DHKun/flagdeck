@@ -37,6 +37,7 @@ fields = []
 
 [argv]
 template = [
+  "--no-sandbox",
   "--ozone-platform=x11",
   "--disable-gpu",
   "--disable-gpu-compositing",

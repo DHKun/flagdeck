@@ -11,7 +11,7 @@ const executionStatusLabels: Record<ExecutionStatus, string> = {
   starting: "启动中",
   running: "运行中",
   stopping: "停止中",
-  succeeded: "成功",
+  succeeded: "已完成",
   failed: "失败",
   timed_out: "超时",
   cancelled: "已取消",

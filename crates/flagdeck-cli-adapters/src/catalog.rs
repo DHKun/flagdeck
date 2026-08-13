@@ -4,12 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use flagdeck_domain::{
     CommandSpec, CommandSpecId, ResourceLimits, RiskLevel, ScopeId, SecretInputLifecycle,
     SecretTransport, ToolInputRecord, ToolInputSource, ToolIoContract, ToolRunIo,
 };
+use nix::unistd::Uid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -136,6 +138,9 @@ pub struct FormField {
     /// Values that must stay out of preferences, logs, and persisted command previews.
     #[serde(default)]
     pub sensitive: bool,
+    /// Require at least one execute bit for local file inputs.
+    #[serde(default)]
+    pub executable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -354,6 +359,12 @@ pub struct CatalogToolManifest {
     /// Working directory (absolute, or relative to tools root). Empty = job dir (CLI) or binary parent (GUI).
     #[serde(default)]
     pub cwd: String,
+    /// Managed-execution sandbox selected from FlagDeck's audited profiles.
+    #[serde(default)]
+    pub sandbox_profile: String,
+    /// Network policy enforced by the selected sandbox profile.
+    #[serde(default)]
+    pub network_isolation: String,
     /// Process lifecycle for `external_launch` tools.
     ///
     /// - `true` (default): spawn, brief probe, mark succeeded and detach (classic GUI windows).
@@ -865,6 +876,7 @@ fn validate_tool_manifest(path: &Path, tool: &CatalogToolManifest) -> Result<(),
                 | "select"
                 | "multiselect"
                 | "args"
+                | "local_elf_file"
         ) {
             return Err(CatalogError::Invalid(format!(
                 "{} field {} uses unsupported type {}",
@@ -877,6 +889,13 @@ fn validate_tool_manifest(path: &Path, tool: &CatalogToolManifest) -> Result<(),
         {
             return Err(CatalogError::Invalid(format!(
                 "{} field {} requires options",
+                path.display(),
+                field.id
+            )));
+        }
+        if field.executable && field.field_type != "local_elf_file" {
+            return Err(CatalogError::Invalid(format!(
+                "{} field {} applies executable to a non-file input",
                 path.display(),
                 field.id
             )));
@@ -925,6 +944,20 @@ fn validate_tool_manifest(path: &Path, tool: &CatalogToolManifest) -> Result<(),
     {
         return Err(CatalogError::Invalid(format!(
             "{} has an unsafe help command",
+            path.display()
+        )));
+    }
+    if !matches!(
+        tool.sandbox_profile.as_str(),
+        "" | "catalog-systemd-or-pgid" | "local-untrusted-binary-systemd"
+    ) || !matches!(
+        tool.network_isolation.as_str(),
+        "" | "input-gate-and-audit" | "deny-all-systemd"
+    ) || (tool.sandbox_profile == "local-untrusted-binary-systemd"
+        && (tool.network_isolation != "deny-all-systemd" || tool.risk_level != "l3"))
+    {
+        return Err(CatalogError::Invalid(format!(
+            "{} has an unsupported sandbox contract",
             path.display()
         )));
     }
@@ -1227,6 +1260,16 @@ fn prepare_catalog_command_with_sources_impl(
         }
     }
 
+    // Pass canonical file names to tools so validation and execution address the same inode path.
+    for field in &tool.form.fields {
+        if field.field_type == "local_elf_file"
+            && let Some(value) = values.get(&field.id).filter(|value| !value.is_empty())
+        {
+            let canonical = validate_local_elf_file(value, field.executable)?;
+            values.insert(field.id.clone(), canonical.display().to_string());
+        }
+    }
+
     // Resolve wordlist fields to absolute paths
     for field in &tool.form.fields {
         if field.field_type != "wordlist" {
@@ -1377,7 +1420,7 @@ fn prepare_catalog_command_with_sources_impl(
         job_directory,
         require_available_binary,
     )?;
-    let environment = build_environment(tool, job_directory, &cwd);
+    let environment = build_environment(tool, job_directory, &cwd, &binary);
 
     let risk_level = effective_catalog_risk_level(tool);
 
@@ -1468,14 +1511,22 @@ fn prepare_catalog_command_with_sources_impl(
             risk_level
         },
         scope_id: Some(scope_id.clone()),
-        sandbox_profile: "catalog-systemd-or-pgid".to_owned(),
+        sandbox_profile: if tool.sandbox_profile.is_empty() {
+            "catalog-systemd-or-pgid".to_owned()
+        } else {
+            tool.sandbox_profile.clone()
+        },
         resource_limits: ResourceLimits {
             memory_max_bytes: tool.limits.memory_max_bytes,
             tasks_max: tool.limits.tasks_max,
             cpu_quota_percent: tool.limits.cpu_quota_percent,
             core_dump_bytes: 0,
         },
-        network_isolation: "input-gate-and-audit".to_owned(),
+        network_isolation: if tool.network_isolation.is_empty() {
+            "input-gate-and-audit".to_owned()
+        } else {
+            tool.network_isolation.clone()
+        },
     };
 
     let detach = tool
@@ -1552,6 +1603,9 @@ fn validate_form_values(
             "args" => {
                 parse_argv_fragment(value)?;
             }
+            "local_elf_file" => {
+                validate_local_elf_file(value, field.executable)?;
+            }
             "select" | "text" | "textarea" | "wordlist" => {}
             _ => return Err(CatalogError::InvalidInput),
         }
@@ -1562,6 +1616,35 @@ fn validate_form_values(
         }
     }
     Ok(())
+}
+
+fn validate_local_elf_file(value: &str, executable: bool) -> Result<PathBuf, CatalogError> {
+    let path = Path::new(value);
+    if !path.is_absolute() || value.starts_with('-') {
+        return Err(CatalogError::InvalidInput);
+    }
+    let link_metadata = fs::symlink_metadata(path).map_err(|_| CatalogError::InvalidInput)?;
+    if link_metadata.file_type().is_symlink() {
+        return Err(CatalogError::InvalidInput);
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| CatalogError::InvalidInput)?;
+    let metadata = fs::metadata(&canonical).map_err(|_| CatalogError::InvalidInput)?;
+    let current_uid = Uid::current().as_raw();
+    if !metadata.is_file()
+        || (metadata.uid() != 0 && metadata.uid() != current_uid)
+        || metadata.mode() & 0o022 != 0
+        || (executable && metadata.mode() & 0o111 == 0)
+    {
+        return Err(CatalogError::InvalidInput);
+    }
+    let mut magic = [0_u8; 4];
+    File::open(&canonical)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|_| CatalogError::InvalidInput)?;
+    if magic != *b"\x7fELF" {
+        return Err(CatalogError::InvalidInput);
+    }
+    Ok(canonical)
 }
 
 fn relation_is_violated(
@@ -1702,22 +1785,35 @@ fn build_environment(
     tool: &CatalogToolManifest,
     job_directory: &Path,
     cwd: &Path,
+    binary: &Path,
 ) -> BTreeMap<String, String> {
     let mut environment = BTreeMap::new();
-    let path = enriched_path();
-    environment.insert(
-        "TMPDIR".to_owned(),
-        job_directory.join("tmp").display().to_string(),
-    );
+    let path = enriched_path_with(binary.parent());
 
     match tool.mode {
         ToolMode::ExternalLaunch => {
+            // AppImage/Electron extract into TMPDIR and exec from there. The job
+            // scan directory is too hostile (short-lived, often inspected as a
+            // log dump). Keep GUI scratch in the user cache.
+            let gui_tmp = env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("flagdeck")
+                .join("gui-tmp");
+            environment.insert("TMPDIR".to_owned(), gui_tmp.display().to_string());
             // Forward only the desktop-session values required by GUI applications.
             for key in [
+                "HOME",
+                "USER",
+                "LOGNAME",
                 "DISPLAY",
                 "WAYLAND_DISPLAY",
                 "XAUTHORITY",
                 "XDG_RUNTIME_DIR",
+                "XDG_CACHE_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
                 "XDG_CURRENT_DESKTOP",
                 "XDG_SESSION_TYPE",
                 "DBUS_SESSION_BUS_ADDRESS",
@@ -1752,6 +1848,10 @@ fn build_environment(
                 .or_insert_with(|| "zh_CN.UTF-8".to_owned());
         }
         ToolMode::EmbeddedCli => {
+            environment.insert(
+                "TMPDIR".to_owned(),
+                job_directory.join("tmp").display().to_string(),
+            );
             environment.insert("PATH".to_owned(), path);
             environment.insert("LANG".to_owned(), "C.UTF-8".to_owned());
             environment.insert("LC_ALL".to_owned(), "C.UTF-8".to_owned());
@@ -1797,8 +1897,11 @@ fn resolve_xauthority() -> Option<String> {
     None
 }
 
-fn enriched_path() -> String {
+fn enriched_path_with(preferred_directory: Option<&Path>) -> String {
     let mut parts: Vec<String> = Vec::new();
+    if let Some(directory) = preferred_directory {
+        parts.push(directory.display().to_string());
+    }
     if let Ok(path) = env::var("PATH") {
         parts.extend(path.split(':').filter(|p| !p.is_empty()).map(str::to_owned));
     }
@@ -1923,6 +2026,7 @@ fn expand_template(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
     #[test]
@@ -1948,6 +2052,159 @@ mod tests {
                 "--disable-gpu",
                 "--disable-gpu-compositing",
             ]
+        );
+        let intelpwn = catalog.tool("intelpwn").expect("intelpwn manifest");
+        assert_eq!(intelpwn.risk_level, "l3");
+        assert_eq!(intelpwn.parser.id, "flagdeck.intelpwn-json");
+        assert_eq!(
+            intelpwn.argv.template,
+            [
+                "{tools_root}/Binary/Reverse/sec-import/intelpwn/intelpwn.py",
+                "analyze",
+                "{elf_path}",
+                "--json",
+                "--no-exploit",
+            ]
+        );
+    }
+
+    #[test]
+    fn intelpwn_preview_uses_validated_elf_and_venv_runtime() {
+        let catalog = ToolCatalog::load_default().expect("catalog loads");
+        let job = tempdir().unwrap();
+        let inputs = tempdir().unwrap();
+        let target = inputs.path().join("flagdeck-intelpwn-target");
+        fs::write(&target, b"\x7fELFfixture").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        let script = catalog
+            .paths
+            .tools_root
+            .join("Binary/Reverse/sec-import/intelpwn/intelpwn.py")
+            .display()
+            .to_string();
+        let form = BTreeMap::from([("elf_path".to_owned(), target.display().to_string())]);
+        let input_sources = BTreeMap::from([("elf_path".to_owned(), ToolInputSource::Form)]);
+        let prepared = prepare_catalog_preview_with_sources(
+            &catalog,
+            "intelpwn",
+            &ScopeId::new(),
+            &form,
+            &input_sources,
+            job.path(),
+        )
+        .unwrap();
+
+        assert_eq!(prepared.spec.risk_level, RiskLevel::L3);
+        assert_eq!(
+            prepared.spec.sandbox_profile,
+            "local-untrusted-binary-systemd"
+        );
+        assert_eq!(prepared.spec.network_isolation, "deny-all-systemd");
+        assert_eq!(prepared.spec.cwd, job.path().display().to_string());
+        assert_eq!(
+            prepared.spec.program,
+            catalog
+                .paths
+                .tools_root
+                .join("Binary/Reverse/sec-import/intelpwn/.venv/bin/python")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            prepared.spec.argv_exec,
+            [
+                script,
+                "analyze".to_owned(),
+                target.canonicalize().unwrap().display().to_string(),
+                "--json".to_owned(),
+                "--no-exploit".to_owned()
+            ]
+        );
+        let path = prepared.spec.env_exec.get("PATH").unwrap();
+        assert_eq!(
+            path.split(':').next(),
+            Some(
+                catalog
+                    .paths
+                    .tools_root
+                    .join("Binary/Reverse/sec-import/intelpwn/.venv/bin")
+                    .to_str()
+                    .unwrap()
+            )
+        );
+
+        let libc = inputs.path().join("libc.so.6");
+        fs::write(&libc, b"\x7fELFfixture").unwrap();
+        let with_libc = prepare_catalog_preview_with_sources(
+            &catalog,
+            "intelpwn",
+            &ScopeId::new(),
+            &BTreeMap::from([
+                ("elf_path".to_owned(), target.display().to_string()),
+                ("libc".to_owned(), libc.display().to_string()),
+            ]),
+            &BTreeMap::from([
+                ("elf_path".to_owned(), ToolInputSource::Form),
+                ("libc".to_owned(), ToolInputSource::Form),
+            ]),
+            job.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            &with_libc.spec.argv_exec[5..],
+            ["--libc", libc.canonicalize().unwrap().to_str().unwrap()]
+        );
+    }
+
+    #[test]
+    fn local_elf_file_validation_rejects_unsafe_paths() {
+        let temporary = tempdir().unwrap();
+        let valid = temporary.path().join("valid");
+        fs::write(&valid, b"\x7fELFfixture").unwrap();
+        assert_eq!(
+            validate_local_elf_file(valid.to_str().unwrap(), false).unwrap(),
+            valid
+        );
+
+        assert!(matches!(
+            validate_local_elf_file("relative-elf", false),
+            Err(CatalogError::InvalidInput)
+        ));
+        assert!(matches!(
+            validate_local_elf_file(temporary.path().join("missing").to_str().unwrap(), false),
+            Err(CatalogError::InvalidInput)
+        ));
+
+        let text = temporary.path().join("text");
+        fs::write(&text, b"hello").unwrap();
+        assert!(matches!(
+            validate_local_elf_file(text.to_str().unwrap(), false),
+            Err(CatalogError::InvalidInput)
+        ));
+
+        let link = temporary.path().join("link");
+        std::os::unix::fs::symlink(&valid, &link).unwrap();
+        assert!(matches!(
+            validate_local_elf_file(link.to_str().unwrap(), false),
+            Err(CatalogError::InvalidInput)
+        ));
+
+        let writable = temporary.path().join("writable");
+        fs::write(&writable, b"\x7fELFfixture").unwrap();
+        fs::set_permissions(&writable, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(matches!(
+            validate_local_elf_file(writable.to_str().unwrap(), false),
+            Err(CatalogError::InvalidInput)
+        ));
+
+        assert!(matches!(
+            validate_local_elf_file(valid.to_str().unwrap(), true),
+            Err(CatalogError::InvalidInput)
+        ));
+        fs::set_permissions(&valid, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            validate_local_elf_file(valid.to_str().unwrap(), true).unwrap(),
+            valid
         );
     }
 
@@ -2116,8 +2373,14 @@ template = ["--version"]
         let catalog = ToolCatalog::load_default().unwrap();
         let tool = catalog.tool("behinder").unwrap();
         let job = tempdir().unwrap();
-        let environment = build_environment(tool, job.path(), job.path());
-        assert!(!environment.contains_key("HOME"));
+        let environment =
+            build_environment(tool, job.path(), job.path(), Path::new("/usr/bin/echo"));
+        assert_eq!(environment.get("HOME"), env::var("HOME").ok().as_ref());
+        assert!(
+            environment
+                .get("TMPDIR")
+                .is_some_and(|value| value.contains("flagdeck/gui-tmp"))
+        );
         assert!(!environment.contains_key("SSH_AUTH_SOCK"));
         assert!(!environment.contains_key("GITHUB_TOKEN"));
         assert!(environment.contains_key("PATH"));

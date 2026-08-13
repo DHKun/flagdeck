@@ -137,9 +137,10 @@ impl JobRunner {
             .job_id
             .validate()
             .map_err(|_| CoreError::InvalidRequest)?;
-        let control = self
-            .control(&request.job_id)?
-            .ok_or(CoreError::JobNotActive)?;
+        let Some(control) = self.control(&request.job_id)? else {
+            mark_job_cancelled(store, &request.job_id)?;
+            return Ok(cancel_job_result(request.job_id.clone(), None));
+        };
         control.cancel_requested.store(true, Ordering::SeqCst);
         let has_identity = control
             .identity
@@ -156,6 +157,9 @@ impl JobRunner {
                     .map_err(|_| CoreError::InvalidRequest)?;
                 store.save_job(&job)?;
             }
+        } else {
+            mark_job_cancelled(store, &request.job_id)?;
+            return Ok(cancel_job_result(request.job_id.clone(), None));
         }
         let cancellation = drive_cancellation(&control).await?;
         Ok(cancel_job_result(request.job_id.clone(), cancellation))
@@ -185,4 +189,20 @@ impl JobRunner {
             results,
         })
     }
+}
+
+fn mark_job_cancelled(store: &ProjectStore, job_id: &JobId) -> Result<(), CoreError> {
+    let mut job = store.job(job_id)?.job;
+    if matches!(
+        job.execution_status,
+        ExecutionStatus::Queued | ExecutionStatus::Starting | ExecutionStatus::Running
+    ) {
+        job.transition(ExecutionStatus::Cancelled)
+            .map_err(|_| CoreError::InvalidRequest)?;
+        job.stopped_at = Some(Timestamp::now());
+        job.exit_reason = Some("cancelled_detached".to_owned());
+        job.cleanup_verified = true;
+        store.save_job(&job)?;
+    }
+    Ok(())
 }

@@ -37,6 +37,7 @@ pub(crate) fn parse_http_discovery(
         HttpDiscoveryAdapter::DdddJsonl => parse_dddd_structured_rows(bytes),
         HttpDiscoveryAdapter::FscanJson => parse_fscan_structured_rows(bytes),
         HttpDiscoveryAdapter::SqlmapText => parse_sqlmap_structured_rows(bytes),
+        HttpDiscoveryAdapter::IntelPwnJson => parse_intelpwn_structured_rows(bytes),
     };
     HttpDiscoveryParse { columns, rows }
 }
@@ -50,6 +51,7 @@ fn adapter_columns(adapter: HttpDiscoveryAdapter) -> Vec<StructuredResultColumnD
             host_service_result_columns()
         }
         HttpDiscoveryAdapter::SqlmapText => sqlmap_result_columns(),
+        HttpDiscoveryAdapter::IntelPwnJson => intelpwn_result_columns(),
         _ => http_discovery_columns(),
     }
 }
@@ -64,6 +66,7 @@ enum HttpDiscoveryAdapter {
     DdddJsonl,
     FscanJson,
     SqlmapText,
+    IntelPwnJson,
     GenericJson,
 }
 
@@ -82,6 +85,7 @@ pub(crate) fn structured_result_kind(
             | HttpDiscoveryAdapter::DdddJsonl
             | HttpDiscoveryAdapter::FscanJson
             | HttpDiscoveryAdapter::SqlmapText
+            | HttpDiscoveryAdapter::IntelPwnJson
     ) || io
         .outputs
         .iter()
@@ -133,6 +137,12 @@ fn select_http_discovery_adapter(
         if id == "flagdeck.sqlmap-text" || id.ends_with(".sqlmap-text") || id.contains("sqlmap") {
             return HttpDiscoveryAdapter::SqlmapText;
         }
+        if id == "flagdeck.intelpwn-json"
+            || id.ends_with(".intelpwn-json")
+            || id.contains("intelpwn")
+        {
+            return HttpDiscoveryAdapter::IntelPwnJson;
+        }
     }
     if logical_name.is_some_and(|name| name.contains("gobuster")) {
         return HttpDiscoveryAdapter::GobusterText;
@@ -157,6 +167,9 @@ fn select_http_discovery_adapter(
     }
     if logical_name.is_some_and(|name| name.contains("sqlmap")) {
         return HttpDiscoveryAdapter::SqlmapText;
+    }
+    if logical_name.is_some_and(|name| name.contains("intelpwn")) {
+        return HttpDiscoveryAdapter::IntelPwnJson;
     }
     HttpDiscoveryAdapter::GenericJson
 }
@@ -817,6 +830,116 @@ fn parse_sqlmap_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowD
     Ok(rows)
 }
 
+fn intelpwn_result_columns() -> Vec<StructuredResultColumnDto> {
+    [
+        ("severity", "严重度"),
+        ("finding_type", "漏洞类型"),
+        ("exploitable", "可利用"),
+        ("detail", "详情"),
+        ("file", "文件"),
+        ("protections", "保护"),
+        ("source_job", "来源任务"),
+        ("source_artifact", "来源证据"),
+    ]
+    .into_iter()
+    .map(|(key, label)| StructuredResultColumnDto {
+        key: key.to_owned(),
+        label: label.to_owned(),
+    })
+    .collect()
+}
+
+fn parse_intelpwn_structured_rows(bytes: &[u8]) -> Result<Vec<StructuredResultRowDto>, CoreError> {
+    let value = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b'{')
+        .find_map(|(start, _)| {
+            serde_json::Deserializer::from_slice(&bytes[start..])
+                .into_iter::<serde_json::Value>()
+                .next()
+                .and_then(Result::ok)
+                .filter(serde_json::Value::is_object)
+        })
+        .ok_or(CoreError::InvalidRequest)?;
+    let findings = value
+        .get("summary")
+        .and_then(|summary| summary.get("findings"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or(CoreError::InvalidRequest)?;
+    let file = value
+        .get("file")
+        .or_else(|| value.get("path"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let protections = value
+        .get("protections")
+        .and_then(serde_json::Value::as_object)
+        .map(|items| {
+            ["canary", "nx", "pie", "relro"]
+                .into_iter()
+                .filter_map(|key| {
+                    items
+                        .get(key)
+                        .map(|value| format!("{}={}", key.to_ascii_uppercase(), json_cell(value)))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+
+    Ok(findings
+        .iter()
+        .enumerate()
+        .map(|(index, finding)| {
+            let mut cells = BTreeMap::new();
+            cells.insert(
+                "severity".to_owned(),
+                finding.get("severity").map_or_else(String::new, json_cell),
+            );
+            cells.insert(
+                "finding_type".to_owned(),
+                finding.get("type").map_or_else(String::new, json_cell),
+            );
+            cells.insert(
+                "exploitable".to_owned(),
+                finding
+                    .get("exploitable")
+                    .map_or_else(String::new, |value| match value.as_bool() {
+                        Some(true) => "是".to_owned(),
+                        Some(false) => "否".to_owned(),
+                        None => json_cell(value),
+                    }),
+            );
+            cells.insert(
+                "detail".to_owned(),
+                finding.get("detail").map_or_else(String::new, json_cell),
+            );
+            cells.insert("file".to_owned(), file.clone());
+            cells.insert("protections".to_owned(), protections.clone());
+            cells.insert("source_job".to_owned(), String::new());
+            cells.insert("source_artifact".to_owned(), String::new());
+            StructuredResultRowDto {
+                result_id: format!("row:{index}"),
+                cells,
+                source_job_id: JobId::new(),
+                source_artifact_id: None,
+            }
+        })
+        .collect())
+}
+
+fn json_cell(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value.clone(),
+        value => value.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,5 +1047,36 @@ Parameter: id (GET)
 ";
         let rows = parse_sqlmap_structured_rows(bytes).unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn intelpwn_json_extracts_findings_from_catalog_stdout() {
+        let bytes = br#"=== FlagDeck launch ===
+{"file":"chall","path":"/tmp/chall","protections":{"canary":false,"nx":true,"pie":false,"relro":"Partial"},"overflow":[],"format_string":{"vulnerable":true,"offset":6},"summary":{"count":1,"max_severity":"high","findings":[{"type":"format_string","detail":"offset=6","severity":"high","exploitable":true}]}}
+[flagdeck] managed execution finished backend=Systemd exit=Some(0)
+"#;
+        let rows = parse_intelpwn_structured_rows(bytes).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].cells.get("finding_type").map(String::as_str),
+            Some("format_string")
+        );
+        assert_eq!(
+            rows[0].cells.get("exploitable").map(String::as_str),
+            Some("是")
+        );
+        assert_eq!(
+            rows[0].cells.get("protections").map(String::as_str),
+            Some("CANARY=false NX=true PIE=false RELRO=Partial")
+        );
+    }
+
+    #[test]
+    fn intelpwn_json_accepts_a_clean_result() {
+        let rows = parse_intelpwn_structured_rows(
+            br#"{"file":"clean","protections":{},"summary":{"count":0,"findings":[]}}"#,
+        )
+        .unwrap();
+        assert!(rows.is_empty());
     }
 }
